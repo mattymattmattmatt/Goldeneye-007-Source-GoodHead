@@ -1,0 +1,115 @@
+# ---------------------------------------------------------------------------
+# How the stereo image reaches the headset.
+#   compositor : real per-eye submit with the correct asymmetric frustum crop.
+#                This is the one that should feel like you are IN the level.
+#   sbs        : the old head-locked side-by-side quad. Stereo, but it reads as
+#                a giant 3D television. Kept as a fallback.
+#   both       : compositor plus the quad, for an A/B in one session.
+# This file is hot-reloaded -- save it while the game runs and it takes effect.
+DisplayMode=compositor
+
+# Crops each eye's true asymmetric frustum out of the shared wide render.
+# Turning this off reproduces the old too-big-world look; it is the single
+# biggest contributor to correct VR scale.
+UseEyeFrustumCrop=true
+
+# The horizontal half of that crop is unambiguous. The vertical half depends on
+# a sign convention that can only be settled in a headset: if the world sits too
+# high or too low, set this false and only the horizontal crop applies.
+UseVerticalCrop=true
+
+# Only used when DisplayMode=sbs or both.
+SbsWidthMeters=3.17
+SbsDistance=1.0
+
+# Menu pointer. Win32 posts real mouse messages to the game window and is the
+# reliable path. The VGUI-internal path calls into a vgui2 vtable whose 2007
+# layout is unconfirmed -- leave it off unless you are testing it.
+MenuInputWin32=true
+MenuInputVguiInternal=false
+
+# Kill switch for ALL OS-level cursor driving (SetCursorPos, SetForegroundWindow,
+# PostMessage). Set false to rule the whole menu-input subsystem out at once.
+MenuDriveCursor=true
+
+# SetCursorPos moves the real Windows cursor. It is a system-wide call that can
+# transact with the desktop input thread; PostMessage cannot block. If the game
+# freezes shortly after the menu appears, set this false -- Source's inputsystem
+# consumes WM_MOUSEMOVE on its own, so the laser may still work without it.
+MenuUseSetCursorPos=true
+
+# How often the menu talks to the SteamVR compositor, in milliseconds.
+# This is NOT just a keepalive. OpenVR's Vulkan Submit drains the graphics
+# queue, so its cost is proportional to how much game rendering piled up since
+# the last submit. At the old 500ms spacing the engine free-ran at ~225fps,
+# leaving ~110 frames to drain -- an 83-150ms freeze every half second, which
+# is the stutter you were feeling. 33ms cuts that to about 5ms.
+#   33  = default, smooth
+#   11  = display cadence, smoothest; try it if 33 is stable
+#   500 = old behaviour, for comparison
+MenuKeepaliveMs=33
+
+
+# SteamVR's desktop mirror window. It competes with the game for Win32 focus,
+# and Source throttles rendering hard (and mutes audio) whenever its own window
+# is not the active app. A VR mod gains nothing from it. Leave off.
+ShowMirrorWindow=false
+
+# How often to re-suppress the SteamVR Theater overlay, in milliseconds.
+# Each pass is ~10 IPC round-trips to vrserver. 0 = every frame (old behaviour).
+TheaterHideThrottleMs=2000
+
+EnableNetVR=true
+# head = look and shoot with the headset
+# gun  = weapons follow the right controller (default)
+AimMode=gun
+MotionControls=true
+
+# Gun grip correction, degrees. A controller's forward axis is not a barrel
+# axis; this rotates the weapon down into a natural grip. 45 is what L4D2VR and
+# HaloCEVR use. If the gun points too high, raise it; too low, lower it.
+# Set 0 to aim straight down the controller's own axis.
+GunGripAngle=45.0
+
+# Fine gun placement relative to your hand, in Source units (1 unit ~= 1 inch),
+# as forward,right,up. Positive forward pulls the weapon back toward you.
+ViewmodelOffset=0,0,0
+TurnSpeed=0.35
+SnapTurning=false
+SnapTurnAngle=45.0
+LeftHanded=false
+VRScale=40.0
+IPDScale=1.0
+HideArms=true
+HudDistance=1.3
+HudSize=1.1
+HudAlwaysVisible=false
+
+# Off-hand watch HUD (raise the unused hand to your face, HaloCEVR-style)
+ShowWristHUD=true
+WristLookMaxDistance=0.6
+WristLookMinDot=0.45
+WristWatchWidth=0.11
+WristAmmoWidth=0.12
+WristOffset=-0.15,0.10,0.04
+WristRotation=40,8,0
+WristWatchOffset=0,0,0.02
+WristAmmoOffset=-0.02,0,0.05
+WristWatchUMin=0.00
+WristWatchVMin=0.78
+WristWatchUMax=0.46
+WristWatchVMax=1.00
+WristAmmoUMin=0.54
+WristAmmoVMin=0.78
+WristAmmoUMax=1.00
+WristAmmoVMax=1.00
+
+# Health bars also flash in front of the HMD when you take a hit
+HurtHUDWidth=0.55
+HurtHUDDistance=0.85
+HurtHUDSeconds=2.5
+HurtHealthThreshold=80
+HurtHUDUMin=0.00
+HurtHUDVMin=0.78
+HurtHUDUMax=0.50
+HurtHUDVMax=1.00
