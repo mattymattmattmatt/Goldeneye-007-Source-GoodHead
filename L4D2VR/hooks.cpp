@@ -699,6 +699,25 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 	if (m_Game->m_SwitchedWeapons)
 		m_Game->m_CachedArmsModel = false;
 
+	// DIAGNOSTIC: the viewmodel has never appeared in this hook. Only
+	// models/weapons/shells/pistolcase.mdl showed up during the stereo pass,
+	// which is why the gun still renders at the face -- we never get a chance to
+	// move it. Log every model name briefly, stereo pass or not, to find where
+	// GE:S actually draws v_*.
+	if (m_VR && m_VR->m_IsVREnabled && info.pModel && m_Game->m_ModelInfo)
+	{
+		static int s_names = 0;
+		if (s_names < 60)
+		{
+			const char *mn = m_Game->m_ModelInfo->GetModelName(info.pModel);
+			if (mn && (strstr(mn, "v_") || strstr(mn, "weapon") || strstr(mn, "arms") || strstr(mn, "hand")))
+			{
+				Game::logMsg("MODELSCAN #%d stereo=%d %s", s_names, (int)g_inStereoPass, mn);
+				++s_names;
+			}
+		}
+	}
+
 	if (g_inStereoPass && m_VR && m_VR->m_IsVREnabled && info.pModel && m_Game->m_ModelInfo)
 	{
 		const char *modelName = m_Game->m_ModelInfo->GetModelName(info.pModel);

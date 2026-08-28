@@ -2492,15 +2492,26 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     // axis turns "pointing the device forward" into "pointing a barrel", and
     // re-deriving m_RightControllerAngAbs from it keeps the shot direction,
     // the view angles while firing and the rendered gun all in agreement.
+    // Grip correction applies to the VIEWMODEL BASIS ONLY.
+    //
+    // It used to also re-derive m_RightControllerAngAbs via
+    // VectorAngles(forward, up, ...). That angle drives SetViewAngles and
+    // therefore the shot direction, and round-tripping it through the rotated
+    // basis inverted PITCH -- reported in play as "aim up with the controller
+    // and the bullets go into the ground", with left/right unaffected because
+    // yaw survives the round trip. The pose angle from GetPoseData is already
+    // correct in Source's convention (positive pitch = down); keep using it, and
+    // express the grip as a plain pitch offset so it cannot flip anything.
     if (fabsf(m_GunGripAngle) > 0.01f)
     {
         m_ViewmodelForward = VectorRotate(m_ViewmodelForward, m_ViewmodelRight, -m_GunGripAngle);
         m_ViewmodelUp = VectorRotate(m_ViewmodelUp, m_ViewmodelRight, -m_GunGripAngle);
-        QAngle::VectorAngles(m_ViewmodelForward, m_ViewmodelUp, m_RightControllerAngAbs);
-
         m_LeftControllerForward = VectorRotate(m_LeftControllerForward, m_LeftControllerRight, -m_GunGripAngle);
         m_LeftControllerUp = VectorRotate(m_LeftControllerUp, m_LeftControllerRight, -m_GunGripAngle);
-        QAngle::VectorAngles(m_LeftControllerForward, m_LeftControllerUp, m_LeftControllerAngAbs);
+
+        // Source pitch is positive-down, so a downward grip tilt is +angle.
+        m_RightControllerAngAbs.x += m_GunGripAngle;
+        m_LeftControllerAngAbs.x += m_GunGripAngle;
     }
 
     // --- Per-weapon pose -----------------------------------------------------
@@ -2544,9 +2555,9 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
         m_ViewmodelRight   = VectorRotate(m_ViewmodelRight,   m_ViewmodelForward, m_ViewmodelAngOffset.z);
         m_ViewmodelUp      = VectorRotate(m_ViewmodelUp,      m_ViewmodelForward, m_ViewmodelAngOffset.z);
 
-        // Shot direction and the view angles used while firing must follow the
-        // corrected barrel, not the raw controller.
-        QAngle::VectorAngles(m_ViewmodelForward, m_ViewmodelUp, m_RightControllerAngAbs);
+        // NOTE: deliberately NOT re-deriving m_RightControllerAngAbs from the
+        // basis here. That is exactly what inverted pitch on the shot direction.
+        // The per-weapon angles shape the MODEL; aim stays on the pose angle.
 
         static int s_wlog = 0;
         if (s_wlog < 6)

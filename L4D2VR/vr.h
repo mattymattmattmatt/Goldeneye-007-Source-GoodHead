@@ -293,7 +293,11 @@ public:
 	// L4D2VR and HaloCEVR rotate the grip down ~45 degrees to compensate.
 	// UpdateTracking() used to do this for GE:S but is never called, so the
 	// correction is applied where the viewmodel basis is actually built.
-	float m_GunGripAngle = 45.0f;
+	// DEFAULT 0. Aim direction was reported correct apart from the pitch
+	// inversion, so once that is fixed any grip offset would tilt aim off by
+	// that many degrees. Raise it only if the gun MODEL sits at a wrong angle
+	// in your hand -- it now offsets pitch directly and no longer touches yaw.
+	float m_GunGripAngle = 0.0f;
 	// User tweak ADDED on top of the per-weapon table value, so setting
 	// ViewmodelOffset in config no longer erases the per-weapon pose.
 	Vector m_ViewmodelUserOffset = { 0.0f, 0.0f, 0.0f };
