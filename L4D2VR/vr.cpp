@@ -1079,14 +1079,20 @@ void VR::SubmitThreadBody()
                 lb.vMin = rb.vMin = 0.0f;
                 lb.vMax = rb.vMax = 1.0f;
             }
+            // Vulkan queues are single-thread-access. Bracket OpenVR's submit so it
+            // cannot race DXVK's submission thread on the same VkQueue.
+            if (g_D3DVR9) g_D3DVR9->LockSubmission();
             el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture,  &lb, vr::Submit_Default);
             er = comp->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &rb, vr::Submit_Default);
+            if (g_D3DVR9) g_D3DVR9->UnlockSubmission();
         }
         else if (VRSubmit::g_blackReady.load() && TextureReady(m_SubmitBlack))
         {
             const vr::VRTextureBounds_t full = { 0.0f, 0.0f, 1.0f, 1.0f };
+            if (g_D3DVR9) g_D3DVR9->LockSubmission();
             el = comp->Submit(vr::Eye_Left,  &m_SubmitBlack.m_VRTexture, &full, vr::Submit_Default);
             er = comp->Submit(vr::Eye_Right, &m_SubmitBlack.m_VRTexture, &full, vr::Submit_Default);
+            if (g_D3DVR9) g_D3DVR9->UnlockSubmission();
         }
         else
         {
