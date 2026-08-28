@@ -300,7 +300,12 @@ public:
 	// Per-weapon poses come from Weapons::GetOffset. That table was unreachable
 	// (its only caller, UpdateTracking(), has no call sites), so every gun used
 	// one generic pose. Set false to go back to that.
-	bool m_PerWeaponOffsets = true;
+	// DEFAULT OFF. The offset table in weapons.cpp is inherited from l4d2vr and
+	// assumes L4D2 viewmodel origins. Its generic fallback pushes the gun 18
+	// units BACK along the barrel from your hand, which on GE:S models may put
+	// it inside or behind you. With this off the weapon sits exactly at the
+	// controller, which is predictable and visible. Turn on to start tuning.
+	bool m_PerWeaponOffsets = false;
 	// Off-hand near the barrel aims along both hands. Also stranded in
 	// UpdateTracking() until now.
 	bool m_TwoHandedGrip = true;

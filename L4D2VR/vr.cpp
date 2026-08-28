@@ -2717,6 +2717,26 @@ void VR::ResolvePlayerNetvars()
 {
     if (m_HealthNetvar >= 0)
         return;
+
+    // This only cached on SUCCESS. On failure it re-walked every client class
+    // and every recv table on the NEXT frame, and the next, forever -- 598 full
+    // scans in one 80-second session once UpdateHurtHUD started calling it.
+    // GE:S may simply not expose m_iHealth where this looks, so failure has to
+    // be cached too. Retry occasionally in case the class list is not populated
+    // yet at map load, then stop.
+    static DWORD s_lastTry = 0;
+    static int s_attempts = 0;
+    const DWORD now = GetTickCount();
+    if (s_attempts > 0)
+    {
+        if (s_attempts >= 12)
+            return;                                  // gave up
+        if ((now - s_lastTry) < 3000)
+            return;                                  // not yet
+    }
+    s_lastTry = now;
+    ++s_attempts;
+
     if (!m_Game || !m_Game->m_BaseClientDll)
         return;
 
@@ -2738,7 +2758,8 @@ void VR::ResolvePlayerNetvars()
         if (!ReadableCString(maybe->m_pNetworkName))
             continue;
         head = maybe;
-        Game::logMsg("GetAllClasses via vtable[%d], first class %s", i, maybe->m_pNetworkName);
+        if (s_attempts <= 2)
+            Game::logMsg("GetAllClasses via vtable[%d], first class %s", i, maybe->m_pNetworkName);
         break;
     }
 

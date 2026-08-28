@@ -32,6 +32,13 @@ UseVerticalCrop=true
 # Leave false for the first run of this build (so the menu-freeze fix is tested
 # on its own). Once the menu is stable, set true and the double-image should go.
 EyeRenderTargets=false
+# ^^^ TURN THIS ON FOR RESOLUTION ^^^
+# Confirmed from the 21:26 log: "stereo pass #0 eyeRT=0 size=1280x720". With
+# this off, each eye is captured from the 1280x720 window backbuffer and then
+# upscaled to a ~2496x2688 headset eye -- that IS the blurriness. With it on,
+# each eye renders into its own render target at true HMD resolution.
+# This file hot-reloads: you can flip it while standing in a map and see the
+# difference immediately. If anything renders wrong, flip it back.
 
 # Only used when DisplayMode=sbs or both.
 SbsWidthMeters=3.17
@@ -98,7 +105,7 @@ GunGripAngle=45.0
 # ar33, rcp90, sniper, shotguns, knife, grenades...). That table was completely
 # unreachable until now -- its only caller had no call sites -- so every weapon
 # used one generic pose.
-PerWeaponOffsets=true
+PerWeaponOffsets=false
 
 # Two-handed grip: bring the off hand up near the barrel and the gun aims along
 # the line between your hands. Skipped for melee, dual-wieldables and throwables.
