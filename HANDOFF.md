@@ -36,6 +36,75 @@ that path is not reaching your HMD — change it to `DisplayMode=sbs`, save, and
 
 ---
 
+## WEAPON + HUD REVIEW (19:54)
+
+Static review while the headset was unavailable. Headline: **large parts of the
+mod were never connected to anything.**
+
+### Was dead, now wired
+
+| System | Why it was dead |
+|---|---|
+| Per-weapon viewmodel poses (`Weapons::GetOffset`) | only caller was `UpdateTracking()`, which has **no call sites** |
+| Melee / dual-wield / throwable predicates | same |
+| Two-handed rifle grip | same |
+| `UpdateWristHUD()` (watch: health/armor) | **no call sites** |
+| `UpdateHurtHUD()` (damage flash) | **no call sites** |
+| `ReadLocalHealth()` / `ResolvePlayerNetvars()` | only reachable from the two above |
+
+The whole `weapons.cpp` table -- pp7, dd44, klobb, ar33, rcp90, sniper, shotguns,
+knife, grenades, ~30 entries -- has never once been consulted. Every gun used the
+generic fallback pose. `m_ActiveWeaponModel` **is** populated (by
+`dDrawModelExecute`), so the data was being collected and thrown away.
+
+Roughly 20 config keys (`ShowWristHUD`, `WristOffset`, `WristRotation`,
+`WristWatch*`, `WristAmmo*`, `HurtHUD*`, `HurtHealthThreshold`) did nothing.
+
+Fixes:
+- Weapon pose + two-handed grip moved into `ApplyHeadAndIpd`, where the viewmodel
+  basis is actually built. New flags `PerWeaponOffsets`, `TwoHandedGrip`.
+- `ViewmodelOffset` is now **additive** on top of the per-weapon value rather than
+  overwriting it.
+- `UpdateWristHUD()` / `UpdateHurtHUD()` called from the in-game path, gated on
+  `IsInMap()`.
+- **`m_VKHUD` is now refreshed in game.** The wrist overlays crop their watch and
+  ammo faces out of it, but it was only ever filled by the MENU branch -- in game
+  it held a stale menu frame forever, so the watch could never have worked even
+  if it had been called.
+
+All of this runs only in-map, so it cannot affect menu-freeze testing.
+
+### Cannot be fixed without new signatures
+
+These offsets are **L4D2 signatures that do not match GE:S** and silently fail to
+resolve (confirmed in the boot log as "Optional signature not found"):
+
+| Offset | Consequence |
+|---|---|
+| `Weapon_ShootPosition` (client + server) | shot ORIGIN is not moved to the gun |
+| `ClientFireTerrorBullets` / `ServerFireTerrorBullets` | same -- and "TerrorBullets" is an L4D2-only function name |
+| `ProcessUsercmds` / `ReadUsercmd` / `WriteUsercmd*` | **VRNet is entirely inert** -- no VR poses shared with other players |
+| melee swing hooks, `EyePosition`, `GetRenderTarget` | melee collision not moved to the controller |
+
+**Net effect on motion guns:** the weapon *model* follows your hand correctly
+(`dDrawModelExecute` + `CalcViewModelView` both resolve), and shot *direction*
+follows the gun because `ApplyHeadAndIpd` calls `SetViewAngles(gunAngle)` while
+firing. But the shot *origin* is still the player's eye. Expect bullets to travel
+where the gun points while starting at your head -- fine at range, visibly off for
+close or hip-fired shots.
+
+Fixing that needs GE:S-specific signatures for `CBasePlayer::Weapon_ShootPosition`
+and GE:S's own FireBullets equivalent. That is a disassembly job against GE:S's
+`client.dll` / `server.dll`, not something that can be guessed.
+
+### Also worth knowing
+
+`SetViewAngles` is called every frame with the HMD angle, and snaps to the gun
+angle while firing. Movement is relative to view angles, so the fire snap may
+tug the locomotion direction. Worth watching for once it is playable.
+
+---
+
 ## ROOT CAUSE FOUND (18:48): unsynchronised VkQueue access
 
 The stack sampler caught it, and resolving the offsets against a `/MAP` build
