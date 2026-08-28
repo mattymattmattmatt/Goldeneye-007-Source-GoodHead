@@ -38,6 +38,14 @@ MenuDriveCursor=true
 # consumes WM_MOUSEMOVE on its own, so the laser may still work without it.
 MenuUseSetCursorPos=true
 
+# How a menu click is delivered. The freeze happens immediately after a click is
+# posted, every time. PostMessage synthesises a message with no hardware input
+# behind it; VGUI calls SetMouseCapture on button-down, and a synthetic press
+# whose physical button was never down can leave it waiting for a release that
+# cannot arrive. SendInput goes through the real input queue like a physical
+# mouse. If the game freezes the moment you click, try true.
+MenuClickViaSendInput=false
+
 # How often the menu talks to the SteamVR compositor, in milliseconds.
 # This is NOT just a keepalive. OpenVR's Vulkan Submit drains the graphics
 # queue, so its cost is proportional to how much game rendering piled up since

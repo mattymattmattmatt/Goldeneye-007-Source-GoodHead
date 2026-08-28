@@ -153,6 +153,10 @@ static void GESVR_WatchdogThread()
                              stalled, g_watchInMap.load(), g_watchStereoPass.load());
                 ++reported;
             }
+            // Sample twice, seconds apart: identical EIP means a hard
+            // block, a moving EIP means a spin.
+            if (reported == 1 || reported == 5)
+                GESVR_CaptureStalledStack();
         }
         else
         {
@@ -199,6 +203,13 @@ namespace MenuInput
     // what wedges the game, turn this off and rely on WM_MOUSEMOVE alone --
     // Source's inputsystem does consume it.
     static std::atomic<bool> g_useSetCursorPos{ true };
+    // Click delivery. PostMessage synthesises a message with no hardware input
+    // state behind it; VGUI calls SetMouseCapture on button-down, and a
+    // synthetic press whose physical button was never down can leave it waiting
+    // for a release that cannot come. SendInput goes through the real input
+    // queue instead, exactly like a physical mouse. Safe from this thread --
+    // this thread owns all USER32.
+    static std::atomic<bool> g_clickViaSendInput{ false };
 
     // Published back for the render thread to read cheaply.
     static std::atomic<void*> g_hwnd{ nullptr };
@@ -267,13 +278,28 @@ namespace MenuInput
                 const int x = g_aimX.load(), y = g_aimY.load();
                 if (x >= 0 && y >= 0)
                 {
-                    const LPARAM lp = MAKELPARAM(x, y);
-                    PostMessageA(hwnd, WM_MOUSEMOVE, 0, lp);
-                    PostMessageA(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lp);
-                    Sleep(24);   // VGUI wants a visible press before release
-                    PostMessageA(hwnd, WM_LBUTTONUP, 0, lp);
-                    Game::logMsg("MenuInput click posted at (%d,%d) fg=%d",
-                                 x, y, g_foreground.load());
+                    if (g_clickViaSendInput.load())
+                    {
+                        POINT pt = { x, y };
+                        ClientToScreen(hwnd, &pt);
+                        SetCursorPos(pt.x, pt.y);
+                        INPUT dn{}; dn.type = INPUT_MOUSE; dn.mi.dwFlags = MOUSEEVENTF_LEFTDOWN;
+                        INPUT up{}; up.type = INPUT_MOUSE; up.mi.dwFlags = MOUSEEVENTF_LEFTUP;
+                        SendInput(1, &dn, sizeof(INPUT));
+                        Sleep(24);
+                        SendInput(1, &up, sizeof(INPUT));
+                        Game::logMsg("MenuInput click via SendInput at (%d,%d) fg=%d", x, y, g_foreground.load());
+                    }
+                    else
+                    {
+                        const LPARAM lp = MAKELPARAM(x, y);
+                        PostMessageA(hwnd, WM_MOUSEMOVE, 0, lp);
+                        Game::logMsg("MenuInput click: posting DOWN at (%d,%d) fg=%d", x, y, g_foreground.load());
+                        PostMessageA(hwnd, WM_LBUTTONDOWN, MK_LBUTTON, lp);
+                        Sleep(24);
+                        PostMessageA(hwnd, WM_LBUTTONUP, 0, lp);
+                        Game::logMsg("MenuInput click: posted UP, click complete");
+                    }
                 }
             }
 
@@ -2757,6 +2783,7 @@ void VR::ParseConfigFile()
     g_menuDriveCursor = m_MenuDriveCursor;
     MenuInput::g_enabled.store(m_MenuDriveCursor);
     MenuInput::g_useSetCursorPos.store(CfgBool(userConfig, "MenuUseSetCursorPos", true));
+    MenuInput::g_clickViaSendInput.store(CfgBool(userConfig, "MenuClickViaSendInput", false));
     g_theaterThrottleMs = m_TheaterHideThrottleMs;
     m_MenuUseVguiInternal = CfgBool(userConfig, "MenuInputVguiInternal", m_MenuUseVguiInternal);
     Game::logMsg("DisplayMode=%s frustumCrop=%d menuWin32=%d menuVgui=%d",
