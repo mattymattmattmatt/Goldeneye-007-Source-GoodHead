@@ -94,6 +94,16 @@ MotionControls=true
 # Set 0 to aim straight down the controller's own axis.
 GunGripAngle=45.0
 
+# Per-weapon viewmodel poses from the table in weapons.cpp (pp7, dd44, klobb,
+# ar33, rcp90, sniper, shotguns, knife, grenades...). That table was completely
+# unreachable until now -- its only caller had no call sites -- so every weapon
+# used one generic pose.
+PerWeaponOffsets=true
+
+# Two-handed grip: bring the off hand up near the barrel and the gun aims along
+# the line between your hands. Skipped for melee, dual-wieldables and throwables.
+TwoHandedGrip=true
+
 # Fine gun placement relative to your hand, in Source units (1 unit ~= 1 inch),
 # as forward,right,up. Positive forward pulls the weapon back toward you.
 ViewmodelOffset=0,0,0

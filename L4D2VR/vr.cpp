@@ -735,6 +735,26 @@ void VR::Update()
 
     const auto tStart = vrclock::now();
     HideMenuPanel();
+
+    // Refresh the flat-HUD capture while IN GAME. The wrist overlays crop
+    // their watch/ammo faces out of m_VKHUD, but m_VKHUD was only ever
+    // filled by the MENU branch -- so in game it held a stale menu frame
+    // forever. At Present the backbuffer holds the finished frame including
+    // the 2D HUD, which is exactly what we want to crop from.
+    if (g_D3DVR9 && m_ShowWristHUD)
+        g_D3DVR9->CaptureForOverlay(&m_VKHUD, -1, -1);
+
+    // UpdateWristHUD/UpdateHurtHUD had NO call sites: the whole wrist
+    // watch and damage-flash HUD, and every Wrist*/HurtHUD* config key,
+    // were inert. Only runs in map.
+    if (m_Game && m_Game->IsInMap())
+    {
+        UpdateWristHUD();
+        UpdateHurtHUD();
+    }
+    else
+        HideWristOverlays();
+
     ProcessInput();
     const auto tEnd = vrclock::now();
     if (trace)
@@ -2350,6 +2370,62 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
         QAngle::VectorAngles(m_LeftControllerForward, m_LeftControllerUp, m_LeftControllerAngAbs);
     }
 
+    // --- Per-weapon pose -----------------------------------------------------
+    // weapons.cpp's offset table, the melee/dual-wield/throwable predicates and
+    // the two-handed grip all lived in UpdateTracking(), which has never had a
+    // call site. Every gun therefore used one generic pose. This is that logic,
+    // moved to where the viewmodel basis is actually built.
+    if (m_Game)
+    {
+        const std::string &wpn = m_Game->m_ActiveWeaponModel;
+        m_Game->m_IsMeleeWeaponActive = Weapons::IsMelee(wpn);
+
+        PositionAngle pose = m_PerWeaponOffsets
+            ? Weapons::GetOffset(wpn)
+            : PositionAngle{ { 0, 0, 0 }, { 0, 0, 0 } };
+        m_ViewmodelPosOffset = pose.position + m_ViewmodelUserOffset;
+        m_ViewmodelAngOffset = pose.angle;
+
+        // Two-handed grip: with the off hand up near the barrel, aim along the
+        // line between the hands instead of the gun hand's own axis.
+        m_TwoHanded = false;
+        if (m_TwoHandedGrip)
+        {
+            Vector handDelta = m_LeftControllerPosAbs - m_RightControllerPosAbs;
+            const float handDist = VectorLength(handDelta);
+            if (handDist > 10.0f && handDist < 32.0f &&
+                !Weapons::IsMelee(wpn) && !Weapons::IsDualWieldable(wpn) &&
+                !Weapons::IsThrowable(wpn))
+            {
+                VectorNormalize(handDelta);
+                m_ViewmodelForward = handDelta;
+                m_TwoHanded = true;
+            }
+        }
+
+        // Per-weapon yaw / pitch / roll, same order as the original.
+        m_ViewmodelForward = VectorRotate(m_ViewmodelForward, m_ViewmodelUp, m_ViewmodelAngOffset.y);
+        m_ViewmodelRight   = VectorRotate(m_ViewmodelRight,   m_ViewmodelUp, m_ViewmodelAngOffset.y);
+        m_ViewmodelForward = VectorRotate(m_ViewmodelForward, m_ViewmodelRight, m_ViewmodelAngOffset.x);
+        m_ViewmodelUp      = VectorRotate(m_ViewmodelUp,      m_ViewmodelRight, m_ViewmodelAngOffset.x);
+        m_ViewmodelRight   = VectorRotate(m_ViewmodelRight,   m_ViewmodelForward, m_ViewmodelAngOffset.z);
+        m_ViewmodelUp      = VectorRotate(m_ViewmodelUp,      m_ViewmodelForward, m_ViewmodelAngOffset.z);
+
+        // Shot direction and the view angles used while firing must follow the
+        // corrected barrel, not the raw controller.
+        QAngle::VectorAngles(m_ViewmodelForward, m_ViewmodelUp, m_RightControllerAngAbs);
+
+        static int s_wlog = 0;
+        if (s_wlog < 6)
+        {
+            Game::logMsg("weapon pose '%s' off=(%.1f,%.1f,%.1f) ang=(%.1f,%.1f,%.1f) twoHanded=%d melee=%d",
+                         wpn.c_str(), m_ViewmodelPosOffset.x, m_ViewmodelPosOffset.y, m_ViewmodelPosOffset.z,
+                         m_ViewmodelAngOffset.x, m_ViewmodelAngOffset.y, m_ViewmodelAngOffset.z,
+                         (int)m_TwoHanded, (int)m_Game->m_IsMeleeWeaponActive);
+            ++s_wlog;
+        }
+    }
+
     static int s_log = 0;
     if ((s_log++ % 90) == 0)
     {
@@ -2847,7 +2923,9 @@ void VR::ParseConfigFile()
     m_SbsWidthMeters = CfgFloat(userConfig, "SbsWidthMeters", m_SbsWidthMeters);
     m_SbsDistance = CfgFloat(userConfig, "SbsDistance", m_SbsDistance);
     m_GunGripAngle = CfgFloat(userConfig, "GunGripAngle", m_GunGripAngle);
-    m_ViewmodelPosOffset = CfgVec(userConfig, "ViewmodelOffset", m_ViewmodelPosOffset);
+    m_ViewmodelUserOffset = CfgVec(userConfig, "ViewmodelOffset", m_ViewmodelUserOffset);
+    m_PerWeaponOffsets = CfgBool(userConfig, "PerWeaponOffsets", m_PerWeaponOffsets);
+    m_TwoHandedGrip = CfgBool(userConfig, "TwoHandedGrip", m_TwoHandedGrip);
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);

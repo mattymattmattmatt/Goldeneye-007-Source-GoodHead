@@ -294,6 +294,16 @@ public:
 	// UpdateTracking() used to do this for GE:S but is never called, so the
 	// correction is applied where the viewmodel basis is actually built.
 	float m_GunGripAngle = 45.0f;
+	// User tweak ADDED on top of the per-weapon table value, so setting
+	// ViewmodelOffset in config no longer erases the per-weapon pose.
+	Vector m_ViewmodelUserOffset = { 0.0f, 0.0f, 0.0f };
+	// Per-weapon poses come from Weapons::GetOffset. That table was unreachable
+	// (its only caller, UpdateTracking(), has no call sites), so every gun used
+	// one generic pose. Set false to go back to that.
+	bool m_PerWeaponOffsets = true;
+	// Off-hand near the barrel aims along both hands. Also stranded in
+	// UpdateTracking() until now.
+	bool m_TwoHandedGrip = true;
 
 	bool m_ShowWristHUD = true;
 	float m_WristLookMaxDistance = 0.6f;
