@@ -348,6 +348,8 @@ namespace VRSubmit
 }
 
 extern long GESVR_ExecMoveCount();
+extern long GESVR_RenderOriginCalls();
+extern long GESVR_RenderAnglesCalls();
 
 static bool g_menuPlaced = false;
 static float g_menuYaw = 0.0f;
@@ -2630,7 +2632,7 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
             const Vector vmWrite = GetRecommendedViewmodelAbsPos();
             Game::logMsg("MOTION rawHand=(%.2f,%.2f,%.2f)m rawHmd=(%.2f,%.2f,%.2f)m armM=%.2f armU=%.1f "
                          "handWorld=(%.1f,%.1f,%.1f) player=(%.1f,%.1f,%.1f) fromPlayer=(%.1f,%.1f,%.1f)|%.1f| "
-                         "vmWrite=(%.1f,%.1f,%.1f) ang=(%.0f,%.0f,%.0f) scale=%.1f execMoves=%ld",
+                         "vmWrite=(%.1f,%.1f,%.1f) ang=(%.0f,%.0f,%.0f) scale=%.1f execMoves=%ld getOrigin=%ld getAngles=%ld",
                          rawHand.x, rawHand.y, rawHand.z,
                          rawHmd.x, rawHmd.y, rawHmd.z,
                          armM, armM * m_VRScale,
@@ -2639,7 +2641,8 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
                          fromPlayer.x, fromPlayer.y, fromPlayer.z, VectorLength(fromPlayer),
                          vmWrite.x, vmWrite.y, vmWrite.z,
                          m_RightControllerAngAbs.x, m_RightControllerAngAbs.y, m_RightControllerAngAbs.z,
-                         m_VRScale, GESVR_ExecMoveCount());
+                         m_VRScale, GESVR_ExecMoveCount(),
+                         GESVR_RenderOriginCalls(), GESVR_RenderAnglesCalls());
         }
     }
 

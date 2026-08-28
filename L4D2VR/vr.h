@@ -263,7 +263,14 @@ public:
 	// the patch is nowhere near as narrow as intended -- and if the pointer
 	// is a multiple-inheritance sub-object, slots 1/2 are not the accessors
 	// at all. Needs the vtable identified before this can be retried.
-	bool m_ViewmodelRenderablePatch = false;
+	// ON, now on evidence rather than assumption: VMVT proved the viewmodel
+	// and prop renderable vtables are DISTINCT (29416664 vs 293FC5B4), so the
+	// patch is narrow, and slots 1/2 resolve to adjacent small client.dll
+	// functions, the shape of GetRenderOrigin/GetRenderAngles. The earlier
+	// freeze was unrelated -- VmRenderable never logged, so it never applied.
+	// C_BaseAnimating::SetupBones builds the root transform from these two
+	// accessors, so every bone follows: no IK work needed.
+	bool m_ViewmodelRenderablePatch = true;
 	// Safe naked capture of slot 18's actual arguments.
 	bool m_SetupProbe = true;
 	// Motion trace: samples the ENTIRE hand->weapon chain 4x/second while in a

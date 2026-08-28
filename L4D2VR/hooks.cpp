@@ -209,6 +209,7 @@ static bool g_inStereoPass = false;
 // motion trace can say whether the write is even happening.
 static volatile long g_execMoves = 0;
 long GESVR_ExecMoveCount() { return g_execMoves; }
+long GESVR_RenderOriginCalls();
 
 // ===========================================================================
 // IVModelRender vtable probe
@@ -337,8 +338,12 @@ namespace VmRenderable
 	// const Vector& GetRenderOrigin() -- a const-ref return is a pointer return.
 	// __thiscall with no args and __fastcall(ecx, edx) agree on both registers
 	// and stack cleanup (ret 0), so this is a safe direct vtable replacement.
+	static volatile long g_originCalls = 0;
+	static volatile long g_anglesCalls = 0;
+
 	static const Vector *__fastcall GetRenderOrigin(void *ecx, void *edx)
 	{
+		g_originCalls = g_originCalls + 1;
 		if (g_havePose)
 			return &g_origin;
 		typedef const Vector *(__fastcall *fn)(void *, void *);
@@ -347,6 +352,7 @@ namespace VmRenderable
 
 	static const QAngle *__fastcall GetRenderAngles(void *ecx, void *edx)
 	{
+		g_anglesCalls = g_anglesCalls + 1;
 		if (g_havePose)
 			return &g_angles;
 		typedef const QAngle *(__fastcall *fn)(void *, void *);
@@ -1363,3 +1369,9 @@ DWORD *Hooks::dPrePushRenderTarget(void *ecx, void *edx, int a2)
 
 	return hkPrePushRenderTarget.fOriginal(ecx, a2);
 }
+
+// Reported by the motion trace: if these climb and the weapon still does not
+// move, the renderer is not placing the model from these accessors and the
+// approach is wrong. If they stay at zero, the patch is not being reached.
+long GESVR_RenderOriginCalls() { return VmRenderable::g_originCalls; }
+long GESVR_RenderAnglesCalls() { return VmRenderable::g_anglesCalls; }
