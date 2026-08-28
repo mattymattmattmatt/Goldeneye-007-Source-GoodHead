@@ -351,7 +351,13 @@ public:
 	void UpdatePosesAndActions();
 	void GetViewParameters();
 	void ProcessMenuInput();
-	void ProcessInput();
+	// Edge-triggered console command. Source's command buffer is a fixed-size
+	// queue; ProcessInput was issuing +forward/-back/+duck/-duck and friends on
+	// EVERY frame (32 call sites, several unconditional if/else pairs), which at
+	// 200+ fps is over a thousand commands a second and can overflow the buffer.
+	// This sends a given +cmd/-cmd only when its state actually changes.
+	void MoveCmd(const char *cmd);
+		void ProcessInput();
 	bool IsMenuMode();
 	// Called after DXVK Present returns. Menu-only compositor tick so we never
 	// WaitGetPoses/Submit on the same callstack as IDirect3DDevice9::Present.

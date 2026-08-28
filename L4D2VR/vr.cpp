@@ -499,6 +499,28 @@ VR::VR(Game *game)
     m_System->GetRecommendedRenderTargetSize(&m_RenderWidth, &m_RenderHeight);
     Game::logMsg("OpenVR scene ready. recommended RT %ux%u", m_RenderWidth, m_RenderHeight);
 
+    // Report the actual controller type. The action manifest ships default
+    // bindings for oculus_touch, knuckles and vive_cosmos_controller ONLY. A
+    // Vive wand (vive_controller), WMR (holographic_controller) or Reverb G2
+    // (hpmotioncontroller) has no binding, so every digital action silently
+    // reads false forever and no motion control works -- with no error anywhere.
+    // MenuHealth has shown sel=0 atk=0 on every sample so far, which this
+    // distinguishes between "not pressed" and "not bound".
+    for (vr::TrackedDeviceIndex_t i = 1; i < vr::k_unMaxTrackedDeviceCount; ++i)
+    {
+        if (m_System->GetTrackedDeviceClass(i) != vr::TrackedDeviceClass_Controller)
+            continue;
+        char ctype[128] = {};
+        char model[128] = {};
+        m_System->GetStringTrackedDeviceProperty(i, vr::Prop_ControllerType_String, ctype, sizeof(ctype));
+        m_System->GetStringTrackedDeviceProperty(i, vr::Prop_ModelNumber_String, model, sizeof(model));
+        const bool known = strstr(ctype, "oculus_touch") || strstr(ctype, "knuckles")
+                        || strstr(ctype, "vive_cosmos");
+        Game::logMsg("Controller %u type='%s' model='%s' bindingShipped=%d%s",
+                     i, ctype, model, (int)known,
+                     known ? "" : "  <-- NO DEFAULT BINDING, actions will never fire");
+    }
+
     float l_left = 0.0f, l_right = 0.0f, l_top = 0.0f, l_bottom = 0.0f;
     m_System->GetProjectionRaw(vr::EVREye::Eye_Left, &l_left, &l_right, &l_top, &l_bottom);
 
@@ -1721,6 +1743,26 @@ void VR::ProcessMenuInput()
     }
 }
 
+void VR::MoveCmd(const char *cmd)
+{
+    if (!m_Game || !cmd || !cmd[0])
+        return;
+    if (cmd[0] != '+' && cmd[0] != '-')
+    {
+        m_Game->ClientCmd_Unrestricted(cmd);
+        return;
+    }
+    // "+forward" / "-forward" share the key "forward"; only a change is sent.
+    static std::unordered_map<std::string, bool> s_state;
+    const bool on = (cmd[0] == '+');
+    const std::string key(cmd + 1);
+    auto it = s_state.find(key);
+    if (it != s_state.end() && it->second == on)
+        return;
+    s_state[key] = on;
+    m_Game->ClientCmd_Unrestricted(cmd);
+}
+
 void VR::ProcessInput()
 {
     if (!m_IsVREnabled)
@@ -1780,35 +1822,35 @@ void VR::ProcessInput()
         bool pushingStickY = true;
         if (analogActionData.y > 0.5)	
         {
-            m_Game->ClientCmd_Unrestricted("-back");
-            m_Game->ClientCmd_Unrestricted("+forward");
+            MoveCmd("-back");
+            MoveCmd("+forward");
         }
         else if (analogActionData.y < -0.5)		
         {
-            m_Game->ClientCmd_Unrestricted("-forward");
-            m_Game->ClientCmd_Unrestricted("+back");
+            MoveCmd("-forward");
+            MoveCmd("+back");
         }
         else
         {
-            m_Game->ClientCmd_Unrestricted("-back");
-            m_Game->ClientCmd_Unrestricted("-forward");
+            MoveCmd("-back");
+            MoveCmd("-forward");
             pushingStickY = false;
         }
 
         if (analogActionData.x > 0.5)		
         {
-            m_Game->ClientCmd_Unrestricted("-moveleft");
-            m_Game->ClientCmd_Unrestricted("+moveright");
+            MoveCmd("-moveleft");
+            MoveCmd("+moveright");
         }
         else if (analogActionData.x < -0.5)		
         {
-            m_Game->ClientCmd_Unrestricted("-moveright");
-            m_Game->ClientCmd_Unrestricted("+moveleft");
+            MoveCmd("-moveright");
+            MoveCmd("+moveleft");
         }
         else
         {
-            m_Game->ClientCmd_Unrestricted("-moveright");
-            m_Game->ClientCmd_Unrestricted("-moveleft");
+            MoveCmd("-moveright");
+            MoveCmd("-moveleft");
             pushingStickX = false;
         }
 
@@ -1816,37 +1858,37 @@ void VR::ProcessInput()
     }
     else
     {
-        m_Game->ClientCmd_Unrestricted("-forward");
-        m_Game->ClientCmd_Unrestricted("-back");
-        m_Game->ClientCmd_Unrestricted("-moveleft");
-        m_Game->ClientCmd_Unrestricted("-moveright");
+        MoveCmd("-forward");
+        MoveCmd("-back");
+        MoveCmd("-moveleft");
+        MoveCmd("-moveright");
     }
 
     if (PressedDigitalAction(m_ActionPrimaryAttack))
     {
-        m_Game->ClientCmd_Unrestricted("+attack");
+        MoveCmd("+attack");
     }
     else
     {
-        m_Game->ClientCmd_Unrestricted("-attack");
+        MoveCmd("-attack");
     }
 
     if (PressedDigitalAction(m_ActionJump))
     {
-        m_Game->ClientCmd_Unrestricted("+jump");
+        MoveCmd("+jump");
     }
     else
     {
-        m_Game->ClientCmd_Unrestricted("-jump");
+        MoveCmd("-jump");
     }
 
     if (PressedDigitalAction(m_ActionUse))
     {
-        m_Game->ClientCmd_Unrestricted("+use");
+        MoveCmd("+use");
     }
     else
     {
-        m_Game->ClientCmd_Unrestricted("-use");
+        MoveCmd("-use");
     }
 
     // Manual reload: bring the magazines together (hands close) or press the bound button.
@@ -1855,7 +1897,7 @@ void VR::ProcessInput()
     if (reloadGesture && !m_ReloadGestureLatched)
     {
         m_ReloadGestureLatched = true;
-        m_Game->ClientCmd_Unrestricted("+reload");
+        MoveCmd("+reload");
     }
     else if (!reloadGesture)
     {
@@ -1864,20 +1906,20 @@ void VR::ProcessInput()
 
     if (PressedDigitalAction(m_ActionReload) || m_ReloadGestureLatched)
     {
-        m_Game->ClientCmd_Unrestricted("+reload");
+        MoveCmd("+reload");
     }
     else
     {
-        m_Game->ClientCmd_Unrestricted("-reload");
+        MoveCmd("-reload");
     }
 
     if (PressedDigitalAction(m_ActionSecondaryAttack))
     {
-        m_Game->ClientCmd_Unrestricted("+attack2");
+        MoveCmd("+attack2");
     }
     else
     {
-        m_Game->ClientCmd_Unrestricted("-attack2");
+        MoveCmd("-attack2");
     }
 
     if (PressedDigitalAction(m_ActionPrevItem, true))
@@ -1896,11 +1938,11 @@ void VR::ProcessInput()
 
     if (PressedDigitalAction(m_ActionCrouch))
     {
-        m_Game->ClientCmd_Unrestricted("+duck");
+        MoveCmd("+duck");
     }
     else
     {
-        m_Game->ClientCmd_Unrestricted("-duck");
+        MoveCmd("-duck");
     }
 
     if (PressedDigitalAction(m_ActionFlashlight, true))
@@ -1922,16 +1964,16 @@ void VR::ProcessInput()
         RepositionOverlays();
 
         if (PressedDigitalAction(m_Scoreboard))
-            m_Game->ClientCmd_Unrestricted("+showscores");
+            MoveCmd("+showscores");
         else
-            m_Game->ClientCmd_Unrestricted("-showscores");
+            MoveCmd("-showscores");
 
         vr::VROverlay()->ShowOverlay(m_HUDHandle);
     }
     else
     {
         vr::VROverlay()->HideOverlay(m_HUDHandle);
-        m_Game->ClientCmd_Unrestricted("-showscores");
+        MoveCmd("-showscores");
     }
     m_RenderedHud = false;
 
