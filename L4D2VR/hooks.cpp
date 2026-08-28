@@ -245,23 +245,55 @@ namespace SetupProbe
 	static volatile long  g_hits = 0;
 	static bool g_installed = false;
 
+	static char g_name[128] = {};
+	static volatile long g_named = 0;
+
+	// Resolve WHILE the frame is alive. The previous version stored raw
+	// stack pointers and dereferenced them seconds later, by which time the
+	// frame was long gone -- which is why every argument read as garbage.
+	static void __cdecl Capture(DWORD a1, DWORD a2, DWORD a3)
+	{
+		if (g_named > 40 || !m_GameStaticModelInfo)
+			return;
+		const DWORD cand[3] = { a1, a2, a3 };
+		for (int i = 0; i < 3; ++i)
+		{
+			if (cand[i] < 0x10000)
+				continue;
+			__try
+			{
+				const ModelRenderInfo_t *mi = reinterpret_cast<const ModelRenderInfo_t *>(cand[i]);
+				if (!mi->pModel)
+					continue;
+				const char *n = m_GameStaticModelInfo->GetModelName(mi->pModel);
+				if (n && n[0] == 'm' && n[1] == 'o')
+				{
+					_snprintf_s(g_name, sizeof(g_name), _TRUNCATE, "arg%d -> %s", i + 1, n);
+					g_named = g_named + 1;
+					return;
+				}
+			}
+			__except (EXCEPTION_EXECUTE_HANDLER) {}
+		}
+	}
+
 	static __declspec(naked) void Stub()
 	{
 		__asm {
+			pushad
+			pushfd
+			mov eax, [esp + 48]
 			push eax
-			mov  eax, ecx
-			mov  g_ecx, eax
-			mov  eax, [esp + 8]      // arg1 (esp+0=saved eax, +4=retaddr)
-			mov  g_a1, eax
-			mov  eax, [esp + 12]     // arg2
-			mov  g_a2, eax
-			mov  eax, [esp + 16]     // arg3
-			mov  g_a3, eax
-			mov  eax, [esp + 20]     // arg4
-			mov  g_a4, eax
+			mov eax, [esp + 48]
+			push eax
+			mov eax, [esp + 48]
+			push eax
+			call Capture
+			add esp, 12
+			popfd
+			popad
 			lock inc g_hits
-			pop  eax
-			jmp  dword ptr [g_orig]
+			jmp dword ptr [g_orig]
 		}
 	}
 
@@ -282,25 +314,6 @@ namespace SetupProbe
 		Game::logMsg("SetupProbe: capturing args of vtable[%d]=%p", slot, g_orig);
 	}
 
-	// Interpret a captured argument as a possible ModelRenderInfo_t* and see
-	// whether a model name falls out. Whichever argument yields a real path is
-	// the one carrying the render info, and its position gives us the arity.
-	static const char *TryModelName(DWORD candidate)
-	{
-		if (candidate < 0x10000)
-			return nullptr;
-		__try
-		{
-			const ModelRenderInfo_t *mi = reinterpret_cast<const ModelRenderInfo_t *>(candidate);
-			if (!mi->pModel)
-				return nullptr;
-			const char *n = m_GameStaticModelInfo ? m_GameStaticModelInfo->GetModelName(mi->pModel) : nullptr;
-			if (n && n[0] == 'm')
-				return n;
-		}
-		__except (EXCEPTION_EXECUTE_HANDLER) {}
-		return nullptr;
-	}
 
 	static void Report()
 	{
@@ -313,11 +326,7 @@ namespace SetupProbe
 		s_last = now;
 		Game::logMsg("SETUPARGS hits=%ld ecx=%08X a1=%08X a2=%08X a3=%08X a4=%08X",
 		             g_hits, g_ecx, g_a1, g_a2, g_a3, g_a4);
-		const char *n1 = TryModelName(g_a1);
-		const char *n2 = TryModelName(g_a2);
-		const char *n3 = TryModelName(g_a3);
-		Game::logMsg("SETUPARGS asModelInfo: a1=%s a2=%s a3=%s",
-		             n1 ? n1 : "-", n2 ? n2 : "-", n3 ? n3 : "-");
+		Game::logMsg("SETUPARGS resolved: %s", g_name[0] ? g_name : "<none of arg1..3 is a ModelRenderInfo_t>");
 	}
 }
 
@@ -1056,6 +1065,17 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 				ModelRenderInfo_t &mut = const_cast<ModelRenderInfo_t &>(info);
 				mut.origin = m_VR->GetRecommendedViewmodelAbsPos();
 				mut.angles = m_VR->GetRecommendedViewmodelAbsAngle();
+				static int s_exec = 0;
+				if (s_exec < 10)
+				{
+					// If this prints and the gun still does not translate, the
+					// write is simply too late: bone matrices are already built by
+					// DrawModelExecute, so only DrawModelSetup can move it.
+					Game::logMsg("EXEC MOVE fired -> (%.0f,%.0f,%.0f) was (%.0f,%.0f,%.0f)",
+					             mut.origin.x, mut.origin.y, mut.origin.z,
+					             m_VR->m_SetupOrigin.x, m_VR->m_SetupOrigin.y, m_VR->m_SetupOrigin.z);
+					++s_exec;
+				}
 			}
 		}
 	}
