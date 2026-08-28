@@ -355,6 +355,22 @@ static float g_menuYaw = 0.0f;
 // pointer is the signature we check for; stale heap bytes will not reproduce
 // it. Checking handle != nullptr alone is NOT enough -- that is what let a
 // garbage pointer reach SetOverlayTexture and kill the process at menu time.
+// OpenVR copies the Vulkan image when you hand it to an overlay, which means a
+// vkQueueSubmit on OUR graphics queue -- the same queue DXVK submits from. That
+// is the identical race that made compositor Submit deadlock Present, and every
+// SetOverlayTexture call in this file was doing it unlocked, once per frame.
+static vr::EVROverlayError SetOverlayTextureLocked(vr::IVROverlay *ov,
+                                                   vr::VROverlayHandle_t handle,
+                                                   const vr::Texture_t *tex)
+{
+    if (!ov)
+        return vr::VROverlayError_InvalidHandle;
+    if (g_D3DVR9) g_D3DVR9->LockSubmission();
+    const vr::EVROverlayError e = ov->SetOverlayTexture(handle, tex);
+    if (g_D3DVR9) g_D3DVR9->UnlockSubmission();
+    return e;
+}
+
 bool VR::TextureReady(const SharedTextureHolder &tex) const
 {
     if (tex.m_VRTexture.handle != &tex.m_VulkanData)
@@ -835,7 +851,10 @@ void VR::AfterPresent()
     // Queue on the MenuInput thread instead of spawning a std::thread per
     // click from inside PresentEx -- thread creation takes the loader lock,
     // which is not something to do on the Present callstack.
-    if (clicking && g_menuDriveCursor)
+    // Queue on the DOWN edge ONLY. g_pendMouseUp used to queue a second, complete
+    // down+up cycle of its own, so every trigger pull sent TWO clicks and the
+    // menu toggled straight back off again.
+    if (g_pendMouseDown && g_menuDriveCursor)
         MenuInput::QueueClick();
     g_pendMouseDown = false;
     g_pendMouseUp = false;
@@ -956,7 +975,7 @@ void VR::ShowMenuPanel()
         Game::logMsg("Menu overlay cosmetics configured %dx%d", windowWidth, windowHeight);
     }
 
-    vr::EVROverlayError err = m_Overlay->SetOverlayTexture(m_MainMenuHandle, &m_VKHUD.m_VRTexture);
+    vr::EVROverlayError err = SetOverlayTextureLocked(m_Overlay, m_MainMenuHandle, &m_VKHUD.m_VRTexture);
 
     // Keep the panel still. Re-aiming it every frame made the laser unusable.
     float yaw = 0.0f;
@@ -1080,7 +1099,7 @@ void VR::ShowWorldStereoOverlay()
     const float widthM = m_SbsWidthMeters;
     m_Overlay->SetOverlayWidthInMeters(m_WorldHandle, widthM);
 
-    vr::EVROverlayError err = m_Overlay->SetOverlayTexture(m_WorldHandle, &m_VKWorld.m_VRTexture);
+    vr::EVROverlayError err = SetOverlayTextureLocked(m_Overlay, m_WorldHandle, &m_VKWorld.m_VRTexture);
     m_Overlay->ShowOverlay(m_WorldHandle);
 
     static int s_log = 0;
@@ -2819,7 +2838,7 @@ void VR::SubmitWristOverlay(vr::VROverlayHandle_t handle, vr::TrackedDeviceIndex
     };
     m_Overlay->SetOverlayTransformTrackedDeviceRelative(handle, handIndex, &xf);
     m_Overlay->SetOverlayTextureBounds(handle, &bounds);
-    m_Overlay->SetOverlayTexture(handle, &m_VKHUD.m_VRTexture);
+    SetOverlayTextureLocked(m_Overlay, handle, &m_VKHUD.m_VRTexture);
     m_Overlay->ShowOverlay(handle);
 }
 
@@ -2921,7 +2940,7 @@ void VR::UpdateHurtHUD()
     m_Overlay->SetOverlayWidthInMeters(m_HurtHUDHandle, m_HurtHUDWidth);
     m_Overlay->SetOverlayTransformAbsolute(m_HurtHUDHandle, vr::VRCompositor()->GetTrackingSpace(), &xf);
     m_Overlay->SetOverlayTextureBounds(m_HurtHUDHandle, &m_HurtHUDBounds);
-    m_Overlay->SetOverlayTexture(m_HurtHUDHandle, &m_VKHUD.m_VRTexture);
+    SetOverlayTextureLocked(m_Overlay, m_HurtHUDHandle, &m_VKHUD.m_VRTexture);
     m_Overlay->ShowOverlay(m_HurtHUDHandle);
 }
 
