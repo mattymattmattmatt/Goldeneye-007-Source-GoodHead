@@ -2583,6 +2583,25 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
         }
     }
 
+    // Fire marker. The trigger is used as a delimiter between calibration
+    // steps, so log its rising edge with the current hand state -- that turns a
+    // wall of samples into clearly separated phases.
+    if (m_MotionDebug)
+    {
+        static bool s_firePrev = false;
+        const bool fireNow = PressedDigitalAction(m_ActionPrimaryAttack);
+        if (fireNow && !s_firePrev)
+        {
+            static int s_shot = 0;
+            const Vector armRaw = m_RightControllerPose.TrackedDevicePos - m_HmdPose.TrackedDevicePos;
+            Game::logMsg("======== MARKER %d (fire) armM=%.2f hand=(%.1f,%.1f,%.1f) player=(%.1f,%.1f,%.1f) ========",
+                         ++s_shot, VectorLength(armRaw),
+                         m_RightControllerPosAbs.x, m_RightControllerPosAbs.y, m_RightControllerPosAbs.z,
+                         setup.origin.x, setup.origin.y, setup.origin.z);
+        }
+        s_firePrev = fireNow;
+    }
+
     // --- Motion trace ------------------------------------------------------
     // Every stage of hand -> weapon, sampled 4x/second. Read it against a known
     // movement (arm straight out, then to the side, then up) and each stage can
