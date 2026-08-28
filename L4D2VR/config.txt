@@ -18,6 +18,21 @@ UseEyeFrustumCrop=true
 # high or too low, set this false and only the horizontal crop applies.
 UseVerticalCrop=true
 
+# Render each eye into its own engine render target instead of drawing both into
+# the backbuffer one on top of the other.
+#
+# The backbuffer approach is what produces "a stereoscopic view with another
+# wonky frame drawn on top" -- the second eye literally paints over the first in
+# the same buffer. It also renders at window size (1280x720) rather than HMD
+# size, which is where the softness comes from.
+#
+# This is what the l4d2vr reference does, and its IMatRenderContext vtable is
+# byte-identical to ours, so the call is as safe here as there.
+#
+# Leave false for the first run of this build (so the menu-freeze fix is tested
+# on its own). Once the menu is stable, set true and the double-image should go.
+EyeRenderTargets=false
+
 # Only used when DisplayMode=sbs or both.
 SbsWidthMeters=3.17
 SbsDistance=1.0

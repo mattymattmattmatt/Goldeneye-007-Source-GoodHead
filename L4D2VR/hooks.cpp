@@ -253,12 +253,32 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	CopyViewSetup(rightEyeView, setup);
 	m_VR->ApplyHeadAndIpd(leftEyeView, rightEyeView, setup);
 
+	IMatRenderContext *rndrContext = nullptr;
+	if (m_VR->m_UseEyeRenderTargets && m_Game && m_Game->m_MaterialSystem)
+	{
+		if (!m_VR->m_CreatedVRTextures)
+			m_VR->CreateVRTextures();
+		if (m_VR->m_CreatedVRTextures && m_VR->m_LeftEyeTexture && m_VR->m_RightEyeTexture)
+		{
+			rndrContext = m_Game->m_MaterialSystem->GetRenderContext();
+			leftEyeView.x = 0;  leftEyeView.y = 0;
+			rightEyeView.x = 0; rightEyeView.y = 0;
+			leftEyeView.width  = rightEyeView.width  = (int)m_VR->m_RenderWidth;
+			leftEyeView.height = rightEyeView.height = (int)m_VR->m_RenderHeight;
+		}
+	}
+	if (traceStereo)
+		Game::logMsg("stereo pass #%d eyeRT=%d size=%dx%d", pass,
+		             (int)(rndrContext != nullptr), leftEyeView.width, leftEyeView.height);
+
+	if (rndrContext) rndrContext->SetRenderTarget(m_VR->m_LeftEyeTexture);
 	if (traceStereo) Game::logMsg("stereo pass #%d L render...", pass);
 	hkRenderView.fOriginal(ecx, leftEyeView, nClearFlags, whatToDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d L rendered, capturing", pass);
 	HRESULT hl = g_D3DVR9->CaptureCurrentRT(0, &m_VR->m_VKLeftEye);
 	if (traceStereo) Game::logMsg("stereo pass #%d L ok hr=0x%08X", pass, (unsigned)hl);
 
+	if (rndrContext) rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
 	if (traceStereo) Game::logMsg("stereo pass #%d R render...", pass);
 	hkRenderView.fOriginal(ecx, rightEyeView, nClearFlags, whatToDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d R rendered, capturing", pass);
@@ -275,6 +295,9 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 		             leftEyeView.origin.x, leftEyeView.origin.y, leftEyeView.origin.z,
 		             rightEyeView.origin.x, rightEyeView.origin.y, rightEyeView.origin.z);
 
+	// Hand the backbuffer back, or the HUD/menu would draw into the eye
+	// texture and the desktop window would go black.
+	if (rndrContext) rndrContext->SetRenderTarget(nullptr);
 	g_inStereoPass = false;
 }
 

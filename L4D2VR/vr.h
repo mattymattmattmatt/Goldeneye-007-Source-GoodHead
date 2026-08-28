@@ -224,6 +224,16 @@ public:
 	// sign convention against D3D's v-down texture origin -- if the image sits
 	// too high or too low, turn this off and only the u crop is applied.
 	bool m_UseVerticalCrop = true;
+
+	// Render each eye into its own engine render target instead of drawing both
+	// into the backbuffer one on top of the other. The backbuffer approach is
+	// what produces "a stereoscopic view with another wonky frame on top": the
+	// second eye overwrites the first in the same buffer. The l4d2vr reference
+	// does SetRenderTarget(m_LeftEyeTexture) around each eye pass, and its
+	// IMatRenderContext vtable is byte-identical to ours, so the call is as safe
+	// here as there. Also renders at HMD resolution rather than window size,
+	// which is where the softness comes from.
+	bool m_UseEyeRenderTargets = false;
 	float m_SbsWidthMeters = 3.17f;
 	float m_SbsDistance = 1.0f;
 
