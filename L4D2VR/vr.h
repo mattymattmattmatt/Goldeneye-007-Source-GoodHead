@@ -257,7 +257,13 @@ public:
 	// Redirect the viewmodel's GetRenderOrigin/GetRenderAngles to our pose.
 	// Writing ModelRenderInfo_t::origin provably does not move the gun; the
 	// root transform comes from these accessors via SetupBones.
-	bool m_ViewmodelRenderablePatch = true;
+	// OFF -- froze on map load. Patching slots 1/2 of pRenderable's vtable is
+	// unsafe: ModelRenderInfo_t::pRenderable is an IClientRenderable*, but
+	// that vtable is shared by every entity deriving from the same class, so
+	// the patch is nowhere near as narrow as intended -- and if the pointer
+	// is a multiple-inheritance sub-object, slots 1/2 are not the accessors
+	// at all. Needs the vtable identified before this can be retried.
+	bool m_ViewmodelRenderablePatch = false;
 	// Safe naked capture of slot 18's actual arguments.
 	bool m_SetupProbe = true;
 	// Motion trace: samples the ENTIRE hand->weapon chain 4x/second while in a

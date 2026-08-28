@@ -59,7 +59,7 @@ WeaponSetupHook=true
 # write fires with a 27-unit displacement and nothing happens) because the root
 # transform is built by SetupBones from these two accessors instead.
 # Set false if the weapon renders wrong or the game becomes unstable.
-ViewmodelRenderablePatch=true
+ViewmodelRenderablePatch=false
 
 # Safe naked capture of slot 18's actual arguments. Costs nothing; turn off once
 # the signature is known.
