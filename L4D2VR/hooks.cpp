@@ -205,6 +205,10 @@ static void CopyViewSetup(CViewSetup &dst, const CViewSetup &src)
 }
 
 static bool g_inStereoPass = false;
+// Counts how many times the weapon reposition actually executed, so the
+// motion trace can say whether the write is even happening.
+static volatile long g_execMoves = 0;
+long GESVR_ExecMoveCount() { return g_execMoves; }
 
 // ===========================================================================
 // IVModelRender vtable probe
@@ -1065,6 +1069,7 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 				ModelRenderInfo_t &mut = const_cast<ModelRenderInfo_t &>(info);
 				mut.origin = m_VR->GetRecommendedViewmodelAbsPos();
 				mut.angles = m_VR->GetRecommendedViewmodelAbsAngle();
+				g_execMoves = g_execMoves + 1;
 				static int s_exec = 0;
 				if (s_exec < 10)
 				{

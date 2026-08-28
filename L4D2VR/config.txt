@@ -58,6 +58,11 @@ WeaponSetupHook=false
 # the signature is known.
 SetupProbe=true
 
+# Motion trace. Samples the whole hand -> weapon chain 4x/second while in a map.
+# Run the calibration sequence in HANDOFF.md and send the log; each stage can
+# then be verified independently instead of guessed at.
+MotionDebug=true
+
 # Re-run the slot counter (conflicts with the hook above; diagnosis only).
 VtableProbe=false
 # ^^^ TURN THIS ON FOR RESOLUTION ^^^

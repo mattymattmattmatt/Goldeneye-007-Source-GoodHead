@@ -250,6 +250,10 @@ public:
 	bool m_WeaponSetupHook = false;
 	// Safe naked capture of slot 18's actual arguments.
 	bool m_SetupProbe = true;
+	// Motion trace: samples the ENTIRE hand->weapon chain 4x/second while in a
+	// map, so a scripted set of arm movements can be correlated against the
+	// numbers and each stage verified independently.
+	bool m_MotionDebug = true;
 	// Re-run the slot counter (conflicts with the real hook; for diagnosis only).
 	bool m_VtableProbe = false;
 	float m_SbsWidthMeters = 3.17f;

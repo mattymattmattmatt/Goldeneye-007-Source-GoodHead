@@ -347,6 +347,8 @@ namespace VRSubmit
     static std::atomic<bool> g_useThread{ false };
 }
 
+extern long GESVR_ExecMoveCount();
+
 static bool g_menuPlaced = false;
 static float g_menuYaw = 0.0f;
 
@@ -2581,6 +2583,47 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
         }
     }
 
+    // --- Motion trace ------------------------------------------------------
+    // Every stage of hand -> weapon, sampled 4x/second. Read it against a known
+    // movement (arm straight out, then to the side, then up) and each stage can
+    // be checked on its own:
+    //   rawHand/rawHmd : OpenVR metres, room space. Should track your arm 1:1.
+    //   armM           : hand-to-head distance in METRES. ~0.6 with the arm out.
+    //   armU           : the same distance in Source units. Should be armM*VRScale.
+    //   handWorld      : where the game thinks your hand is.
+    //   fromPlayer     : handWorld - player origin. Should equal armU in size.
+    //   vmWrite        : what we ask the weapon's origin to become.
+    // If armM tracks but armU does not, VRScale is wrong. If handWorld does not
+    // move with your arm, the room->world conversion is wrong. If everything
+    // here is right and the gun still does not move, the write is being ignored.
+    if (m_MotionDebug)
+    {
+        static DWORD s_lastMotion = 0;
+        const DWORD nowMs = GetTickCount();
+        if (s_lastMotion == 0 || (nowMs - s_lastMotion) >= 250)
+        {
+            s_lastMotion = nowMs;
+            const Vector rawHand = m_RightControllerPose.TrackedDevicePos;
+            const Vector rawHmd = m_HmdPose.TrackedDevicePos;
+            const Vector armRaw = rawHand - rawHmd;
+            const float armM = VectorLength(armRaw);
+            const Vector fromPlayer = m_RightControllerPosAbs - setup.origin;
+            const Vector vmWrite = GetRecommendedViewmodelAbsPos();
+            Game::logMsg("MOTION rawHand=(%.2f,%.2f,%.2f)m rawHmd=(%.2f,%.2f,%.2f)m armM=%.2f armU=%.1f "
+                         "handWorld=(%.1f,%.1f,%.1f) player=(%.1f,%.1f,%.1f) fromPlayer=(%.1f,%.1f,%.1f)|%.1f| "
+                         "vmWrite=(%.1f,%.1f,%.1f) ang=(%.0f,%.0f,%.0f) scale=%.1f execMoves=%ld",
+                         rawHand.x, rawHand.y, rawHand.z,
+                         rawHmd.x, rawHmd.y, rawHmd.z,
+                         armM, armM * m_VRScale,
+                         m_RightControllerPosAbs.x, m_RightControllerPosAbs.y, m_RightControllerPosAbs.z,
+                         setup.origin.x, setup.origin.y, setup.origin.z,
+                         fromPlayer.x, fromPlayer.y, fromPlayer.z, VectorLength(fromPlayer),
+                         vmWrite.x, vmWrite.y, vmWrite.z,
+                         m_RightControllerAngAbs.x, m_RightControllerAngAbs.y, m_RightControllerAngAbs.z,
+                         m_VRScale, GESVR_ExecMoveCount());
+        }
+    }
+
     static int s_log = 0;
     if ((s_log++ % 90) == 0)
     {
@@ -3100,6 +3143,7 @@ void VR::ParseConfigFile()
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
     m_WeaponSetupHook = CfgBool(userConfig, "WeaponSetupHook", m_WeaponSetupHook);
     m_SetupProbe = CfgBool(userConfig, "SetupProbe", m_SetupProbe);
+    m_MotionDebug = CfgBool(userConfig, "MotionDebug", m_MotionDebug);
     m_VtableProbe = CfgBool(userConfig, "VtableProbe", m_VtableProbe);
     m_SbsWidthMeters = CfgFloat(userConfig, "SbsWidthMeters", m_SbsWidthMeters);
     m_SbsDistance = CfgFloat(userConfig, "SbsDistance", m_SbsDistance);
