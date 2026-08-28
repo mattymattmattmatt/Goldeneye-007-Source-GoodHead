@@ -170,6 +170,100 @@ static void CopyViewSetup(CViewSetup &dst, const CViewSetup &src)
 
 static bool g_inStereoPass = false;
 
+// ===========================================================================
+// IVModelRender vtable probe
+// ---------------------------------------------------------------------------
+// We have no working hook on the model draw path. vtable[0] ("DrawModel") is
+// never called (DRAWMODEL alive: 0 hits across 9720 stereo passes), because
+// modern Source draws through DrawModelExecute instead -- and the byte
+// signature for that is an L4D2 pattern the GE:S engine does not match.
+// DrawModelExecute is a virtual on VEngineModel016, which we DO resolve, so the
+// only unknown is its vtable index, and this project's IVModelRender stub only
+// declares two entries.
+//
+// So measure it. Each stub is __declspec(naked): it increments a counter and
+// jumps straight to the original, touching no registers and no stack, which
+// makes it safe on a slot of ANY signature. DrawModelExecute will stand out by
+// orders of magnitude -- hundreds of calls per frame against near-zero.
+// ===========================================================================
+namespace VtProbe
+{
+	static const int kSlots = 28;
+	static void        *g_orig[kSlots] = {};
+	static volatile long g_hits[kSlots] = {};
+	static bool          g_installed = false;
+
+#define GESVR_VTSTUB(N) \
+	static __declspec(naked) void Stub##N() \
+	{ \
+		__asm { lock inc dword ptr [g_hits + (N * 4)] } \
+		__asm { jmp dword ptr [g_orig + (N * 4)] } \
+	}
+
+	GESVR_VTSTUB(0)  GESVR_VTSTUB(1)  GESVR_VTSTUB(2)  GESVR_VTSTUB(3)
+	GESVR_VTSTUB(4)  GESVR_VTSTUB(5)  GESVR_VTSTUB(6)  GESVR_VTSTUB(7)
+	GESVR_VTSTUB(8)  GESVR_VTSTUB(9)  GESVR_VTSTUB(10) GESVR_VTSTUB(11)
+	GESVR_VTSTUB(12) GESVR_VTSTUB(13) GESVR_VTSTUB(14) GESVR_VTSTUB(15)
+	GESVR_VTSTUB(16) GESVR_VTSTUB(17) GESVR_VTSTUB(18) GESVR_VTSTUB(19)
+	GESVR_VTSTUB(20) GESVR_VTSTUB(21) GESVR_VTSTUB(22) GESVR_VTSTUB(23)
+	GESVR_VTSTUB(24) GESVR_VTSTUB(25) GESVR_VTSTUB(26) GESVR_VTSTUB(27)
+#undef GESVR_VTSTUB
+
+	static void *const kStubs[kSlots] = {
+		Stub0,  Stub1,  Stub2,  Stub3,  Stub4,  Stub5,  Stub6,  Stub7,
+		Stub8,  Stub9,  Stub10, Stub11, Stub12, Stub13, Stub14, Stub15,
+		Stub16, Stub17, Stub18, Stub19, Stub20, Stub21, Stub22, Stub23,
+		Stub24, Stub25, Stub26, Stub27
+	};
+
+	static void Install(void *iface)
+	{
+		if (g_installed || !iface)
+			return;
+		void **vt = *reinterpret_cast<void ***>(iface);
+		if (!vt)
+			return;
+		DWORD old = 0;
+		if (!VirtualProtect(vt, kSlots * sizeof(void *), PAGE_READWRITE, &old))
+		{
+			Game::logMsg("VtProbe: VirtualProtect failed (%lu)", GetLastError());
+			return;
+		}
+		for (int i = 0; i < kSlots; ++i)
+		{
+			g_orig[i] = vt[i];
+			vt[i] = kStubs[i];
+		}
+		VirtualProtect(vt, kSlots * sizeof(void *), old, &old);
+		g_installed = true;
+		Game::logMsg("VtProbe: counting %d IVModelRender vtable slots", kSlots);
+	}
+
+	static void Report()
+	{
+		if (!g_installed)
+			return;
+		static DWORD s_last = 0;
+		const DWORD now = GetTickCount();
+		if (s_last != 0 && (now - s_last) < 5000)
+			return;
+		s_last = now;
+		char line[512];
+		int off = _snprintf_s(line, sizeof(line), _TRUNCATE, "VTHITS");
+		for (int i = 0; i < kSlots; ++i)
+		{
+			if (g_hits[i] == 0)
+				continue;
+			off += _snprintf_s(line + off, sizeof(line) - off, _TRUNCATE, " [%d]=%ld", i, g_hits[i]);
+			if (off > 420)
+				break;
+		}
+		Game::logMsg("%s", line);
+	}
+}
+
+
+
 void __fastcall Hooks::dViewRenderRender(void *ecx, void *edx, void *rect)
 {
 	static int s_calls = 0;
@@ -201,6 +295,13 @@ extern void GESVR_NoteStereoPass();
 
 void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int nClearFlags, int whatToDraw)
 {
+	// Install the vtable probe lazily -- it lives below the hook-setup code,
+	// and by the time we render, m_ModelRender is definitely live.
+	if (m_Game && m_Game->m_ModelRender)
+	{
+		VtProbe::Install(m_Game->m_ModelRender);
+		VtProbe::Report();
+	}
 	static int s_calls = 0;
 	const int call = s_calls++;
 	if (call < 8)
