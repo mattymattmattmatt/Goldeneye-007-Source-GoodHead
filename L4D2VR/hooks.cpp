@@ -241,6 +241,75 @@ long GESVR_ExecMoveCount() { return g_execMoves; }
 // ===========================================================================
 static IModelInfo *m_GameStaticModelInfo = nullptr;
 
+
+// ===========================================================================
+// Viewmodel renderable patch
+// ---------------------------------------------------------------------------
+// Writing pInfo.origin does NOT move a viewmodel. Proven twice: the write fires
+// at DrawModelExecute (EXEC MOVE) and at DrawModelSetup (VM MOVED), with a real
+// model name and a 27-unit displacement, and the gun does not budge.
+// pInfo.origin feeds lighting and culling.
+//
+// What actually places an animated model is C_BaseAnimating::SetupBones, which
+// builds the root transform from the renderable's GetRenderOrigin() and
+// GetRenderAngles() -- IClientRenderable vtable slots 1 and 2. ModelRenderInfo_t
+// hands us pRenderable, so we can point those at our own values.
+//
+// The vtable belongs to the viewmodel class, so only viewmodels are affected,
+// and we only patch after confirming the model name is a v_ model.
+// ===========================================================================
+namespace VmRenderable
+{
+	static Vector g_origin = { 0, 0, 0 };
+	static QAngle g_angles = { 0, 0, 0 };
+	static bool   g_havePose = false;
+	static bool   g_patched = false;
+	static void  *g_origGetOrigin = nullptr;
+	static void  *g_origGetAngles = nullptr;
+
+	// const Vector& GetRenderOrigin() -- a const-ref return is a pointer return.
+	// __thiscall with no args and __fastcall(ecx, edx) agree on both registers
+	// and stack cleanup (ret 0), so this is a safe direct vtable replacement.
+	static const Vector *__fastcall GetRenderOrigin(void *ecx, void *edx)
+	{
+		if (g_havePose)
+			return &g_origin;
+		typedef const Vector *(__fastcall *fn)(void *, void *);
+		return reinterpret_cast<fn>(g_origGetOrigin)(ecx, edx);
+	}
+
+	static const QAngle *__fastcall GetRenderAngles(void *ecx, void *edx)
+	{
+		if (g_havePose)
+			return &g_angles;
+		typedef const QAngle *(__fastcall *fn)(void *, void *);
+		return reinterpret_cast<fn>(g_origGetAngles)(ecx, edx);
+	}
+
+	static void Patch(void *renderable)
+	{
+		if (g_patched || !renderable)
+			return;
+		void **vt = *reinterpret_cast<void ***>(renderable);
+		if (!vt || !vt[1] || !vt[2])
+			return;
+		DWORD old = 0;
+		if (!VirtualProtect(&vt[1], sizeof(void *) * 2, PAGE_READWRITE, &old))
+		{
+			Game::logMsg("VmRenderable: VirtualProtect failed (%lu)", GetLastError());
+			return;
+		}
+		g_origGetOrigin = vt[1];
+		g_origGetAngles = vt[2];
+		vt[1] = (void *)&GetRenderOrigin;
+		vt[2] = (void *)&GetRenderAngles;
+		VirtualProtect(&vt[1], sizeof(void *) * 2, old, &old);
+		g_patched = true;
+		Game::logMsg("VmRenderable: patched GetRenderOrigin=%p GetRenderAngles=%p",
+		             g_origGetOrigin, g_origGetAngles);
+	}
+}
+
 namespace SetupProbe
 {
 	static void *g_orig = nullptr;
@@ -989,6 +1058,14 @@ bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &
 			{
 				info.origin = m_VR->GetRecommendedViewmodelAbsPos();
 				info.angles = m_VR->GetRecommendedViewmodelAbsAngle();
+
+				// The origin write above does not actually move the model --
+				// point the renderable's transform accessors at our pose instead.
+				VmRenderable::g_origin = info.origin;
+				VmRenderable::g_angles = info.angles;
+				VmRenderable::g_havePose = true;
+				if (m_VR->m_ViewmodelRenderablePatch)
+					VmRenderable::Patch(info.pRenderable);
 
 				static int s_moved = 0;
 				if (s_moved < 12)

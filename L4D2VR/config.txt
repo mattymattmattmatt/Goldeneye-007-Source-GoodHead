@@ -54,6 +54,13 @@ ModelDrawSetupSlot=18
 # real signature.
 WeaponSetupHook=true
 
+# Redirects the viewmodel's GetRenderOrigin/GetRenderAngles to the controller
+# pose. Writing ModelRenderInfo_t::origin provably does NOT move the gun (the
+# write fires with a 27-unit displacement and nothing happens) because the root
+# transform is built by SetupBones from these two accessors instead.
+# Set false if the weapon renders wrong or the game becomes unstable.
+ViewmodelRenderablePatch=true
+
 # Safe naked capture of slot 18's actual arguments. Costs nothing; turn off once
 # the signature is known.
 SetupProbe=true

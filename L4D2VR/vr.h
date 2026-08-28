@@ -254,6 +254,10 @@ public:
 	// correct and that the Execute-time write fires but is ignored, so this
 	// is the only remaining place the weapon can be moved.
 	bool m_WeaponSetupHook = true;
+	// Redirect the viewmodel's GetRenderOrigin/GetRenderAngles to our pose.
+	// Writing ModelRenderInfo_t::origin provably does not move the gun; the
+	// root transform comes from these accessors via SetupBones.
+	bool m_ViewmodelRenderablePatch = true;
 	// Safe naked capture of slot 18's actual arguments.
 	bool m_SetupProbe = true;
 	// Motion trace: samples the ENTIRE hand->weapon chain 4x/second while in a
