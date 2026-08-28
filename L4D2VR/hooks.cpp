@@ -139,8 +139,29 @@ int Hooks::initSourceHooks()
 			hkDrawModel.createHook(vt[0], &dDrawModel);
 			Game::logMsg("Hooking IModelRender::DrawModel vtable[0]=%p", vt[0]);
 		}
+
+		// DrawModelExecute by VTABLE SLOT, not by byte signature.
+		//
+		// The signature in offsets.h is an L4D2 pattern GE:S's engine does not
+		// match ("Optional signature not found" in every boot log), so this hook
+		// has never existed -- which is why nothing could ever move the weapon.
+		// DrawModelExecute is a virtual on VEngineModel016, so the index is all
+		// we need, and this project's IVModelRender stub declares only two
+		// entries so the index was unknown.
+		//
+		// Measured with a naked per-slot counter over ~90s in game:
+		//     [17]=85877  [18]=128689  [19]=128291  [21]=49336
+		// 18 and 19 are the two hottest and differ by only 398 calls -- the
+		// signature of Source's DrawModelSetup / DrawModelExecute pair, where
+		// setup runs for every model and execute is skipped for the few that
+		// fail setup. So 18 = Setup, 19 = Execute.
+		const int slot = m_VR ? m_VR->m_ModelDrawExecuteSlot : 19;
+		if (vt && slot > 0 && slot < 64 && vt[slot])
+		{
+			hkDrawModelExecute.createHook(vt[slot], &dDrawModelExecute);
+			Game::logMsg("Hooking IVModelRender::DrawModelExecute vtable[%d]=%p", slot, vt[slot]);
+		}
 	}
-	CreateIfFound(hkDrawModelExecute, m_Game->m_Offsets->DrawModelExecute, &dDrawModelExecute);
 	CreateIfFound(hkPushRenderTargetAndViewport, m_Game->m_Offsets->PushRenderTargetAndViewport, &dPushRenderTargetAndViewport);
 	CreateIfFound(hkPopRenderTargetAndViewport, m_Game->m_Offsets->PopRenderTargetAndViewport, &dPopRenderTargetAndViewport);
 	CreateIfFound(hkVgui_Paint, m_Game->m_Offsets->VGui_Paint, &dVGui_Paint);
@@ -299,8 +320,11 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	// and by the time we render, m_ModelRender is definitely live.
 	if (m_Game && m_Game->m_ModelRender)
 	{
-		VtProbe::Install(m_Game->m_ModelRender);
-		VtProbe::Report();
+		if (m_VR && m_VR->m_VtableProbe)
+		{
+			VtProbe::Install(m_Game->m_ModelRender);
+			VtProbe::Report();
+		}
 	}
 	static int s_calls = 0;
 	const int call = s_calls++;
@@ -814,13 +838,20 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 	if (m_Game->m_SwitchedWeapons)
 		m_Game->m_CachedArmsModel = false;
 
-	// Is this hook even live in game? A session with 9720 stereo passes logged
-	// ZERO DrawModel calls, so before hunting for the viewmodel we need to know
-	// whether IModelRender vtable[0] is the draw path GE:S actually uses.
+	// Signature check for the newly-hooked vtable slot. If slot 19 is not
+	// DrawModelExecute, info is garbage and the model name will be junk or
+	// unreadable -- so validate before trusting it, and say so plainly.
 	{
 		static long s_drawCalls = 0;
-		if ((++s_drawCalls % 2000) == 1)
-			Game::logMsg("DRAWMODEL alive: call #%ld stereo=%d", s_drawCalls, (int)g_inStereoPass);
+		if ((++s_drawCalls % 4000) == 1)
+		{
+			const char *mn = (info.pModel && m_Game->m_ModelInfo)
+			                   ? m_Game->m_ModelInfo->GetModelName(info.pModel) : nullptr;
+			Game::logMsg("DRAWEXEC #%ld stereo=%d origin=(%.0f,%.0f,%.0f) model=%s",
+			             s_drawCalls, (int)g_inStereoPass,
+			             info.origin.x, info.origin.y, info.origin.z,
+			             (mn && mn[0]) ? mn : "<null>");
+		}
 	}
 
 	// Unfiltered name scan. The filtered version matched nothing at all, which

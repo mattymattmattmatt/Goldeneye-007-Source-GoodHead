@@ -3096,6 +3096,8 @@ void VR::ParseConfigFile()
     m_UseTextureBounds = CfgBool(userConfig, "UseEyeFrustumCrop", m_UseTextureBounds);
     m_UseVerticalCrop = CfgBool(userConfig, "UseVerticalCrop", m_UseVerticalCrop);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
+    m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
+    m_VtableProbe = CfgBool(userConfig, "VtableProbe", m_VtableProbe);
     m_SbsWidthMeters = CfgFloat(userConfig, "SbsWidthMeters", m_SbsWidthMeters);
     m_SbsDistance = CfgFloat(userConfig, "SbsDistance", m_SbsDistance);
     m_GunGripAngle = CfgFloat(userConfig, "GunGripAngle", m_GunGripAngle);

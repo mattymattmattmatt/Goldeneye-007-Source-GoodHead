@@ -32,6 +32,17 @@ UseVerticalCrop=true
 # Leave false for the first run of this build (so the menu-freeze fix is tested
 # on its own). Once the menu is stable, set true and the double-image should go.
 EyeRenderTargets=false
+
+# IVModelRender vtable index of DrawModelExecute -- the hook that lets the mod
+# move the weapon onto your hand. This was NEVER hooked before: offsets.h has an
+# L4D2 byte signature that GE:S's engine does not match, which is why the gun
+# could only ever follow your view angles. The index was measured in game with a
+# per-slot call counter: [18]=128689 and [19]=128291 were the two hottest and
+# differ by 398 -- Source's DrawModelSetup/DrawModelExecute pair.
+ModelDrawExecuteSlot=19
+
+# Re-run the slot counter (conflicts with the hook above; diagnosis only).
+VtableProbe=false
 # ^^^ TURN THIS ON FOR RESOLUTION ^^^
 # Confirmed from the 21:26 log: "stereo pass #0 eyeRT=0 size=1280x720". With
 # this off, each eye is captured from the 1280x720 window backbuffer and then

@@ -234,6 +234,14 @@ public:
 	// here as there. Also renders at HMD resolution rather than window size,
 	// which is where the softness comes from.
 	bool m_UseEyeRenderTargets = false;
+
+	// IVModelRender vtable index of DrawModelExecute. Measured, not guessed:
+	// a naked per-slot counter showed [18]=128689 and [19]=128291 as the two
+	// hottest slots, differing by 398 -- Source's DrawModelSetup/DrawModelExecute
+	// pair. Change only if a future engine build moves it.
+	int m_ModelDrawExecuteSlot = 19;
+	// Re-run the slot counter (conflicts with the real hook; for diagnosis only).
+	bool m_VtableProbe = false;
 	float m_SbsWidthMeters = 3.17f;
 	float m_SbsDistance = 1.0f;
 
