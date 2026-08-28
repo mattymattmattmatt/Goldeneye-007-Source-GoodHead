@@ -699,18 +699,25 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 	if (m_Game->m_SwitchedWeapons)
 		m_Game->m_CachedArmsModel = false;
 
-	// DIAGNOSTIC: the viewmodel has never appeared in this hook. Only
-	// models/weapons/shells/pistolcase.mdl showed up during the stereo pass,
-	// which is why the gun still renders at the face -- we never get a chance to
-	// move it. Log every model name briefly, stereo pass or not, to find where
-	// GE:S actually draws v_*.
+	// Is this hook even live in game? A session with 9720 stereo passes logged
+	// ZERO DrawModel calls, so before hunting for the viewmodel we need to know
+	// whether IModelRender vtable[0] is the draw path GE:S actually uses.
+	{
+		static long s_drawCalls = 0;
+		if ((++s_drawCalls % 2000) == 1)
+			Game::logMsg("DRAWMODEL alive: call #%ld stereo=%d", s_drawCalls, (int)g_inStereoPass);
+	}
+
+	// Unfiltered name scan. The filtered version matched nothing at all, which
+	// tells us the viewmodel is not named the way we assumed -- so log whatever
+	// IS coming through and read the answer off the list.
 	if (m_VR && m_VR->m_IsVREnabled && info.pModel && m_Game->m_ModelInfo)
 	{
 		static int s_names = 0;
-		if (s_names < 60)
+		if (s_names < 40)
 		{
 			const char *mn = m_Game->m_ModelInfo->GetModelName(info.pModel);
-			if (mn && (strstr(mn, "v_") || strstr(mn, "weapon") || strstr(mn, "arms") || strstr(mn, "hand")))
+			if (mn && mn[0])
 			{
 				Game::logMsg("MODELSCAN #%d stereo=%d %s", s_names, (int)g_inStereoPass, mn);
 				++s_names;
