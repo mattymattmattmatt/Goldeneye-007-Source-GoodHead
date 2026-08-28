@@ -41,6 +41,13 @@ EyeRenderTargets=false
 # differ by 398 -- Source's DrawModelSetup/DrawModelExecute pair.
 ModelDrawExecuteSlot=19
 
+# The other half of the pair. The weapon must be MOVED here, not at Execute:
+# the log showed the viewmodel arriving at Execute with its origin exactly equal
+# to the view origin, and changing it there does nothing because the bone
+# matrices are already built. Setup runs first and takes the info by non-const
+# reference, so a change lands in both the bones and the draw.
+ModelDrawSetupSlot=18
+
 # Re-run the slot counter (conflicts with the hook above; diagnosis only).
 VtableProbe=false
 # ^^^ TURN THIS ON FOR RESOLUTION ^^^

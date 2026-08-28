@@ -240,6 +240,9 @@ public:
 	// hottest slots, differing by 398 -- Source's DrawModelSetup/DrawModelExecute
 	// pair. Change only if a future engine build moves it.
 	int m_ModelDrawExecuteSlot = 19;
+	// The other half of the pair. Moving the weapon must happen HERE, before
+	// bone matrices are built -- see dDrawModelSetup.
+	int m_ModelDrawSetupSlot = 18;
 	// Re-run the slot counter (conflicts with the real hook; for diagnosis only).
 	bool m_VtableProbe = false;
 	float m_SbsWidthMeters = 3.17f;

@@ -82,6 +82,11 @@ typedef int(__thiscall *tGetPrimaryAttackActivity)(void *thisptr, void *meleeInf
 typedef Vector *(__thiscall *tEyePosition)(void *thisptr, Vector *eyePos);
 typedef int(__thiscall *tDrawModel)(void *thisptr, int flags, void *pRenderable, int instance, int entity_index, const void *model, const Vector &origin, const QAngle &angles, int skin, int body, int hitboxset, const matrix3x4_t *modelToWorld, const matrix3x4_t *pLightingOffset);
 typedef void(__thiscall *tDrawModelExecute)(void *thisptr, void *state, const ModelRenderInfo_t &info, void *pCustomBoneToWorld);
+// DrawModelSetup runs BEFORE bone matrices are built, and takes pInfo by
+// NON-const reference. Moving the viewmodel at DrawModelExecute time is too
+// late: the bones are already baked, which is why changing info.origin there
+// left the gun stuck at the eye.
+typedef bool(__thiscall *tDrawModelSetup)(void *thisptr, ModelRenderInfo_t &info, void *pState, void *ppBoneToWorldOut);
 typedef void(__thiscall *tPushRenderTargetAndViewport)(void *thisptr, ITexture *pTexture, ITexture *pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 typedef void(__thiscall *tPopRenderTargetAndViewport)(void *thisptr);
 typedef void(__thiscall *tVgui_Paint)(void *thisptr, int mode);
@@ -120,6 +125,7 @@ public:
 	static inline Hook<tEyePosition> hkEyePosition;
 	static inline Hook<tDrawModel> hkDrawModel;
 	static inline Hook<tDrawModelExecute> hkDrawModelExecute;
+	static inline Hook<tDrawModelSetup> hkDrawModelSetup;
 	static inline Hook<tPushRenderTargetAndViewport> hkPushRenderTargetAndViewport;
 	static inline Hook<tPopRenderTargetAndViewport> hkPopRenderTargetAndViewport;
 	static inline Hook<tVgui_Paint> hkVgui_Paint;
@@ -162,6 +168,7 @@ public:
 	static Vector *__fastcall dEyePosition(void *ecx, void *edx, Vector *eyePos);
 	static int __fastcall dDrawModel(void *ecx, void *edx, int flags, void *pRenderable, int instance, int entity_index, const void *model, const Vector &origin, const QAngle &angles, int skin, int body, int hitboxset, const matrix3x4_t *modelToWorld, const matrix3x4_t *pLightingOffset);
 	static void __fastcall dDrawModelExecute(void *ecx, void* edx, void *state, const ModelRenderInfo_t &info, void *pCustomBoneToWorld);
+	static bool __fastcall dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &info, void *pState, void *ppBoneToWorldOut);
 	static void __fastcall dPushRenderTargetAndViewport(void *ecx, void *edx, ITexture *pTexture, ITexture *pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 	static void __fastcall dPopRenderTargetAndViewport(void *ecx, void *edx);
 	static void __fastcall dVGui_Paint(void *ecx, void *edx, int mode);

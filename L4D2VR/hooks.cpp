@@ -60,6 +60,7 @@ Hooks::Hooks(Game *game)
 	EnableIfCreated(hkEyePosition);
 	EnableIfCreated(hkDrawModel);
 	EnableIfCreated(hkDrawModelExecute);
+	EnableIfCreated(hkDrawModelSetup);
 	EnableIfCreated(hkRenderView);
 	EnableIfCreated(hkViewRenderRender);
 	Game::logMsg("RenderView hook enabled=%d target=%p orig=%p",
@@ -160,6 +161,20 @@ int Hooks::initSourceHooks()
 		{
 			hkDrawModelExecute.createHook(vt[slot], &dDrawModelExecute);
 			Game::logMsg("Hooking IVModelRender::DrawModelExecute vtable[%d]=%p", slot, vt[slot]);
+		}
+
+		// DrawModelSetup -- the OTHER half of the hot pair ([18]=128689 vs
+		// [19]=128291). This is where the viewmodel must actually be moved:
+		// the 00:24 log shows the gun arriving at DrawModelExecute with
+		// origin EXACTLY equal to the view origin, and changing it there does
+		// nothing because the bone matrices are already built. Setup runs
+		// first and takes pInfo by non-const reference, so a change here is
+		// picked up by bone setup AND carried into Execute (same object).
+		const int setupSlot = m_VR ? m_VR->m_ModelDrawSetupSlot : 18;
+		if (vt && setupSlot > 0 && setupSlot < 64 && vt[setupSlot])
+		{
+			hkDrawModelSetup.createHook(vt[setupSlot], &dDrawModelSetup);
+			Game::logMsg("Hooking IVModelRender::DrawModelSetup vtable[%d]=%p", setupSlot, vt[setupSlot]);
 		}
 	}
 	CreateIfFound(hkPushRenderTargetAndViewport, m_Game->m_Offsets->PushRenderTargetAndViewport, &dPushRenderTargetAndViewport);
@@ -831,6 +846,47 @@ int __fastcall Hooks::dDrawModel(void *ecx, void *edx, int flags, void *pRendera
 		return 0;
 	return hkDrawModel.fOriginal(ecx, flags, pRenderable, instance, entity_index, model,
 	                             *useOrigin, *useAngles, skin, body, hitboxset, modelToWorld, pLightingOffset);
+}
+
+
+// Moves the first-person weapon onto the motion controller.
+//
+// This runs BEFORE bone matrices are computed, which is the whole point: the
+// 00:24 log showed the viewmodel reaching DrawModelExecute with origin exactly
+// equal to the view origin, and rewriting it there changed nothing because the
+// pose was already baked into the bones. Setup takes pInfo by non-const
+// reference and the caller passes the SAME object on to Execute, so a change
+// here lands in both the bone setup and the draw.
+bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &info, void *pState, void *ppBoneToWorldOut)
+{
+	if (m_VR && m_VR->m_IsVREnabled && m_VR->m_MotionControls
+	    && info.pModel && m_Game && m_Game->m_ModelInfo)
+	{
+		const char *mn = m_Game->m_ModelInfo->GetModelName(info.pModel);
+		if (mn && (strstr(mn, "/v_") || strstr(mn, "\v_") || strstr(mn, "/vm_")))
+		{
+			// Only the local first-person model: it is drawn at the view origin.
+			const Vector delta = info.origin - m_VR->m_SetupOrigin;
+			if (VectorLength(delta) < 80.0f)
+			{
+				info.origin = m_VR->GetRecommendedViewmodelAbsPos();
+				info.angles = m_VR->GetRecommendedViewmodelAbsAngle();
+
+				static int s_moved = 0;
+				if (s_moved < 12)
+				{
+					Game::logMsg("VM MOVED -> (%.0f,%.0f,%.0f) ang=(%.0f,%.0f,%.0f) %s",
+					             info.origin.x, info.origin.y, info.origin.z,
+					             info.angles.x, info.angles.y, info.angles.z, mn);
+					++s_moved;
+				}
+			}
+		}
+	}
+
+	if (hkDrawModelSetup.fOriginal)
+		return hkDrawModelSetup.fOriginal(ecx, info, pState, ppBoneToWorldOut);
+	return false;
 }
 
 void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRenderInfo_t &info, void *pCustomBoneToWorld)
