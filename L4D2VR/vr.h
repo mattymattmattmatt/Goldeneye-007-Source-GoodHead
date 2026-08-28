@@ -305,7 +305,13 @@ public:
 	// inversion, so once that is fixed any grip offset would tilt aim off by
 	// that many degrees. Raise it only if the gun MODEL sits at a wrong angle
 	// in your hand -- it now offsets pitch directly and no longer touches yaw.
-	float m_GunGripAngle = 0.0f;
+	// 45 degrees, confirmed by play: with 0, pointing straight ahead shot ~45
+	// degrees HIGH. A tracked controller's -Z device axis sits well above the
+	// line you intuitively aim along, which is what this corrects. Source
+	// pitch is positive-DOWN, so +45 brings the shot down onto your point of
+	// aim. This is now a direct pitch offset -- it no longer round-trips
+	// through VectorAngles, which is what inverted pitch previously.
+	float m_GunGripAngle = 45.0f;
 	// User tweak ADDED on top of the per-weapon table value, so setting
 	// ViewmodelOffset in config no longer erases the per-weapon pose.
 	Vector m_ViewmodelUserOffset = { 0.0f, 0.0f, 0.0f };

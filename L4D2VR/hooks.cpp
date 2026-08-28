@@ -843,15 +843,28 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 	// unreadable -- so validate before trusting it, and say so plainly.
 	{
 		static long s_drawCalls = 0;
-		if ((++s_drawCalls % 4000) == 1)
+		++s_drawCalls;
+		// Slot 19 is CONFIRMED DrawModelExecute (sensible model paths, 316k
+		// calls). Sampling 1-in-4000 can never catch the viewmodel though:
+		// there is one viewmodel draw against ~100 props every frame. Log any
+		// first-person model specifically instead.
+		const char *mn = (info.pModel && m_Game->m_ModelInfo)
+		                   ? m_Game->m_ModelInfo->GetModelName(info.pModel) : nullptr;
+		if (mn && (strstr(mn, "/v_") || strstr(mn, "_") || strstr(mn, "/vm_") ||
+		           strstr(mn, "arms") || strstr(mn, "hand")))
 		{
-			const char *mn = (info.pModel && m_Game->m_ModelInfo)
-			                   ? m_Game->m_ModelInfo->GetModelName(info.pModel) : nullptr;
-			Game::logMsg("DRAWEXEC #%ld stereo=%d origin=(%.0f,%.0f,%.0f) model=%s",
-			             s_drawCalls, (int)g_inStereoPass,
-			             info.origin.x, info.origin.y, info.origin.z,
-			             (mn && mn[0]) ? mn : "<null>");
+			static int s_vm = 0;
+			if (s_vm < 24)
+			{
+				Game::logMsg("VIEWMODEL seen stereo=%d origin=(%.0f,%.0f,%.0f) setup=(%.0f,%.0f,%.0f) %s",
+				             (int)g_inStereoPass,
+				             info.origin.x, info.origin.y, info.origin.z,
+				             m_VR->m_SetupOrigin.x, m_VR->m_SetupOrigin.y, m_VR->m_SetupOrigin.z, mn);
+				++s_vm;
+			}
 		}
+		if ((s_drawCalls % 20000) == 1)
+			Game::logMsg("DRAWEXEC #%ld alive stereo=%d", s_drawCalls, (int)g_inStereoPass);
 	}
 
 	// Unfiltered name scan. The filtered version matched nothing at all, which

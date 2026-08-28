@@ -110,7 +110,10 @@ MotionControls=true
 # axis; this rotates the weapon down into a natural grip. 45 is what L4D2VR and
 # HaloCEVR use. If the gun points too high, raise it; too low, lower it.
 # Set 0 to aim straight down the controller's own axis.
-GunGripAngle=0.0
+# Confirmed in play: at 0, pointing straight ahead shoots ~45 degrees HIGH.
+# Positive pitch is DOWN in Source, so 45 brings the shot onto your aim.
+# Nudge in 5-degree steps if it is slightly off; this hot-reloads.
+GunGripAngle=45.0
 
 # Per-weapon viewmodel poses from the table in weapons.cpp (pp7, dd44, klobb,
 # ar33, rcp90, sniper, shotguns, knife, grenades...). That table was completely
