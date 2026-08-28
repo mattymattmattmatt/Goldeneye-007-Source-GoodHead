@@ -634,9 +634,14 @@ int VR::SetActionManifest(const char *fileName)
     sprintf_s(relative, MAX_STR_LEN, "SteamVRActionManifest\\%s", fileName);
     MakeVRPath(path, MAX_STR_LEN, relative);
 
-    if (m_Input->SetActionManifestPath(path) != vr::VRInputError_None) 
+    // Report this either way. Every return value in the action chain --
+    // SetActionManifestPath, GetActionHandle, GetActionSetHandle,
+    // UpdateActionState, GetDigitalActionData -- was being discarded, so a
+    // broken action set is indistinguishable from "the user isn't pressing".
     {
-        Game::errorMsg("SetActionManifestPath failed");
+        const vr::EVRInputError merr = m_Input->SetActionManifestPath(path);
+        Game::logMsg("SetActionManifestPath('%s') -> %d%s", path, (int)merr,
+                     merr == vr::VRInputError_None ? " OK" : "  <-- FAILED, no action will ever fire");
     }
 
     m_Input->GetActionHandle("/actions/main/in/ActivateVR", &m_ActionActivateVR);
@@ -663,7 +668,13 @@ int VR::SetActionManifest(const char *fileName)
     m_Input->GetActionHandle("/actions/main/in/ShowHUD", &m_ShowHUD);
     m_Input->GetActionHandle("/actions/main/in/Pause", &m_Pause);
 
-    m_Input->GetActionSetHandle("/actions/main", &m_ActionSet);
+    {
+        const vr::EVRInputError serr = m_Input->GetActionSetHandle("/actions/main", &m_ActionSet);
+        Game::logMsg("GetActionSetHandle('/actions/main') -> %d handle=%llu%s",
+                     (int)serr, (unsigned long long)m_ActionSet,
+                     (serr == vr::VRInputError_None && m_ActionSet != vr::k_ulInvalidActionSetHandle)
+                       ? " OK" : "  <-- INVALID, UpdateActionState will fail");
+    }
     m_ActiveActionSet = {};
     m_ActiveActionSet.ulActionSet = m_ActionSet;
 
@@ -734,7 +745,18 @@ void VR::Update()
     {
         const auto tStart = vrclock::now();
         if (m_Input)
-            m_Input->UpdateActionState(&m_ActiveActionSet, sizeof(vr::VRActiveActionSet_t), 1);
+        {
+            const vr::EVRInputError uerr = m_Input->UpdateActionState(
+                &m_ActiveActionSet, sizeof(vr::VRActiveActionSet_t), 1);
+            static vr::EVRInputError s_lastUerr = (vr::EVRInputError)-1;
+            if (uerr != s_lastUerr)
+            {
+                s_lastUerr = uerr;
+                Game::logMsg("UpdateActionState -> %d%s", (int)uerr,
+                             uerr == vr::VRInputError_None ? " OK"
+                               : "  <-- FAILING, all digital actions read false");
+            }
+        }
         GetPoses();
 
         int cx = -1, cy = -1;
@@ -1413,6 +1435,34 @@ void VR::GetViewParameters()
     m_EyeToHeadTransformPosRight.z = eyeToHeadRight.m[2][3];
 }
 
+// Reads the trigger straight off the device with the legacy controller API,
+// bypassing the action manifest entirely. The action system has produced
+// sel=0/atk=0 on every sample while the laser tracked fine (moves climbing), so
+// this exists both as a diagnostic and as a working fallback if the action set
+// turns out to be the broken link.
+bool VR::LegacyTriggerDown(float *outValue)
+{
+    if (outValue) *outValue = 0.0f;
+    if (!m_System)
+        return false;
+    bool any = false;
+    for (vr::TrackedDeviceIndex_t i = 1; i < vr::k_unMaxTrackedDeviceCount; ++i)
+    {
+        if (m_System->GetTrackedDeviceClass(i) != vr::TrackedDeviceClass_Controller)
+            continue;
+        vr::VRControllerState_t st{};
+        if (!m_System->GetControllerState(i, &st, sizeof(st)))
+            continue;
+        const float axis = st.rAxis[1].x;   // trigger axis on every OpenVR controller
+        const bool pressed = (st.ulButtonPressed &
+            vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)) != 0;
+        if (outValue && axis > *outValue) *outValue = axis;
+        if (pressed || axis > 0.6f)
+            any = true;
+    }
+    return any;
+}
+
 bool VR::PressedDigitalAction(vr::VRActionHandle_t &actionHandle, bool checkIfActionChanged)
 {
     if (!m_Input)
@@ -1663,12 +1713,22 @@ void VR::ProcessMenuInput()
             s_lastHealth = hnow;
             const bool actionsOk = (m_MenuSelect != vr::k_ulInvalidActionHandle)
                                 && (m_ActionPrimaryAttack != vr::k_ulInvalidActionHandle);
+            // bActive is the field that matters: false means the action is not
+            // bound to anything on the current controller, which is
+            // indistinguishable from "not pressed" everywhere else in this code.
             bool selDown = false, atkDown = false;
+            int selErr = -1, atkErr = -1, selActive = -1, atkActive = -1;
             if (m_Input)
             {
-                selDown = PressedDigitalAction(m_MenuSelect);
-                atkDown = PressedDigitalAction(m_ActionPrimaryAttack);
+                vr::InputDigitalActionData_t d{};
+                selErr = (int)m_Input->GetDigitalActionData(m_MenuSelect, &d, sizeof(d), vr::k_ulInvalidInputValueHandle);
+                selDown = d.bState; selActive = (int)d.bActive;
+                vr::InputDigitalActionData_t d2{};
+                atkErr = (int)m_Input->GetDigitalActionData(m_ActionPrimaryAttack, &d2, sizeof(d2), vr::k_ulInvalidInputValueHandle);
+                atkDown = d2.bState; atkActive = (int)d2.bActive;
             }
+            float legacyAxis = 0.0f;
+            const bool legacyDown = LegacyTriggerDown(&legacyAxis);
             // Is the controller even tracking? ComputeMenuPointer (tip) has
             // never once hit, and it is the aim path that does NOT depend on
             // SteamVR routing laser events to us.
@@ -1683,9 +1743,11 @@ void VR::ProcessMenuInput()
             if (m_Overlay)
                 m_Overlay->GetOverlayFlag(m_MainMenuHandle,
                     vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, &interactive);
-            Game::logMsg("MenuHealth live=%d moves=%d down=%d up=%d actionsOk=%d sel=%d atk=%d interactive=%d vis=%d tip=%d ctrlPose=%d aim=(%d,%d)",
+            Game::logMsg("MenuHealth live=%d moves=%d down=%d up=%d | sel=%d(act=%d err=%d) atk=%d(act=%d err=%d) LEGACY=%d(%.2f) | interactive=%d vis=%d tip=%d ctrlPose=%d aim=(%d,%d)",
                          (int)inputLive, s_moveTotal, s_downTotal, s_upTotal,
-                         (int)actionsOk, (int)selDown, (int)atkDown,
+                         (int)selDown, selActive, selErr,
+                         (int)atkDown, atkActive, atkErr,
+                         (int)legacyDown, legacyAxis,
                          (int)interactive,
                          (int)(m_Overlay && m_Overlay->IsOverlayVisible(m_MainMenuHandle)),
                          (int)tipHit, (int)ctrlPoseValid,
@@ -1707,8 +1769,18 @@ void VR::ProcessMenuInput()
 
     static DWORD s_lastClick = 0;
     if (armTrace) Game::logMsg("  f=%d -> polling OpenVR actions", s_menuFrames);
+    // Legacy trigger is included as a click source. The action-system path has
+    // never once produced a press in any log, while the overlay laser tracks
+    // fine -- so until the action set is proven working, the direct device read
+    // is what actually lets you click a menu item.
+    static bool s_legacyPrev = false;
+    const bool legacyNow = LegacyTriggerDown();
+    const bool legacyEdge = legacyNow && !s_legacyPrev;
+    s_legacyPrev = legacyNow;
+
     const bool pressed = PressedDigitalAction(m_MenuSelect, true)
-        || PressedDigitalAction(m_ActionPrimaryAttack, true);
+        || PressedDigitalAction(m_ActionPrimaryAttack, true)
+        || legacyEdge;
     if (armTrace) Game::logMsg("  f=%d <- actions polled", s_menuFrames);
     const DWORD now = GetTickCount();
     if (pressed && (now - s_lastClick) > 350)

@@ -387,7 +387,9 @@ public:
 	Vector GetViewOriginLeft();
 	Vector GetViewOriginRight();
 	void ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &setup);
-	bool PressedDigitalAction(vr::VRActionHandle_t &actionHandle, bool checkIfActionChanged = false);
+	// Reads the trigger off the device directly, bypassing the action manifest.
+	bool LegacyTriggerDown(float *outValue = nullptr);
+		bool PressedDigitalAction(vr::VRActionHandle_t &actionHandle, bool checkIfActionChanged = false);
 	bool GetAnalogActionData(vr::VRActionHandle_t &actionHandle, vr::InputAnalogActionData_t &analogDataOut);
 	void ResetPosition();
 	void GetPoseData(vr::TrackedDevicePose_t &poseRaw, TrackedDevicePoseData &poseOut);
