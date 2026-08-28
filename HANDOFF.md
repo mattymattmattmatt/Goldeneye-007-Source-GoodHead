@@ -36,6 +36,84 @@ that path is not reaching your HMD — change it to `DisplayMode=sbs`, save, and
 
 ---
 
+## ROOT CAUSE FOUND (18:48): unsynchronised VkQueue access
+
+The stack sampler caught it, and resolving the offsets against a `/MAP` build
+turned it into names:
+
+```
+EIP  ntdll (wait)
+[01] D3D9DeviceEx::Flush              +0x15D
+[02] DxvkSubmissionQueue::synchronizeSubmission
+[03] DxvkDevice::waitForSubmission     <- blocked here, forever
+[04] D3D9SwapChainEx::PresentImage
+[11] D3D9SwapChainEx::Present
+[13] D3D9DeviceEx::Present
+```
+
+Identical across two samples four seconds apart: a hard block, not a spin.
+
+**The main thread was stuck inside Present waiting on a Vulkan submission fence
+that never signalled, because OpenVR was submitting to the same VkQueue at the
+same time from another thread.**
+
+DXVK submits from its own submission thread. `vr::VRCompositor()->Submit()` does
+a `vkQueueSubmit` on `device->queues().graphics.queueHandle` -- the same queue.
+Vulkan requires queue access to be externally synchronised; concurrent submits
+are undefined behaviour, and in practice a fence is lost and
+`waitForSubmission` never returns.
+
+DxvkDevice says so in as many words:
+
+> "Since Vulkan queues are only meant to be accessed from one thread at a time,
+> **external libraries need to lock the queue before submitting command buffers.**"
+
+`lockSubmission()` / `unlockSubmission()` exist for exactly this, and **this
+project has never called them**. That predates this entire session and explains
+the whole history: intermittent freezes, "terrible performance", crashes that
+moved around whenever timing changed, and why it got dramatically worse once
+Submit moved to a dedicated thread submitting continuously at 90Hz (more
+concurrent submits = near-certain collision) -- and why clicking triggers it,
+since a click causes extra GPU work and raises the collision odds.
+
+### The fix
+
+`IDirect3DVR9` gains `LockSubmission()` / `UnlockSubmission()`, forwarding to
+`DxvkDevice::lockSubmission/unlockSubmission`. Both submit paths in
+`VR::SubmitThreadBody` are bracketed:
+
+```cpp
+if (g_D3DVR9) g_D3DVR9->LockSubmission();
+el = comp->Submit(vr::Eye_Left,  ...);
+er = comp->Submit(vr::Eye_Right, ...);
+if (g_D3DVR9) g_D3DVR9->UnlockSubmission();
+```
+
+**Any future code that hands a texture to OpenVR must be bracketed the same
+way.** This is the single most important invariant in the project.
+
+### Technique worth reusing
+
+When a hang resists theory, resolve it rather than guessing:
+
+1. Watchdog thread samples the stalled thread (`SuspendThread` +
+   `GetThreadContext`), scans its stack for executable addresses, resolves
+   modules with `VirtualQuery` + `GetModuleFileName`.
+2. Rebuild **with sources unchanged** and `<GenerateMapFile>true</GenerateMapFile>`
+   -- adding /MAP does not alter codegen, so RVAs still match the tested binary.
+3. Parse the MAP, binary-search the symbol below each RVA.
+
+That turned five hours of wrong theories into an exact answer in one run.
+
+### Known DXVK bug found in passing (not yet hit)
+
+`HookWindowProc` takes `g_windowProcMapMutex` and then calls `ResetWindowProc`,
+which takes the same non-recursive `std::mutex` -- an unconditional self-deadlock
+if it ever runs. It only fires on a fullscreen transition, and GE:S runs
+`-window`, so it has not been hit. Worth fixing before anyone tries fullscreen.
+
+---
+
 ## THE FREEZE IS THE CLICK (13:52) -- and a process reset
 
 ### The bisect settled it
