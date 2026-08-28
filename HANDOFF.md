@@ -36,6 +36,88 @@ that path is not reaching your HMD — change it to `DisplayMode=sbs`, save, and
 
 ---
 
+## THE FREEZE IS THE CLICK (13:52) -- and a process reset
+
+### The bisect settled it
+
+Cursor publishing was armed at frame 90 and OpenVR action polling at frame 300,
+each bracketed in the log. Both survived:
+
+```
+f=90  -> publishing aim -> aim published
+f=300 -> polling OpenVR actions -> actions polled
+... ran to frame 451 ...
+Overlay MouseButtonDown at (196,378)
+MenuInput click posted at (196,378) fg=1
+WATCHDOG no Present for 3438 ms
+```
+
+**Posting a mouse click to the game window freezes the main thread.** Not the
+warmup, not the cursor, not the action polling. `stereoPasses=0` also rules out
+the stereo path. This matches the very first symptom of the session ("crashes
+just after the menu pops up") and Grok's note that a click posted from
+AfterPresent froze the main thread -- the click has been the bug the whole time,
+and every fix so far has been fixing something else.
+
+### Stop guessing -- sample the stalled thread
+
+Three theories about this freeze have now been wrong (USER32-on-Present,
+compositor-on-Present, input arming). Both of the first two were real bugs and
+are correctly fixed, but neither was this one. Rather than a fourth guess, the
+watchdog now suspends the Present thread on a stall and reports where it
+actually is:
+
+```
+STACK: EIP  vguimatsurface.dll+0x1A2C4
+STACK:  [00] vgui2.dll+0x8F31
+STACK:  [01] engine.dll+0x12ABC
+```
+
+No new link dependencies -- addresses are resolved with `VirtualQuery` +
+`GetModuleFileName`, and the stack is scanned for executable return addresses
+because these are old MSVC builds with frame-pointer omission. Sampled twice,
+seconds apart: identical EIP = hard block, moving EIP = spin.
+
+Module names alone are decisive:
+
+| Module in EIP | Meaning |
+|---|---|
+| `openvr_api` | compositor / overlay call |
+| `user32` / `win32u` | window or cursor |
+| `vgui2` / `vguimatsurface` | VGUI processing the click |
+| `engine` / `client` / `GameUI` | the game's own click handling |
+| `d3d9` | our code (this DLL) |
+| `ntdll` waiting | a lock -- look at the return addresses for who took it |
+
+### Version control (this was the real process failure)
+
+The project had **no source control**, which is why the 2026-08-27 ~23:55 build
+that reached in-game is unrecoverable, and why five hours of changes could not be
+bisected. Fixed:
+
+- `git init` + full snapshot in `G:\Like Grok Work\GESVR` (`.gitignore` excludes
+  Release/, *.obj, *.pdb).
+- `dxvk/` has its own repo; its VR changes are committed there too.
+
+**From now on: commit before each experiment.** Every change in this session was
+otherwise destructive and unrecoverable.
+
+### Honest assessment of the session
+
+Real bugs found and fixed, all verified by measurement:
+uninitialised texture holders; the unused per-eye frustum crop; `WaitGetPoses`
+twice per frame; four blocking GPU syncs per frame; ~900 IPC calls/sec of Theater
+suppression; a varargs bug reading garbage off the stack; six file opens per
+frame of logging on the render thread; USER32 on the Present callstack;
+compositor Submit on the Present callstack; the compositor starved during map
+load; `UpdateTracking()` and `SubmitVRTextures()` dead with no callers.
+
+But: too many unverified changes were stacked between playtests, on a codebase
+that cannot be tested without a headset. That is the process error to avoid
+repeating -- one behavioural change per run, and commit first.
+
+---
+
 ## THE ARCHITECTURAL RULE (13:33) -- read this before changing anything
 
 Two independent deadlocks have now been proven by the watchdog, and they are the
