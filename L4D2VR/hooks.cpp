@@ -258,6 +258,73 @@ static IModelInfo *m_GameStaticModelInfo = nullptr;
 // The vtable belongs to the viewmodel class, so only viewmodels are affected,
 // and we only patch after confirming the model name is a v_ model.
 // ===========================================================================
+// Read-only check of the safety claim I got wrong last round: is the
+// viewmodel's renderable vtable actually distinct from a world prop's? If they
+// share one, patching slots 1/2 would corrupt every entity in the map and that
+// approach is dead. If the viewmodel's is unique, the patch is as narrow as I
+// claimed. Answer this before touching anything.
+namespace VmVtable
+{
+	static void *g_vmVt = nullptr;
+	static void *g_propVt = nullptr;
+	static char  g_vmModel[96] = {};
+	static char  g_propModel[96] = {};
+	static bool  g_reported = false;
+
+	static void Describe(void *addr, char *out, size_t outSz)
+	{
+		MEMORY_BASIC_INFORMATION mbi{};
+		if (!addr || !VirtualQuery(addr, &mbi, sizeof(mbi)) || !mbi.AllocationBase)
+		{
+			_snprintf_s(out, outSz, _TRUNCATE, "%p <unmapped>", addr);
+			return;
+		}
+		char path[MAX_PATH] = {};
+		GetModuleFileNameA((HMODULE)mbi.AllocationBase, path, MAX_PATH);
+		const char *base = strrchr(path, '\\');
+		base = base ? base + 1 : path;
+		_snprintf_s(out, outSz, _TRUNCATE, "%s+0x%X", base,
+		            (unsigned)((DWORD_PTR)addr - (DWORD_PTR)mbi.AllocationBase));
+	}
+
+	static void Note(void *renderable, const char *model, bool isViewmodel)
+	{
+		if (g_reported || !renderable)
+			return;
+		void **vt = *reinterpret_cast<void ***>(renderable);
+		if (!vt)
+			return;
+		if (isViewmodel && !g_vmVt)
+		{
+			g_vmVt = vt;
+			_snprintf_s(g_vmModel, sizeof(g_vmModel), _TRUNCATE, "%s", model ? model : "?");
+		}
+		else if (!isViewmodel && !g_propVt)
+		{
+			g_propVt = vt;
+			_snprintf_s(g_propModel, sizeof(g_propModel), _TRUNCATE, "%s", model ? model : "?");
+		}
+
+		if (g_vmVt && g_propVt)
+		{
+			g_reported = true;
+			char s0[160], s1[160], s2[160], s3[160];
+			void **vmvt = reinterpret_cast<void **>(g_vmVt);
+			Describe(vmvt[0], s0, sizeof(s0));
+			Describe(vmvt[1], s1, sizeof(s1));
+			Describe(vmvt[2], s2, sizeof(s2));
+			Describe(vmvt[3], s3, sizeof(s3));
+			Game::logMsg("VMVT viewmodel vt=%p (%s)", g_vmVt, g_vmModel);
+			Game::logMsg("VMVT prop      vt=%p (%s)", g_propVt, g_propModel);
+			Game::logMsg("VMVT SHARED=%s  -> patching is %s",
+			             (g_vmVt == g_propVt) ? "YES" : "no",
+			             (g_vmVt == g_propVt) ? "UNSAFE, would hit every entity"
+			                                  : "narrow, viewmodel class only");
+			Game::logMsg("VMVT slots: [0]=%s [1]=%s [2]=%s [3]=%s", s0, s1, s2, s3);
+		}
+	}
+}
+
 namespace VmRenderable
 {
 	static Vector g_origin = { 0, 0, 0 };
@@ -1050,7 +1117,9 @@ bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &
 	    && info.pModel && m_Game && m_Game->m_ModelInfo)
 	{
 		const char *mn = m_Game->m_ModelInfo->GetModelName(info.pModel);
-		if (mn && (strstr(mn, "/v_") || strstr(mn, "\v_") || strstr(mn, "/vm_")))
+		const bool isVm = mn && (strstr(mn, "/v_") || strstr(mn, "\\v_") || strstr(mn, "/vm_"));
+		VmVtable::Note(info.pRenderable, mn, isVm);
+		if (isVm)
 		{
 			// Only the local first-person model: it is drawn at the view origin.
 			const Vector delta = info.origin - m_VR->m_SetupOrigin;
