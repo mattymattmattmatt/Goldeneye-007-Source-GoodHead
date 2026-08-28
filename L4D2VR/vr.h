@@ -247,7 +247,13 @@ public:
 	// crashed on the first stereo pass -- the argument list does not match, so
 	// calling through corrupts the stack instantly. Measure the real signature
 	// (SetupProbe) before turning this on again.
-	bool m_WeaponSetupHook = false;
+	// ON. The crash was arity, not the slot: slot 18's first argument was
+	// confirmed to be a ModelRenderInfo_t (resolved to a real model path),
+	// and the probe showed FOUR arguments where the typedef declared three.
+	// The motion trace separately proved the whole hand->world chain is
+	// correct and that the Execute-time write fires but is ignored, so this
+	// is the only remaining place the weapon can be moved.
+	bool m_WeaponSetupHook = true;
 	// Safe naked capture of slot 18's actual arguments.
 	bool m_SetupProbe = true;
 	// Motion trace: samples the ENTIRE hand->weapon chain 4x/second while in a

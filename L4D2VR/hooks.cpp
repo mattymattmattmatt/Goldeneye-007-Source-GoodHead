@@ -975,7 +975,7 @@ int __fastcall Hooks::dDrawModel(void *ecx, void *edx, int flags, void *pRendera
 // pose was already baked into the bones. Setup takes pInfo by non-const
 // reference and the caller passes the SAME object on to Execute, so a change
 // here lands in both the bone setup and the draw.
-bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &info, void *pState, void *ppBoneToWorldOut)
+bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &info, void *pState, void *pCustomBoneToWorld, void *ppBoneToWorldOut)
 {
 	if (m_VR && m_VR->m_IsVREnabled && m_VR->m_MotionControls
 	    && info.pModel && m_Game && m_Game->m_ModelInfo)
@@ -1003,7 +1003,7 @@ bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &
 	}
 
 	if (hkDrawModelSetup.fOriginal)
-		return hkDrawModelSetup.fOriginal(ecx, info, pState, ppBoneToWorldOut);
+		return hkDrawModelSetup.fOriginal(ecx, info, pState, pCustomBoneToWorld, ppBoneToWorldOut);
 	return false;
 }
 

@@ -52,7 +52,7 @@ ModelDrawSetupSlot=18
 # first stereo pass. The argument list does not match, so calling through
 # corrupts the stack immediately. Do not enable until SetupProbe confirms the
 # real signature.
-WeaponSetupHook=false
+WeaponSetupHook=true
 
 # Safe naked capture of slot 18's actual arguments. Costs nothing; turn off once
 # the signature is known.

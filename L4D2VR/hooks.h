@@ -86,7 +86,13 @@ typedef void(__thiscall *tDrawModelExecute)(void *thisptr, void *state, const Mo
 // NON-const reference. Moving the viewmodel at DrawModelExecute time is too
 // late: the bones are already baked, which is why changing info.origin there
 // left the gun stuck at the eye.
-typedef bool(__thiscall *tDrawModelSetup)(void *thisptr, ModelRenderInfo_t &info, void *pState, void *ppBoneToWorldOut);
+// FOUR arguments, measured. The probe captured a1=ModelRenderInfo_t*,
+// a2=stack ptr, a3=NULL, a4=stack ptr -- i.e.
+//   DrawModelSetup(ModelRenderInfo_t&, DrawModelState_t*,
+//                  matrix3x4_t *pCustomBoneToWorld, matrix3x4_t **ppBoneToWorldOut)
+// Declaring only three crashed instantly: __thiscall is callee-cleanup, so
+// the original popped 16 bytes while our typedef expected 12.
+typedef bool(__thiscall *tDrawModelSetup)(void *thisptr, ModelRenderInfo_t &info, void *pState, void *pCustomBoneToWorld, void *ppBoneToWorldOut);
 typedef void(__thiscall *tPushRenderTargetAndViewport)(void *thisptr, ITexture *pTexture, ITexture *pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 typedef void(__thiscall *tPopRenderTargetAndViewport)(void *thisptr);
 typedef void(__thiscall *tVgui_Paint)(void *thisptr, int mode);
@@ -168,7 +174,7 @@ public:
 	static Vector *__fastcall dEyePosition(void *ecx, void *edx, Vector *eyePos);
 	static int __fastcall dDrawModel(void *ecx, void *edx, int flags, void *pRenderable, int instance, int entity_index, const void *model, const Vector &origin, const QAngle &angles, int skin, int body, int hitboxset, const matrix3x4_t *modelToWorld, const matrix3x4_t *pLightingOffset);
 	static void __fastcall dDrawModelExecute(void *ecx, void* edx, void *state, const ModelRenderInfo_t &info, void *pCustomBoneToWorld);
-	static bool __fastcall dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &info, void *pState, void *ppBoneToWorldOut);
+	static bool __fastcall dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &info, void *pState, void *pCustomBoneToWorld, void *ppBoneToWorldOut);
 	static void __fastcall dPushRenderTargetAndViewport(void *ecx, void *edx, ITexture *pTexture, ITexture *pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH);
 	static void __fastcall dPopRenderTargetAndViewport(void *ecx, void *edx);
 	static void __fastcall dVGui_Paint(void *ecx, void *edx, int mode);
