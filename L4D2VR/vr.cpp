@@ -2427,6 +2427,10 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
             m_HaveSeatPose = true;
         }
         m_HmdPosLocalInWorld = (m_HmdPose.TrackedDevicePos - m_SeatHmdPos) * m_VRScale;
+        // Same room-frame problem as the hands: leaning/stepping must be
+        // rotated into the game's turned frame or roomscale drifts off-axis.
+        if (fabsf(m_RotationOffset) > 0.01f)
+            m_HmdPosLocalInWorld = VectorRotate(m_HmdPosLocalInWorld, Vector(0.0f, 0.0f, 1.0f), m_RotationOffset);
     }
     else
     {
@@ -2477,6 +2481,13 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
                                Vector &fwd, Vector &right, Vector &up)
     {
         Vector delta = (pose.TrackedDevicePos - m_HmdPose.TrackedDevicePos) * m_VRScale;
+        // The hand offset comes out of OpenVR in the PHYSICAL room frame. The
+        // game world is rotated by m_RotationOffset every time you stick- or
+        // snap-turn, and this delta was being added without that rotation -- so
+        // the instant you turned, the gun stopped corresponding to your hand.
+        // This is a core 1:1 correctness fix, not a tuning tweak.
+        if (fabsf(m_RotationOffset) > 0.01f)
+            delta = VectorRotate(delta, Vector(0.0f, 0.0f, 1.0f), m_RotationOffset);
         outPos = eyeOrigin + delta;
         outAng = pose.TrackedDeviceAng;
         outAng.y += m_RotationOffset;

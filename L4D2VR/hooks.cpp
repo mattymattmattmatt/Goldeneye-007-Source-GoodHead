@@ -347,12 +347,26 @@ void __fastcall Hooks::dCalcViewModelView(void *ecx, void *edx, void *owner, con
 	Vector vecNewOrigin = eyePosition;
 	QAngle vecNewAngles = eyeAngles;
 
-	static int s_n = 0;
-	if (s_n < 20)
+	// The value we treat as a world eye position has magnitude ~1.0, which no
+	// world position in a Source map can have. Either this is not
+	// CalcViewModelView, or the argument list is shifted. Log BOTH candidate
+	// arguments and the CALL RATE: per-frame says we are on the right
+	// function with a wrong signature; ~0.3/s says we are hooked elsewhere.
 	{
-		Game::logMsg("CalcViewModelView #%d stereo=%d eye=(%.1f,%.1f,%.1f)",
-		             s_n, (int)g_inStereoPass, eyePosition.x, eyePosition.y, eyePosition.z);
+		static long s_n = 0;
+		static DWORD s_first = 0;
+		const DWORD now = GetTickCount();
+		if (s_first == 0) s_first = now;
 		++s_n;
+		if (s_n <= 6 || (s_n % 600) == 0)
+		{
+			const float secs = (now - s_first) / 1000.0f;
+			Game::logMsg("VMHOOK #%ld rate=%.1f/s stereo=%d owner=%p argA=(%.2f,%.2f,%.2f) |A|=%.2f argB=(%.2f,%.2f,%.2f)",
+			             s_n, secs > 0.1f ? (s_n / secs) : 0.0f, (int)g_inStereoPass, owner,
+			             eyePosition.x, eyePosition.y, eyePosition.z,
+			             VectorLength(eyePosition),
+			             eyeAngles.x, eyeAngles.y, eyeAngles.z);
+		}
 	}
 
 	// Called from CalcView, before RenderView, so g_inStereoPass is usually 0.
