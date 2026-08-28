@@ -36,6 +36,63 @@ that path is not reaching your HMD — change it to `DisplayMode=sbs`, save, and
 
 ---
 
+## INPUT + LOCOMOTION REVIEW (20:16)
+
+### Console command flood (fixed)
+
+`ProcessInput` had **32** `ClientCmd_Unrestricted` call sites, several of them
+unconditional if/else pairs that fire every single frame regardless of input:
+`+attack2`/`-attack2`, `+duck`/`-duck`, `-showscores`. At 200+ fps that is well
+over a thousand console commands per second pushed into Source's **fixed-size**
+command buffer. Best case it is pure waste every frame; worst case the buffer
+overflows and commands are dropped, which would read as unresponsive or stuck
+input in game.
+
+`VR::MoveCmd()` now sends a given `+cmd`/`-cmd` only when its state actually
+changes. All 32 sites converted. Non-toggle commands (`invnext`, `impulse 100`)
+pass straight through -- they were already edge-triggered via
+`PressedDigitalAction(..., true)`.
+
+### Controller bindings (diagnostic added)
+
+The action manifest ships default bindings for exactly three controller types:
+
+```
+oculus_touch, knuckles, vive_cosmos_controller
+```
+
+Nothing for `vive_controller` (Vive wands), `holographic_controller` (WMR) or
+`hpmotioncontroller` (Reverb G2). If the headset in use is one of those, **every
+digital action silently reads false forever** -- no error, no warning, nothing in
+the log. That is entirely consistent with `sel=0 atk=0` on every `MenuHealth`
+sample so far, though those samples are also consistent with simply not pressing
+at that instant.
+
+Startup now logs it explicitly:
+
+```
+Controller 1 type='oculus_touch' model='Oculus Quest' bindingShipped=1
+Controller 2 type='vive_controller' model='...' bindingShipped=0  <-- NO DEFAULT BINDING, actions will never fire
+```
+
+If `bindingShipped=0` appears, the fix is to add a `bindings_<type>.json` and a
+`default_bindings` entry -- copying `bindings_oculus_touch.json` and changing the
+controller type is usually enough to get started.
+
+### Locomotion design notes (not changed)
+
+- Movement is **digital, not analog**: `analogActionData.y > 0.5` means full
+  speed. The thumbstick behaves as a D-pad. The code carries a TODO to move this
+  into `CreateMove` instead, which is the correct fix and would also give analog
+  speed -- but the `CreateMove` hook is deliberately left unhooked (wrong return
+  convention, see landmines).
+- Movement is relative to view angles, and `ApplyHeadAndIpd` snaps view angles to
+  the gun while firing. With purely digital `+forward`, **firing while moving will
+  visibly veer your direction of travel.** Worth watching for once it is playable;
+  the fix is to keep locomotion on HMD yaw and let only the shot use gun angle.
+
+---
+
 ## WEAPON + HUD REVIEW (19:54)
 
 Static review while the headset was unavailable. Headline: **large parts of the
