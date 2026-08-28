@@ -243,6 +243,13 @@ public:
 	// The other half of the pair. Moving the weapon must happen HERE, before
 	// bone matrices are built -- see dDrawModelSetup.
 	int m_ModelDrawSetupSlot = 18;
+	// OFF by default. Hooking slot 18 with a guessed DrawModelSetup signature
+	// crashed on the first stereo pass -- the argument list does not match, so
+	// calling through corrupts the stack instantly. Measure the real signature
+	// (SetupProbe) before turning this on again.
+	bool m_WeaponSetupHook = false;
+	// Safe naked capture of slot 18's actual arguments.
+	bool m_SetupProbe = true;
 	// Re-run the slot counter (conflicts with the real hook; for diagnosis only).
 	bool m_VtableProbe = false;
 	float m_SbsWidthMeters = 3.17f;

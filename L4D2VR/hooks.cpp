@@ -171,7 +171,7 @@ int Hooks::initSourceHooks()
 		// first and takes pInfo by non-const reference, so a change here is
 		// picked up by bone setup AND carried into Execute (same object).
 		const int setupSlot = m_VR ? m_VR->m_ModelDrawSetupSlot : 18;
-		if (vt && setupSlot > 0 && setupSlot < 64 && vt[setupSlot])
+		if (m_VR && m_VR->m_WeaponSetupHook && vt && setupSlot > 0 && setupSlot < 64 && vt[setupSlot])
 		{
 			hkDrawModelSetup.createHook(vt[setupSlot], &dDrawModelSetup);
 			Game::logMsg("Hooking IVModelRender::DrawModelSetup vtable[%d]=%p", setupSlot, vt[setupSlot]);
@@ -222,6 +222,105 @@ static bool g_inStereoPass = false;
 // makes it safe on a slot of ANY signature. DrawModelExecute will stand out by
 // orders of magnitude -- hundreds of calls per frame against near-zero.
 // ===========================================================================
+
+// ===========================================================================
+// Slot 18 argument probe
+// ---------------------------------------------------------------------------
+// Hooking slot 18 with a guessed DrawModelSetup signature crashed on the first
+// stereo pass: the argument list does not match, so calling the original with
+// our stack frame corrupts it instantly. Rather than guess again, capture what
+// slot 18 is ACTUALLY called with.
+//
+// The stub is __declspec(naked): it copies ecx and the first four stack
+// arguments into globals and jumps straight through. It changes no register and
+// no stack slot, so it is safe regardless of the real signature or arity.
+// ===========================================================================
+static IModelInfo *m_GameStaticModelInfo = nullptr;
+
+namespace SetupProbe
+{
+	static void *g_orig = nullptr;
+	static volatile DWORD g_ecx = 0;
+	static volatile DWORD g_a1 = 0, g_a2 = 0, g_a3 = 0, g_a4 = 0;
+	static volatile long  g_hits = 0;
+	static bool g_installed = false;
+
+	static __declspec(naked) void Stub()
+	{
+		__asm {
+			push eax
+			mov  eax, ecx
+			mov  g_ecx, eax
+			mov  eax, [esp + 8]      // arg1 (esp+0=saved eax, +4=retaddr)
+			mov  g_a1, eax
+			mov  eax, [esp + 12]     // arg2
+			mov  g_a2, eax
+			mov  eax, [esp + 16]     // arg3
+			mov  g_a3, eax
+			mov  eax, [esp + 20]     // arg4
+			mov  g_a4, eax
+			lock inc g_hits
+			pop  eax
+			jmp  dword ptr [g_orig]
+		}
+	}
+
+	static void Install(void *iface, int slot)
+	{
+		if (g_installed || !iface || slot <= 0 || slot >= 64)
+			return;
+		void **vt = *reinterpret_cast<void ***>(iface);
+		if (!vt || !vt[slot])
+			return;
+		DWORD old = 0;
+		if (!VirtualProtect(&vt[slot], sizeof(void *), PAGE_READWRITE, &old))
+			return;
+		g_orig = vt[slot];
+		vt[slot] = (void *)&Stub;
+		VirtualProtect(&vt[slot], sizeof(void *), old, &old);
+		g_installed = true;
+		Game::logMsg("SetupProbe: capturing args of vtable[%d]=%p", slot, g_orig);
+	}
+
+	// Interpret a captured argument as a possible ModelRenderInfo_t* and see
+	// whether a model name falls out. Whichever argument yields a real path is
+	// the one carrying the render info, and its position gives us the arity.
+	static const char *TryModelName(DWORD candidate)
+	{
+		if (candidate < 0x10000)
+			return nullptr;
+		__try
+		{
+			const ModelRenderInfo_t *mi = reinterpret_cast<const ModelRenderInfo_t *>(candidate);
+			if (!mi->pModel)
+				return nullptr;
+			const char *n = m_GameStaticModelInfo ? m_GameStaticModelInfo->GetModelName(mi->pModel) : nullptr;
+			if (n && n[0] == 'm')
+				return n;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER) {}
+		return nullptr;
+	}
+
+	static void Report()
+	{
+		if (!g_installed)
+			return;
+		static DWORD s_last = 0;
+		const DWORD now = GetTickCount();
+		if (s_last != 0 && (now - s_last) < 4000)
+			return;
+		s_last = now;
+		Game::logMsg("SETUPARGS hits=%ld ecx=%08X a1=%08X a2=%08X a3=%08X a4=%08X",
+		             g_hits, g_ecx, g_a1, g_a2, g_a3, g_a4);
+		const char *n1 = TryModelName(g_a1);
+		const char *n2 = TryModelName(g_a2);
+		const char *n3 = TryModelName(g_a3);
+		Game::logMsg("SETUPARGS asModelInfo: a1=%s a2=%s a3=%s",
+		             n1 ? n1 : "-", n2 ? n2 : "-", n3 ? n3 : "-");
+	}
+}
+
 namespace VtProbe
 {
 	static const int kSlots = 28;
@@ -335,6 +434,12 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	// and by the time we render, m_ModelRender is definitely live.
 	if (m_Game && m_Game->m_ModelRender)
 	{
+		m_GameStaticModelInfo = m_Game->m_ModelInfo;
+		if (m_VR && m_VR->m_SetupProbe)
+		{
+			SetupProbe::Install(m_Game->m_ModelRender, m_VR->m_ModelDrawSetupSlot);
+			SetupProbe::Report();
+		}
 		if (m_VR && m_VR->m_VtableProbe)
 		{
 			VtProbe::Install(m_Game->m_ModelRender);

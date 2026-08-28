@@ -48,6 +48,16 @@ ModelDrawExecuteSlot=19
 # reference, so a change lands in both the bones and the draw.
 ModelDrawSetupSlot=18
 
+# OFF - hooking slot 18 with a guessed DrawModelSetup signature crashed on the
+# first stereo pass. The argument list does not match, so calling through
+# corrupts the stack immediately. Do not enable until SetupProbe confirms the
+# real signature.
+WeaponSetupHook=false
+
+# Safe naked capture of slot 18's actual arguments. Costs nothing; turn off once
+# the signature is known.
+SetupProbe=true
+
 # Re-run the slot counter (conflicts with the hook above; diagnosis only).
 VtableProbe=false
 # ^^^ TURN THIS ON FOR RESOLUTION ^^^
