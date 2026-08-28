@@ -343,6 +343,8 @@ namespace VRSubmit
     static std::atomic<int>  g_frames{ 0 };
     static std::atomic<int>  g_lastErr{ 0 };
     static std::mutex        g_poseLock;
+    // OFF by default -- see the note in AfterPresent. Kept only for A/B.
+    static std::atomic<bool> g_useThread{ false };
 }
 
 static bool g_menuPlaced = false;
@@ -538,8 +540,16 @@ VR::VR(Game *game)
     std::thread(GESVR_WatchdogThread).detach();
     MenuInput::Start();
 
-    VRSubmit::g_run.store(true);
-    std::thread(&VR::SubmitThreadBody, this).detach();
+    // Background submit thread is OFF by default -- it froze the game by
+    // frame 8 (18:48 build). See the long note in AfterPresent.
+    if (VRSubmit::g_useThread.load())
+    {
+        VRSubmit::g_run.store(true);
+        std::thread(&VR::SubmitThreadBody, this).detach();
+        Game::logMsg("VRSubmit background thread ENABLED (experimental)");
+    }
+    else
+        Game::logMsg("Compositor submit: render thread, once per frame (default)");
 
     // Deliberately NOT calling ShowMirrorWindow(). It opens a SteamVR desktop
     // window that competes for Win32 foreground focus, and Source throttles its
@@ -783,10 +793,66 @@ void VR::AfterPresent()
     // frame with no captured eyes submitted NOTHING and never called
     // WaitGetPoses -- which is exactly the state during a multi-second map load,
     // leaving the compositor with no frames at all for the whole load.
-    // NO compositor calls here. Submission happens on the VRSubmit thread; this
-    // only publishes what is ready. See the note above namespace VRSubmit.
     PrepareBlackTexture();
     VRSubmit::g_eyesReady.store(haveEyes && inMap);
+
+    // Submit ONCE PER FRAME, on this (the render) thread, bracketed by DXVK's
+    // submission lock. This is what the l4d2vr reference does and it is the
+    // shape DXVK's lockSubmission() is designed for.
+    //
+    // Do NOT move this to a background thread looping at display rate: that was
+    // tried (18:48 build) and froze the game by frame 8. lockSubmission() calls
+    // m_submissionQueue.synchronize() -- a full wait for pending submissions --
+    // before taking the queue, so holding it from a continuous 90Hz loop starves
+    // DXVK's own submission thread and Present blocks in waitForSubmission
+    // forever. Once per frame the wait is one frame's work and it is fine.
+    if (!VRSubmit::g_useThread.load() && vr::VRCompositor())
+    {
+        auto *comp = vr::VRCompositor();
+        werr = comp->WaitGetPoses(m_Poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+        GetPoses();
+
+        const vr::VRTextureBounds_t full = { 0.0f, 0.0f, 1.0f, 1.0f };
+        vr::EVRCompositorError el = vr::VRCompositorError_None;
+        vr::EVRCompositorError er = vr::VRCompositorError_None;
+        bool submitted = false;
+
+        if (g_D3DVR9)
+            g_D3DVR9->LockSubmission();
+
+        if (haveEyes && inMap)
+        {
+            const bool useBounds = m_UseTextureBounds && m_HaveTextureBounds;
+            vr::VRTextureBounds_t lb = useBounds ? m_TextureBounds[0] : full;
+            vr::VRTextureBounds_t rb = useBounds ? m_TextureBounds[1] : full;
+            if (!m_UseVerticalCrop)
+            {
+                lb.vMin = rb.vMin = 0.0f;
+                lb.vMax = rb.vMax = 1.0f;
+            }
+            el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture,  &lb, vr::Submit_Default);
+            er = comp->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &rb, vr::Submit_Default);
+            submitted = true;
+        }
+        else if (VRSubmit::g_blackReady.load() && TextureReady(m_SubmitBlack))
+        {
+            el = comp->Submit(vr::Eye_Left,  &m_SubmitBlack.m_VRTexture, &full, vr::Submit_Default);
+            er = comp->Submit(vr::Eye_Right, &m_SubmitBlack.m_VRTexture, &full, vr::Submit_Default);
+            submitted = true;
+        }
+
+        if (g_D3DVR9)
+            g_D3DVR9->UnlockSubmission();
+
+        if (submitted)
+        {
+            const int n = VRSubmit::g_frames.fetch_add(1) + 1;
+            if (n <= 5 || (n % 900) == 1 || el != vr::VRCompositorError_None || er != vr::VRCompositorError_None)
+                Game::logMsg("Submit(render thread) #%d waitErr=%d Lerr=%d Rerr=%d eyes=%d",
+                             n, (int)werr, (int)el, (int)er, (int)(haveEyes && inMap));
+        }
+    }
+
     m_PosesThisFrame = false;
 
     const float ms = MsSince(t0, vrclock::now());
