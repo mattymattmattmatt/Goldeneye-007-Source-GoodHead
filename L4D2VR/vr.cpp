@@ -259,27 +259,49 @@ namespace MenuInput
             // nothing visually -- but it is disruptive to work around. Done here
             // because this thread owns all USER32; doing it from the render
             // thread is what deadlocked the game earlier in this project.
-            static bool s_fitted = false;
-            if (!s_fitted && g_fitWindow.load())
+            // Retry for the first ~30s rather than once: the worker starts while
+            // the window is still being created, so a single early check saw a
+            // half-built window, decided nothing was wrong and never looked
+            // again. Also RESIZES, not just moves -- moving a window wider than
+            // the monitor cannot make it fit.
+            static DWORD s_firstSeen = 0;
+            static DWORD s_lastFit = 0;
+            static int   s_fitLogs = 0;
+            if (g_fitWindow.load())
             {
-                RECT wr{};
-                if (GetWindowRect(hwnd, &wr))
+                const DWORD tnow = GetTickCount();
+                if (s_firstSeen == 0) s_firstSeen = tnow;
+                if ((tnow - s_firstSeen) < 30000 && (s_lastFit == 0 || (tnow - s_lastFit) >= 2000))
                 {
-                    const int w = wr.right - wr.left;
-                    const int h = wr.bottom - wr.top;
-                    const int sw = GetSystemMetrics(SM_CXSCREEN);
-                    const int sh = GetSystemMetrics(SM_CYSCREEN);
-                    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
-                    if (w > 0 && sw > 0 && (w > sw + 8 || vw > sw + 8))
+                    s_lastFit = tnow;
+                    RECT wr{};
+                    if (GetWindowRect(hwnd, &wr))
                     {
-                        const int nx = (sw > w) ? (sw - w) / 2 : 0;
-                        const int ny = (sh > h) ? (sh - h) / 2 : 0;
-                        SetWindowPos(hwnd, nullptr, nx, ny, 0, 0,
-                                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
-                        Game::logMsg("Window fitted to primary monitor: was %dx%d at (%ld,%ld), moved to (%d,%d), primary %dx%d virtual %d",
-                                     w, h, wr.left, wr.top, nx, ny, sw, sh, vw);
+                        const int w  = wr.right - wr.left;
+                        const int h  = wr.bottom - wr.top;
+                        const int sw = GetSystemMetrics(SM_CXSCREEN);
+                        const int sh = GetSystemMetrics(SM_CYSCREEN);
+                        const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                        const bool tooWide = (w > sw + 8);
+                        const bool offPrimary = (wr.left < -8) || (wr.right > sw + 8);
+                        if (s_fitLogs < 8)
+                        {
+                            Game::logMsg("WINDOWFIT rect=(%ld,%ld)-(%ld,%ld) %dx%d primary=%dx%d virtual=%d tooWide=%d offPrimary=%d",
+                                         wr.left, wr.top, wr.right, wr.bottom, w, h, sw, sh, vw,
+                                         (int)tooWide, (int)offPrimary);
+                            ++s_fitLogs;
+                        }
+                        if (tooWide || offPrimary)
+                        {
+                            const int nw = tooWide ? sw : w;
+                            const int nh = (h > sh) ? sh : h;
+                            const int nx = (sw > nw) ? (sw - nw) / 2 : 0;
+                            const int ny = (sh > nh) ? (sh - nh) / 2 : 0;
+                            SetWindowPos(hwnd, nullptr, nx, ny, nw, nh,
+                                         SWP_NOZORDER | SWP_NOACTIVATE);
+                            Game::logMsg("WINDOWFIT moved/resized to (%d,%d) %dx%d", nx, ny, nw, nh);
+                        }
                     }
-                    s_fitted = true;
                 }
             }
 
