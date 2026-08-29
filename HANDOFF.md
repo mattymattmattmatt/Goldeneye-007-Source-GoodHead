@@ -93,6 +93,73 @@ controller type is usually enough to get started.
 
 ---
 
+## FULL REVIEW (2026-08-29)
+
+### Healthy
+
+- **Threading discipline holds.** Audited mechanically: no USER32 call reachable
+  from any render-thread function, and no compositor Submit/WaitGetPoses outside
+  `SubmitThreadBody` / the sanctioned once-per-frame site in `AfterPresent`.
+  These two rules cost several sessions to learn; they are currently respected.
+- **Config coverage is complete.** Every key in config.txt is parsed, including
+  the Wrist/Hurt bounds via `CfgBounds` and `HurtHealthThreshold` via `CfgInt`.
+  No setting silently does nothing.
+- **Injection, stereo, aim, menus, resolution** all working and confirmed in play.
+
+### Fixed in this pass
+
+- **Duplicate `MenuDriveCursor` key** in config.txt. The parser is a map, so the
+  second occurrence silently won - editing the first would have appeared to do
+  nothing.
+
+### Known deviations, deliberately left alone
+
+- **`IsInMap()` / `IsGameUIVisible()` are called 4x per frame from D3D code**
+  (3 in `VR::Update`, 1 in `AfterPresent`). HANDOFF lists "do not call
+  IsInGame() from D3D code" as a landmine, so this is a standing deviation - but
+  it has run for the entire project without a single attributable failure.
+  Caching it is a real improvement and a real regression risk; not worth taking
+  while the goal is playability.
+- **~18 OpenVR IPC calls per frame while a menu is up** (8 in `ShowMenuPanel`,
+  10 in `ProcessMenuInput`). Hoisting the sticky ones was tried and **broke
+  clicking entirely** - overlay input routing is not as sticky as the cosmetic
+  properties. Menu-only, so the cost is bounded. Do not "optimize" this again
+  without a headset test proving clicks still land.
+- **No shutdown path.** Overlays, textures and threads are never released; the
+  process exit handles it. Acceptable for an injected mod, worth knowing.
+
+### Dead code
+
+Seven `VR::` functions have no call sites:
+`CheckOverlayIntersectionForController`, `GetViewAngle`, `GetViewOriginLeft`,
+`GetViewOriginRight`, `PresentStereo`, `SubmitVRTextures`, `VMatrixToHmdMatrix`.
+`SubmitVRTextures` is already a warning stub. The rest are inherited from
+l4d2vr, where `GetViewOrigin*` feed a render path this project does not use.
+Harmless, but do not assume anything in them is running.
+
+### The one real architectural limit
+
+Weapon motion tracking is **not achievable through the render path**, and this
+is now proven rather than suspected:
+
+- `ModelRenderInfo_t::origin` does not place a viewmodel. The write fires at
+  both `DrawModelExecute` (EXEC MOVE) and `DrawModelSetup` (VM MOVED), with the
+  correct model name and a 27-unit displacement, and the gun does not move.
+- Patching the renderable's `GetRenderOrigin`/`GetRenderAngles` DOES move it,
+  but only the drawn mesh: the entity stays at the head, so the model skews
+  between two transforms and muzzle effects spawn from the old position.
+
+The weapon is placed by the **entity's** transform, which in Source is set by
+`C_BaseViewModel::CalcViewModelView` calling SetLocalOrigin/SetLocalAngles. This
+project has never had that function: the hook at 0x115360 was measured firing at
+1.6/s with a unit-vector argument and a stack address for `this` - it is some
+other function entirely. Finding the real one is the prerequisite for motion
+weapons, and nothing else will substitute.
+
+Head-aim mode sidesteps all of it, which is why it is the current default.
+
+---
+
 ## RESOLUTION RULE: CANNOT EXCEED THE DESKTOP (2026-08-29, corrected)
 
 In windowed mode Source cannot create a window larger than the desktop. It dies

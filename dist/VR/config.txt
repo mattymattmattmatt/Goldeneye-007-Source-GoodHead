@@ -169,7 +169,7 @@ MenuInputVguiInternal=false
 
 # Kill switch for ALL OS-level cursor driving (SetCursorPos, SetForegroundWindow,
 # PostMessage). Set false to rule the whole menu-input subsystem out at once.
-MenuDriveCursor=true
+# (duplicate of the setting above, removed) MenuDriveCursor=true
 
 # SetCursorPos moves the real Windows cursor. It is a system-wide call that can
 # transact with the desktop input thread; PostMessage cannot block. If the game
