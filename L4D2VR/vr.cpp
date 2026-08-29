@@ -1028,7 +1028,7 @@ void VR::PlaceMenuPanelInFront()
     if (hmd.bPoseIsValid)
     {
         const vr::HmdMatrix34_t &m = hmd.mDeviceToAbsoluteTracking;
-        const float dist = 2.0f;
+        const float dist = m_MenuDistanceMeters;
         float fx = -m.m[0][2], fy = -m.m[1][2], fz = -m.m[2][2];
         xf.m[0][0] = m.m[0][0]; xf.m[0][1] = m.m[0][1]; xf.m[0][2] = m.m[0][2];
         xf.m[1][0] = m.m[1][0]; xf.m[1][1] = m.m[1][1]; xf.m[1][2] = m.m[1][2];
@@ -1039,7 +1039,7 @@ void VR::PlaceMenuPanelInFront()
     }
 
     m_Overlay->SetOverlayTransformAbsolute(m_MainMenuHandle, vr::VRCompositor()->GetTrackingSpace(), &xf);
-    m_Overlay->SetOverlayWidthInMeters(m_MainMenuHandle, 1.8f);
+    m_Overlay->SetOverlayWidthInMeters(m_MainMenuHandle, m_MenuWidthMeters);
 }
 
 bool VR::ComputeMenuPointer(int &x, int &y)
@@ -1718,6 +1718,25 @@ void VR::ProcessMenuInput()
     }
     if (s_menuFrames == 90)
         Game::logMsg("Menu input armed after warmup (%d frames)", s_menuFrames);
+
+    // The in-game character/level menu is reported as unclickable even though
+    // it should take this exact path (GameUI visible => menu mode). Log the
+    // in-map case specifically: if this never prints, ProcessMenuInput is not
+    // running there and the cause is upstream in IsMenuMode(); if it prints
+    // with moves=0, SteamVR is not routing the laser to our overlay in map.
+    {
+        static bool s_loggedInMap = false;
+        const bool inMapNow = m_Game && m_Game->IsInMap();
+        if (inMapNow && !s_loggedInMap)
+        {
+            s_loggedInMap = true;
+            Game::logMsg("IN-MAP MENU active: overlayMoves=%d tip=%d live=%d vis=%d",
+                         overlayMoves, (int)tipHit, (int)cursorLive,
+                         (int)(m_Overlay && m_Overlay->IsOverlayVisible(m_MainMenuHandle)));
+        }
+        if (!inMapNow)
+            s_loggedInMap = false;
+    }
 
     // Menu input health, once a second. The 12:03 run produced NEITHER an
     // overlay MouseButtonDown NOR a digital-action press when the trigger was
@@ -3172,6 +3191,8 @@ void VR::ParseConfigFile()
     }
     m_UseTextureBounds = CfgBool(userConfig, "UseEyeFrustumCrop", m_UseTextureBounds);
     m_UseVerticalCrop = CfgBool(userConfig, "UseVerticalCrop", m_UseVerticalCrop);
+    m_MenuWidthMeters = CfgFloat(userConfig, "MenuWidthMeters", m_MenuWidthMeters);
+    m_MenuDistanceMeters = CfgFloat(userConfig, "MenuDistanceMeters", m_MenuDistanceMeters);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
     m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);

@@ -18,6 +18,12 @@ UseEyeFrustumCrop=true
 # high or too low, set this false and only the horizontal crop applies.
 UseVerticalCrop=true
 
+# Floating menu panel size and distance, in metres. The in-game character/level
+# menu was too big and too close; raise the distance and/or drop the width until
+# it sits comfortably. Both hot-reload.
+MenuWidthMeters=1.8
+MenuDistanceMeters=2.0
+
 # Render each eye into its own engine render target instead of drawing both into
 # the backbuffer one on top of the other.
 #
@@ -31,7 +37,7 @@ UseVerticalCrop=true
 #
 # Leave false for the first run of this build (so the menu-freeze fix is tested
 # on its own). Once the menu is stable, set true and the double-image should go.
-EyeRenderTargets=false
+EyeRenderTargets=true
 
 # IVModelRender vtable index of DrawModelExecute -- the hook that lets the mod
 # move the weapon onto your hand. This was NEVER hooked before: offsets.h has an

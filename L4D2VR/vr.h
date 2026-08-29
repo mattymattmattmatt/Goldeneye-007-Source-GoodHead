@@ -234,7 +234,11 @@ public:
 	// IMatRenderContext vtable is byte-identical to ours, so the call is as safe
 	// here as there. Also renders at HMD resolution rather than window size,
 	// which is where the softness comes from.
-	bool m_UseEyeRenderTargets = false;
+	// ON by default now. Every log has shown eyeRT=0 size=1280x720: each eye
+	// captured from the window backbuffer and upscaled to a ~2496x2688 panel,
+	// which is the jaggies. Renders each eye into its own RT at true HMD
+	// resolution instead. Costs performance; EyeRenderTargets=false reverts.
+	bool m_UseEyeRenderTargets = true;
 
 	// IVModelRender vtable index of DrawModelExecute. Measured, not guessed:
 	// a naked per-slot counter showed [18]=128689 and [19]=128291 as the two
@@ -289,6 +293,10 @@ public:
 	bool m_MotionDebug = true;
 	// Re-run the slot counter (conflicts with the real hook; for diagnosis only).
 	bool m_VtableProbe = false;
+	// Floating menu panel. The in-game character/level menu was reported as
+	// too big and too close; these make it placeable without a rebuild.
+	float m_MenuWidthMeters = 1.8f;
+	float m_MenuDistanceMeters = 2.0f;
 	float m_SbsWidthMeters = 3.17f;
 	float m_SbsDistance = 1.0f;
 
