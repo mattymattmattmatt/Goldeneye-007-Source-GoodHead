@@ -315,6 +315,11 @@ public:
 	// Win32 messages to the "Valve001" window are vtable-independent and cannot
 	// corrupt the stack. The IInputInternal path depends on a VGUI vtable whose
 	// 2007 layout is unconfirmed, so it stays off unless explicitly enabled.
+	// 0 = aim menus with the HEAD (default), 1 = with the controller.
+	// SteamVR barely routes laser events to our overlay while in a map, and
+	// the controller-ray fallback has never intersected, so head aiming is
+	// the only pointer that works in both places.
+	int m_MenuAimSource = 0;
 	bool m_MenuUseWin32 = true;
 	// Kill switch for all OS-level cursor driving (SetCursorPos /
 	// SetForegroundWindow / PostMessage). Turn off to rule the whole

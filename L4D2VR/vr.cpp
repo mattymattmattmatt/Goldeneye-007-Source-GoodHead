@@ -1108,12 +1108,36 @@ bool VR::ComputeMenuPointer(int &x, int &y)
     if (windowWidth < 1) windowWidth = 1280;
     if (windowHeight < 1) windowHeight = 720;
 
-    vr::TrackedDeviceIndex_t rightIdx = m_System->GetTrackedDeviceIndexForControllerRole(
-        m_LeftHanded ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
-    if (rightIdx >= vr::k_unMaxTrackedDeviceCount || !m_Poses[rightIdx].bPoseIsValid)
-        return false;
+    // Aim the menu with the HEAD, not the controller.
+    //
+    // In a map SteamVR sends almost no laser events to our overlay (measured:
+    // overlayMoves=2 in map versus hundreds at the main menu) because we are
+    // submitting stereo frames, so it routes the controller to the game's action
+    // set instead of to overlay interaction. The controller-ray fallback here
+    // has also never once intersected (tip=0 in every log ever captured). Both
+    // pointer paths were dead in map, which is why the character select screen
+    // could only be used with the desktop mouse.
+    //
+    // Pointing with the head works in both places, needs no laser routing, and
+    // suits head-aim mode: look at the item, pull the trigger.
+    const bool useHead = (m_MenuAimSource != 1);
+    vr::HmdMatrix34_t ray{};
+    if (useHead)
+    {
+        if (!m_Poses[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid)
+            return false;
+        ray = m_Poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
+    }
+    else
+    {
+        vr::TrackedDeviceIndex_t rightIdx = m_System->GetTrackedDeviceIndexForControllerRole(
+            m_LeftHanded ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
+        if (rightIdx >= vr::k_unMaxTrackedDeviceCount || !m_Poses[rightIdx].bPoseIsValid)
+            return false;
+        ray = m_Poses[rightIdx].mDeviceToAbsoluteTracking;
+    }
 
-    const vr::HmdMatrix34_t &ctrl = m_Poses[rightIdx].mDeviceToAbsoluteTracking;
+    const vr::HmdMatrix34_t &ctrl = ray;
     vr::VROverlayIntersectionParams_t ip{};
     ip.eOrigin = vr::VRCompositor()->GetTrackingSpace();
     ip.vSource.v[0] = ctrl.m[0][3];
@@ -3264,6 +3288,11 @@ void VR::ParseConfigFile()
     m_PerWeaponOffsets = CfgBool(userConfig, "PerWeaponOffsets", m_PerWeaponOffsets);
     m_TwoHandedGrip = CfgBool(userConfig, "TwoHandedGrip", m_TwoHandedGrip);
     m_TwoHandedNeedsGrip = CfgBool(userConfig, "TwoHandedNeedsGrip", m_TwoHandedNeedsGrip);
+    {
+        auto it = userConfig.find("MenuAimSource");
+        if (it != userConfig.end())
+            m_MenuAimSource = (it->second.find("controller") != std::string::npos) ? 1 : 0;
+    }
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);

@@ -184,15 +184,15 @@ Ensure-Junction (Join-Path $sdk "gesource") $ges
 #   1280x1280 (1:1)  DOES NOT BOOT
 # Taller-than-16:9 would suit the headset eye better, but the engine refuses
 # it, so 16:9 with more lines is the only lever. Do not 'improve' the aspect.
-$gesWidth  = 1920
-$gesHeight = 1080
+$gesWidth  = 2560
+$gesHeight = 1440
 
 # engine_no_focus_sleep: Source sleeps 20ms EVERY frame while its window is not
 #   the active app. In VR the window frequently is not, so this caps the whole
 #   engine and stalls title -> menu. 0 removes the sleep.
 # snd_mute_losefocus: Source mutes audio on focus loss -- the "buggy sound".
 # Resolution is deliberately untouched: 1280x1280 is what broke boot on 08-28.
-$vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 0 +mat_queue_mode 0 +mat_vsync 0 +mat_antialias 0 +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width $gesWidth -height $gesHeight"
+$vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 1 +mat_queue_mode 0 +mat_vsync 0 +mat_antialias 0 +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width $gesWidth -height $gesHeight"
 
 # Must go through Steam so SDK 2007 mounts its VPKs (startup_loading.vtf lives there).
 $steamExe = Join-Path $steam "steam.exe"

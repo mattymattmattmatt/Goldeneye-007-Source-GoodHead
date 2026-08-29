@@ -133,6 +133,13 @@ SbsDistance=1.0
 # Menu pointer. Win32 posts real mouse messages to the game window and is the
 # reliable path. The VGUI-internal path calls into a vgui2 vtable whose 2007
 # layout is unconfirmed -- leave it off unless you are testing it.
+# Aim menus with your HEAD (default) or the controller.
+# In a map SteamVR sends almost no laser events to our overlay - measured at 2,
+# versus hundreds at the main menu - because we are submitting stereo frames, so
+# it gives the controller to the game instead. Head aiming works in both places:
+# look at the item, pull the trigger. Set 'controller' to use the laser instead.
+MenuAimSource=head
+
 MenuInputWin32=true
 MenuInputVguiInternal=false
 
@@ -152,7 +159,7 @@ MenuUseSetCursorPos=true
 # it is disruptive to work around. Handled on the input worker thread, which
 # owns all USER32 - doing window work from the render thread is what deadlocked
 # the game earlier in this project.
-KeepWindowOnPrimaryMonitor=true
+KeepWindowOnPrimaryMonitor=false
 
 # How a menu click is delivered. The freeze happens immediately after a click is
 # posted, every time. PostMessage synthesises a message with no hardware input
