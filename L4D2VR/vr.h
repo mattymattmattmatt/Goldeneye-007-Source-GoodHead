@@ -225,6 +225,11 @@ public:
 	// sign convention against D3D's v-down texture origin -- if the image sits
 	// too high or too low, turn this off and only the u crop is applied.
 	bool m_UseVerticalCrop = true;
+	// Multiplier on the WINDOW size for the eye render targets, used instead of
+	// the HMD's recommended size. 1.5 gives 1920x1080 from a 1280x720 window --
+	// sharper than native without going anywhere near the 2496x2688 that
+	// crashes. Only applies when EyeRenderTargets is on.
+	float m_EyeRenderScale = 1.5f;
 
 	// Render each eye into its own engine render target instead of drawing both
 	// into the backbuffer one on top of the other. The backbuffer approach is
@@ -238,7 +243,13 @@ public:
 	// captured from the window backbuffer and upscaled to a ~2496x2688 panel,
 	// which is the jaggies. Renders each eye into its own RT at true HMD
 	// resolution instead. Costs performance; EyeRenderTargets=false reverts.
-	bool m_UseEyeRenderTargets = true;
+	// OFF again. Enabling it froze the game and left only a sliver visible:
+	// the eye views were sized to the FULL HMD recommended RT (2496x2688),
+	// which is the long-standing landmine in HANDOFF.md, and it also breaks
+	// the 2D path -- the menu/HUD still draw to the 1280x720 backbuffer that
+	// CaptureForOverlay reads, so the overlay showed a fragment.
+	// Use EyeRenderScale for a safe middle ground instead.
+	bool m_UseEyeRenderTargets = false;
 
 	// IVModelRender vtable index of DrawModelExecute. Measured, not guessed:
 	// a naked per-slot counter showed [18]=128689 and [19]=128291 as the two

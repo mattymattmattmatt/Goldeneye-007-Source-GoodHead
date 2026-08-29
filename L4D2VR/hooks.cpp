@@ -663,8 +663,12 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 			rndrContext = m_Game->m_MaterialSystem->GetRenderContext();
 			leftEyeView.x = 0;  leftEyeView.y = 0;
 			rightEyeView.x = 0; rightEyeView.y = 0;
-			leftEyeView.width  = rightEyeView.width  = (int)m_VR->m_RenderWidth;
-			leftEyeView.height = rightEyeView.height = (int)m_VR->m_RenderHeight;
+			// Scale the WINDOW size, never the HMD recommended size. Using
+			// m_RenderWidth/Height (2496x2688) froze the game and left only a
+			// sliver rendering -- that is the documented landmine.
+			const float sc = (m_VR->m_EyeRenderScale > 0.5f) ? m_VR->m_EyeRenderScale : 1.0f;
+			leftEyeView.width  = rightEyeView.width  = (int)(setup.width  * sc);
+			leftEyeView.height = rightEyeView.height = (int)(setup.height * sc);
 		}
 	}
 	if (traceStereo)

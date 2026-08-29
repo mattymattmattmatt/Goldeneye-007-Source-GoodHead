@@ -3191,6 +3191,7 @@ void VR::ParseConfigFile()
     }
     m_UseTextureBounds = CfgBool(userConfig, "UseEyeFrustumCrop", m_UseTextureBounds);
     m_UseVerticalCrop = CfgBool(userConfig, "UseVerticalCrop", m_UseVerticalCrop);
+    m_EyeRenderScale = CfgFloat(userConfig, "EyeRenderScale", m_EyeRenderScale);
     m_MenuWidthMeters = CfgFloat(userConfig, "MenuWidthMeters", m_MenuWidthMeters);
     m_MenuDistanceMeters = CfgFloat(userConfig, "MenuDistanceMeters", m_MenuDistanceMeters);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
