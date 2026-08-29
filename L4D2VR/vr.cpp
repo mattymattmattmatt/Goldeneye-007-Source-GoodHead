@@ -1193,8 +1193,14 @@ void VR::PlaceMenuPanelInFront()
 //    enough not to feel pressed against your face.
 void VR::EffectiveMenuGeometry(float &widthM, float &distM) const
 {
-    const bool inMap = m_Game && m_Game->IsInMap();
-    distM  = inMap ? m_InGameMenuDistance : m_MenuDistanceMeters;
+    const bool inMap  = m_Game && m_Game->IsInMap();
+    const bool gameUi = m_Game && m_Game->IsGameUIVisible();
+
+    // Only the cursor-driven in-map panel (character/level select) wants the far
+    // distance. The PAUSE menu is in a map AND is GameUI, so keying purely off
+    // inMap pushed it out to the far distance -- which is exactly why it read as
+    // the worst of the lot. GameUI menus are text you read, so they stay near.
+    distM  = (inMap && !gameUi) ? m_InGameMenuDistance : m_MenuDistanceMeters;
     widthM = m_MenuWidthMeters;
 
     if (m_MenuScaleWithRes)

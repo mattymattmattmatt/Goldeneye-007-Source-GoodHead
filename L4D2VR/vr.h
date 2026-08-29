@@ -306,16 +306,16 @@ public:
 	bool m_VtableProbe = false;
 	// Floating menu panel. The in-game character/level menu was reported as
 	// too big and too close; these make it placeable without a rebuild.
-	float m_MenuWidthMeters = 1.8f;
+	float m_MenuWidthMeters = 2.4f;
 	// Pregame (create-server) menu distance. In-map uses m_InGameMenuDistance.
-	float m_MenuDistanceMeters = 2.0f;
+	float m_MenuDistanceMeters = 1.6f;
 	// Route in-map VGUI panels (character/team/level select) onto the flat menu
 	// panel instead of leaving them inside the 3D view. Detected via the OS
 	// cursor becoming visible. Set false to restore the old behaviour.
 	bool m_InGameMenuPanel = true;
 	// The in-map panel wants to sit further back than the create-server menu,
 	// which wants to stay close enough to read. They used to share one distance.
-	float m_InGameMenuDistance = 3.0f;
+	float m_InGameMenuDistance = 2.4f;
 	// Keep the menu the same apparent size as resolution changes. See
 	// VR::EffectiveMenuGeometry -- Source's GameUI is laid out in fixed pixels.
 	bool m_MenuScaleWithRes = true;

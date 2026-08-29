@@ -47,8 +47,8 @@ EyeRenderScale=1.5
 # Floating menu panel size and distance, in metres. The in-game character/level
 # menu was too big and too close; raise the distance and/or drop the width until
 # it sits comfortably. Both hot-reload.
-MenuWidthMeters=1.8
-MenuDistanceMeters=2.0
+MenuWidthMeters=2.4
+MenuDistanceMeters=1.6
 
 # Render each eye into its own engine render target instead of drawing both into
 # the backbuffer one on top of the other.
@@ -319,7 +319,7 @@ VRReticleSize=0.006
 InGameMenuPanel=true
 
 # In-map character/level select panel distance in metres.
-InGameMenuDistance=3.0
+InGameMenuDistance=2.4
 
 # Keep menu apparent size constant as resolution changes.
 MenuScaleWithRes=true

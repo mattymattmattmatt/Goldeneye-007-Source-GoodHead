@@ -147,6 +147,7 @@ copy /Y "$(ProjectDir)manifest.vrmanifest" "$(SolutionDir)dist\VR\manifest.vrman
       <ModuleDefinitionFile>$(SolutionDir)dxvk\src\d3d9\d3d9.def</ModuleDefinitionFile>
       <AdditionalLibraryDirectories>%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
       <AdditionalDependencies>openvr_api.lib;libMinHook.x86.lib;$(SolutionDir)dxvk\lib32\vulkan-1.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <GenerateMapFile>true</GenerateMapFile>
       <DelayLoadDLLs>openvr_api.dll</DelayLoadDLLs>
     </Link>
     <PostBuildEvent>
