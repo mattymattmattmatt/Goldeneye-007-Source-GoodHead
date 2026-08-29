@@ -451,6 +451,7 @@ namespace VRSubmit
     static std::atomic<bool> g_useThread{ false };
 }
 
+namespace dxvk { extern bool g_GESVR_DrawReticle; }
 extern long GESVR_ExecMoveCount();
 extern long GESVR_RenderOriginCalls();
 extern long GESVR_RenderAnglesCalls();
@@ -1855,7 +1856,12 @@ void VR::ProcessMenuInput()
 
     int tipX = -1, tipY = -1;
     const bool tipHit = ComputeMenuPointer(tipX, tipY);
-    if (tipHit)
+    // SteamVR's laser WINS whenever it is actually producing events. The
+    // computed ray (head, or controller) is a FALLBACK for where the laser is
+    // unavailable -- in a map, SteamVR routes the controller to the game and
+    // sends the overlay almost nothing. Overriding unconditionally is what
+    // replaced the laser pointer with a head cursor everywhere.
+    if (tipHit && overlayMoves == 0)
     {
         aimX = tipX;
         aimY = tipY;
@@ -3414,6 +3420,7 @@ void VR::ParseConfigFile()
     }
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_DrawMenuCursor = CfgBool(userConfig, "DrawMenuCursor", m_DrawMenuCursor);
+    dxvk::g_GESVR_DrawReticle = CfgBool(userConfig, "VRReticle", true);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);
     m_ShowMirrorWindow = CfgBool(userConfig, "ShowMirrorWindow", m_ShowMirrorWindow);

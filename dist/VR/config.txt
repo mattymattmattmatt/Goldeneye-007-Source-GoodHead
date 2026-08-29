@@ -158,6 +158,12 @@ MenuDriveCursor=true
 # desktop monitor -- only one of them is ever visible in VR.
 DrawMenuCursor=true
 
+# Aiming reticle drawn straight into each eye. The game's own crosshair never
+# reaches the headset -- +crosshair 1 is set, but the 2D HUD is not part of what
+# we capture. In head-aim mode you aim with the centre of your view, so a centre
+# reticle is both correct and independent of the game's HUD.
+VRReticle=true
+
 MenuInputWin32=true
 MenuInputVguiInternal=false
 
