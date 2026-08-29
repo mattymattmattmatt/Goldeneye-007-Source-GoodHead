@@ -1,3 +1,20 @@
+# ===========================================================================
+# GESVR - HEAD-AIM VR MODE
+# ---------------------------------------------------------------------------
+# Configured to play the game properly in VR without motion weapons: full
+# stereo, head tracking, head aim, floating HUD, gun in its normal Source
+# position. This is the Luke Ross style of VR conversion, and it avoids the
+# entire motion-weapon problem area (skewing, snap-to-head, offset muzzle
+# flash) which is not close to production quality.
+#
+# To go back to motion weapons later, set:
+#   AimMode=gun / MotionControls=true / WeaponSetupHook=true
+#   ViewmodelRenderablePatch=true / ShowWristHUD=true
+#
+# This whole file hot-reloads: save it while the game runs and changes apply in
+# about a second.
+# ===========================================================================
+
 # ---------------------------------------------------------------------------
 # How the stereo image reaches the headset.
 #   compositor : real per-eye submit with the correct asymmetric frustum crop.
@@ -67,14 +84,14 @@ ModelDrawSetupSlot=18
 # first stereo pass. The argument list does not match, so calling through
 # corrupts the stack immediately. Do not enable until SetupProbe confirms the
 # real signature.
-WeaponSetupHook=true
+WeaponSetupHook=false
 
 # Redirects the viewmodel's GetRenderOrigin/GetRenderAngles to the controller
 # pose. Writing ModelRenderInfo_t::origin provably does NOT move the gun (the
 # write fires with a 27-unit displacement and nothing happens) because the root
 # transform is built by SetupBones from these two accessors instead.
 # Set false if the weapon renders wrong or the game becomes unstable.
-ViewmodelRenderablePatch=true
+ViewmodelRenderablePatch=false
 
 # true  = the hand pose is applied only during the weapon's draw call. Cleaner,
 #         but the gun snaps back to your head on any draw path we do not
@@ -92,12 +109,12 @@ ViewmodelScopedPose=true
 
 # Safe naked capture of slot 18's actual arguments. Costs nothing; turn off once
 # the signature is known.
-SetupProbe=true
+SetupProbe=false
 
 # Motion trace. Samples the whole hand -> weapon chain 4x/second while in a map.
 # Run the calibration sequence in HANDOFF.md and send the log; each stage can
 # then be verified independently instead of guessed at.
-MotionDebug=true
+MotionDebug=false
 
 # Re-run the slot counter (conflicts with the hook above; diagnosis only).
 VtableProbe=false
@@ -169,8 +186,8 @@ TheaterHideThrottleMs=2000
 EnableNetVR=true
 # head = look and shoot with the headset
 # gun  = weapons follow the right controller (default)
-AimMode=gun
-MotionControls=true
+AimMode=head
+MotionControls=false
 
 # Gun grip correction, degrees. A controller's forward axis is not a barrel
 # axis; this rotates the weapon down into a natural grip. 45 is what L4D2VR and
@@ -220,10 +237,16 @@ IPDScale=1.0
 HideArms=true
 HudDistance=1.3
 HudSize=1.1
+# The floating HUD panel shows the WHOLE captured frame, so switching it on
+# would hang a duplicate of the game in front of you. The 2D HUD is very likely
+# already inside the stereo image, because our eye capture happens after
+# CViewRender::RenderView has drawn it. Leave this off; if you find you cannot
+# see health and ammo in the headset, set it true and we will crop the panel to
+# just the HUD region instead.
 HudAlwaysVisible=false
 
 # Off-hand watch HUD (raise the unused hand to your face, HaloCEVR-style)
-ShowWristHUD=true
+ShowWristHUD=false
 WristLookMaxDistance=0.6
 WristLookMinDot=0.45
 WristWatchWidth=0.11
