@@ -325,9 +325,12 @@ public:
 	// a map SteamVR routes the controller to the game instead and sends almost
 	// none (measured: 2), so fall back to a head ray there.
 	int m_MenuAimSource = 2;
-	// OFF. The captured frame already contains the game's own cursor, which we
-	// drive with SetCursorPos, so drawing our marker over it gave two cursors.
-	bool m_DrawMenuCursor = false;
+	// ON. Turning it off was wrong: Source's cursor is a HARDWARE cursor,
+	// composited by Windows and never present in the D3D backbuffer that
+	// CaptureForOverlay copies. With our marker off there was no cursor in
+	// the headset at all. The 'two cursors' were our marker plus the real
+	// Windows cursor visible on the desktop monitor - not two in VR.
+	bool m_DrawMenuCursor = true;
 	bool m_MenuUseWin32 = true;
 	// Kill switch for all OS-level cursor driving (SetCursorPos /
 	// SetForegroundWindow / PostMessage). Turn off to rule the whole

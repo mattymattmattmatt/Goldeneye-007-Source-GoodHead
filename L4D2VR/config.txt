@@ -146,10 +146,12 @@ SbsDistance=1.0
 # Force with 'head' or 'controller'.
 MenuAimSource=auto
 
-# Draw our own crosshair marker into the menu image. OFF: the captured frame
-# already contains the game's own cursor (we move it with SetCursorPos), so
-# drawing ours on top of it is what gave you two cursors.
-DrawMenuCursor=false
+# Draw our own crosshair marker into the menu image. MUST stay on: Source uses a
+# HARDWARE cursor, composited by Windows and never present in the D3D backbuffer
+# that we capture, so without this there is no cursor visible in the headset at
+# all. The 'two cursors' were this marker plus the real Windows cursor on the
+# desktop monitor -- only one of them is ever visible in VR.
+DrawMenuCursor=true
 
 MenuInputWin32=true
 MenuInputVguiInternal=false

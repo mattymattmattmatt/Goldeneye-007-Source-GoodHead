@@ -1847,6 +1847,25 @@ void VR::ProcessMenuInput()
         aimY = tipY;
     }
 
+    // Which pointer is actually driving the cursor, and where. "doesn't use the
+    // vr pointer" needs separating into: no aim computed at all, aim computed
+    // from the wrong source, or aim computed but not reaching the game.
+    {
+        static DWORD s_lastAimLog = 0;
+        const DWORD an = GetTickCount();
+        if (s_lastAimLog == 0 || (an - s_lastAimLog) >= 1000)
+        {
+            s_lastAimLog = an;
+            const bool inMapNow = m_Game && m_Game->IsInMap();
+            const char *src = (m_MenuAimSource == 2)
+                                ? (inMapNow ? "auto->head" : "auto->controller")
+                                : (m_MenuAimSource == 1 ? "controller" : "head");
+            Game::logMsg("AIMSRC %s inMap=%d overlayMoves=%d tip=%d aim=(%d,%d) cursor=(%d,%d) live=%d",
+                         src, (int)inMapNow, overlayMoves, (int)tipHit,
+                         aimX, aimY, g_lastCursorX, g_lastCursorY, (int)cursorLive);
+        }
+    }
+
     if (armTrace) Game::logMsg("  f=%d -> publishing aim (%d,%d)", s_menuFrames, aimX, aimY);
     if (cursorLive && aimX >= 0)
         DriveGameCursor(hwnd, aimX, aimY, input, m_MenuUseVguiInternal);
