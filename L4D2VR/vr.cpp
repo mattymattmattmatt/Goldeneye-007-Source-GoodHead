@@ -212,6 +212,14 @@ namespace MenuInput
     // this thread owns all USER32.
     static std::atomic<bool> g_clickViaSendInput{ false };
 
+    // Is the game showing the OS cursor? Source hides and re-centres it during
+    // gameplay and shows it when a VGUI panel takes the mouse. That makes it a
+    // reliable, signature-free "a menu wants clicks" signal -- and unlike
+    // IsGameUIVisible() it is true for the in-map character/team select panel,
+    // which is the one that still needed the desktop mouse.
+    // GetCursorInfo is USER32, so it is polled on THIS thread and nowhere else.
+    static std::atomic<bool> g_gameCursorShowing{ false };
+
     // Published back for the render thread to read cheaply.
     static std::atomic<void*> g_hwnd{ nullptr };
     static std::atomic<int>  g_foreground{ 0 };
@@ -248,6 +256,18 @@ namespace MenuInput
             }
             if (!hwnd)
                 continue;
+
+            // CURSOR_SHOWING is global, so the pointer merely wandering off the
+            // window during play would read as 'showing' and wrongly flip us into
+            // menu mode. Require it to be over the game window as well: in play
+            // Source keeps it centred AND hidden, so only a real panel sets both.
+            CURSORINFO ci{}; ci.cbSize = sizeof(ci);
+            RECT wr{};
+            bool curVis = false;
+            if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) && GetWindowRect(hwnd, &wr))
+                curVis = (ci.ptScreenPos.x >= wr.left && ci.ptScreenPos.x < wr.right &&
+                          ci.ptScreenPos.y >= wr.top  && ci.ptScreenPos.y < wr.bottom);
+            g_gameCursorShowing.store(curVis);
 
             g_foreground.store(GetForegroundWindow() == hwnd ? 1 : 0);
             g_iconic.store(IsIconic(hwnd) ? 1 : 0);
@@ -451,10 +471,14 @@ namespace VRSubmit
     static std::atomic<bool> g_useThread{ false };
 }
 
-namespace dxvk { extern bool g_GESVR_DrawReticle; }
+namespace dxvk { extern bool g_GESVR_DrawReticle; extern float g_GESVR_ReticleScale; }
 extern long GESVR_ExecMoveCount();
 extern long GESVR_RenderOriginCalls();
 extern long GESVR_RenderAnglesCalls();
+
+// How many SteamVR laser events arrived last frame. Non-zero means the laser
+// is driving the cursor and our own marker would be redundant.
+static int g_LastOverlayMoves = 0;
 
 static bool g_menuPlaced = false;
 static float g_menuYaw = 0.0f;
@@ -890,10 +914,16 @@ void VR::Update()
         // Pass -1 to suppress our own crosshair. The captured frame ALREADY
         // contains the game's cursor, which we drive with SetCursorPos, so
         // drawing a second marker on top of it is what produced two cursors.
+        // Only draw our marker where the laser ISN'T doing the job. At the
+        // server-select menu SteamVR's own laser and its dot are visible, so an
+        // extra marker is redundant clutter; in a map the laser is unavailable
+        // and the marker is the only cursor there is.
+        const bool laserDriving = (g_LastOverlayMoves > 0);
+        const bool wantMarker = m_DrawMenuCursor && !laserDriving;
         if (g_D3DVR9)
             g_D3DVR9->CaptureForOverlay(&m_VKHUD,
-                                        m_DrawMenuCursor ? cx : -1,
-                                        m_DrawMenuCursor ? cy : -1);
+                                        wantMarker ? cx : -1,
+                                        wantMarker ? cy : -1);
         const auto tCapture = vrclock::now();
         ShowMenuPanel();
         const auto tPanel = vrclock::now();
@@ -941,6 +971,20 @@ bool VR::IsMenuMode()
 {
     if (m_Game && m_Game->IsGameUIVisible())
         return true;
+
+    // In-map panels (character/team/level select) are NOT "GameUI visible", so
+    // this returned false for them and the entire menu branch -- capture, flat
+    // panel, pointer, click -- never ran. The panel stayed inside the 3D view,
+    // where the per-eye frustum crop magnified it ("too big and stretched") and
+    // nothing but the desktop mouse could reach it.
+    //
+    // Routing it through the same flat panel puts it at MenuDistanceMeters and
+    // makes the VR pointer work on it. Gated by InGameMenuPanel in case a map
+    // ever shows the cursor with no panel behind it.
+    if (m_InGameMenuPanel && m_Game && m_Game->IsInMap()
+        && MenuInput::g_gameCursorShowing.load())
+        return true;
+
     return !m_RenderedNewFrame;
 }
 
@@ -1853,6 +1897,8 @@ void VR::ProcessMenuInput()
             break;
         }
     }
+
+    g_LastOverlayMoves = overlayMoves;
 
     int tipX = -1, tipY = -1;
     const bool tipHit = ComputeMenuPointer(tipX, tipY);
@@ -3395,6 +3441,7 @@ void VR::ParseConfigFile()
     m_EyeRenderScale = CfgFloat(userConfig, "EyeRenderScale", m_EyeRenderScale);
     m_MenuWidthMeters = CfgFloat(userConfig, "MenuWidthMeters", m_MenuWidthMeters);
     m_MenuDistanceMeters = CfgFloat(userConfig, "MenuDistanceMeters", m_MenuDistanceMeters);
+    m_InGameMenuPanel = CfgBool(userConfig, "InGameMenuPanel", m_InGameMenuPanel);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
     m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
@@ -3421,6 +3468,7 @@ void VR::ParseConfigFile()
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_DrawMenuCursor = CfgBool(userConfig, "DrawMenuCursor", m_DrawMenuCursor);
     dxvk::g_GESVR_DrawReticle = CfgBool(userConfig, "VRReticle", true);
+    dxvk::g_GESVR_ReticleScale = CfgFloat(userConfig, "VRReticleSize", 0.006f);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);
     m_ShowMirrorWindow = CfgBool(userConfig, "ShowMirrorWindow", m_ShowMirrorWindow);

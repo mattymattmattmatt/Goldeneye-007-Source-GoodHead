@@ -193,6 +193,14 @@ Ensure-Junction (Join-Path $sdk "gesource") $ges
 # the route to more sharpness. Use EyeRenderTargets + EyeRenderScale instead:
 # that renders each eye at a MULTIPLE OF THE WINDOW internally and is not bound
 # by the desktop at all.
+# Image quality knobs. These are the main levers against jaggies now that the
+# window is already at the desktop resolution ceiling.
+#   $gesAA    - MSAA samples. 4 is a good default; set 0 if the eyes go black
+#               (the log will say [EYE] StretchRect FAILED if MSAA is the cause).
+#   $gesAniso - anisotropic filtering, sharpens floors/walls seen at an angle.
+#   picmip -1 - highest texture detail.
+$gesAA     = 4
+$gesAniso  = 8
 $gesWidth  = 1920
 $gesHeight = 1080
 
@@ -201,7 +209,7 @@ $gesHeight = 1080
 #   engine and stalls title -> menu. 0 removes the sleep.
 # snd_mute_losefocus: Source mutes audio on focus loss -- the "buggy sound".
 # Resolution is deliberately untouched: 1280x1280 is what broke boot on 08-28.
-$vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 1 +mat_queue_mode 0 +mat_vsync 0 +mat_antialias 0 +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width $gesWidth -height $gesHeight"
+$vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 1 +mat_queue_mode 0 +mat_vsync 0 +mat_antialias $gesAA +mat_forceaniso $gesAniso +mat_picmip -1 +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width $gesWidth -height $gesHeight"
 
 # Must go through Steam so SDK 2007 mounts its VPKs (startup_loading.vtf lives there).
 $steamExe = Join-Path $steam "steam.exe"

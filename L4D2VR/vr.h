@@ -307,7 +307,12 @@ public:
 	// Floating menu panel. The in-game character/level menu was reported as
 	// too big and too close; these make it placeable without a rebuild.
 	float m_MenuWidthMeters = 1.8f;
-	float m_MenuDistanceMeters = 2.0f;
+	// 3m. At 2m the in-game panel was reported as uncomfortably close.
+	float m_MenuDistanceMeters = 3.0f;
+	// Route in-map VGUI panels (character/team/level select) onto the flat menu
+	// panel instead of leaving them inside the 3D view. Detected via the OS
+	// cursor becoming visible. Set false to restore the old behaviour.
+	bool m_InGameMenuPanel = true;
 	float m_SbsWidthMeters = 3.17f;
 	float m_SbsDistance = 1.0f;
 
