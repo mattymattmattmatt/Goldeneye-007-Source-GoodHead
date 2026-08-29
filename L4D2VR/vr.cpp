@@ -288,38 +288,15 @@ namespace MenuInput
             // The game window measures correctly placed on the primary monitor,
             // yet the display is still reported as spanning both screens - so
             // something else is on the second one. This says what.
-            {
-                static bool s_enum = false;
-                static DWORD s_enumAt = 0;
-                const DWORD en = GetTickCount();
-                if (s_enumAt == 0) s_enumAt = en;
-                if (!s_enum && (en - s_enumAt) > 8000)
-                {
-                    s_enum = true;
-                    struct E {
-                        static BOOL CALLBACK Proc(HWND h, LPARAM)
-                        {
-                            DWORD pid = 0;
-                            GetWindowThreadProcessId(h, &pid);
-                            if (pid != GetCurrentProcessId() || !IsWindowVisible(h))
-                                return TRUE;
-                            RECT r{};
-                            GetWindowRect(h, &r);
-                            if ((r.right - r.left) < 64 || (r.bottom - r.top) < 64)
-                                return TRUE;
-                            char cls[80] = {}, ttl[120] = {};
-                            GetClassNameA(h, cls, sizeof(cls));
-                            GetWindowTextA(h, ttl, sizeof(ttl));
-                            Game::logMsg("OURWINDOW hwnd=%p class='%s' title='%s' rect=(%ld,%ld)-(%ld,%ld) %ldx%ld",
-                                         h, cls, ttl, r.left, r.top, r.right, r.bottom,
-                                         r.right - r.left, r.bottom - r.top);
-                            return TRUE;
-                        }
-                    };
-                    Game::logMsg("OURWINDOW --- enumerating visible windows of this process ---");
-                    EnumWindows(&E::Proc, 0);
-                }
-            }
+            // The visible-window enumeration that used to live here is GONE.
+            // It read window titles inside an enumeration callback; that call sends
+            // WM_GETTEXT and BLOCKS until the owning thread pumps messages. It fired
+            // on an 8s timer, which landed while the main thread was loading a map
+            // and not pumping -- so it hung there, holding this thread, and the
+            // render thread stalled behind it. That is the USER32 -> callback
+            // dispatcher -> us -> wait stack seen in the freeze logs.
+            // It had already answered its question: ONE window, correctly placed,
+            // 1926x1109 for a 1920x1080 client (borders). Do not reintroduce it.
 
             static DWORD s_firstSeen = 0;
             static DWORD s_lastFit = 0;
@@ -1182,7 +1159,8 @@ void VR::PlaceMenuPanelInFront()
     if (hmd.bPoseIsValid)
     {
         const vr::HmdMatrix34_t &m = hmd.mDeviceToAbsoluteTracking;
-        const float dist = m_MenuDistanceMeters;
+        float panelW = m_MenuWidthMeters, dist = m_MenuDistanceMeters;
+        EffectiveMenuGeometry(panelW, dist);
         float fx = -m.m[0][2], fy = -m.m[1][2], fz = -m.m[2][2];
         xf.m[0][0] = m.m[0][0]; xf.m[0][1] = m.m[0][1]; xf.m[0][2] = m.m[0][2];
         xf.m[1][0] = m.m[1][0]; xf.m[1][1] = m.m[1][1]; xf.m[1][2] = m.m[1][2];
@@ -1193,7 +1171,47 @@ void VR::PlaceMenuPanelInFront()
     }
 
     m_Overlay->SetOverlayTransformAbsolute(m_MainMenuHandle, vr::VRCompositor()->GetTrackingSpace(), &xf);
-    m_Overlay->SetOverlayWidthInMeters(m_MainMenuHandle, m_MenuWidthMeters);
+    {
+        float panelW = m_MenuWidthMeters, panelD = m_MenuDistanceMeters;
+        EffectiveMenuGeometry(panelW, panelD);
+        m_Overlay->SetOverlayWidthInMeters(m_MainMenuHandle, panelW);
+    }
+}
+
+// Effective menu panel geometry.
+//
+// Two separate corrections live here, and BOTH the panel placement and the
+// pointer's angular fallback must use the same answer or aiming is miscalibrated.
+//
+// 1. Resolution. Source lays the GameUI out in FIXED PIXELS, so as the capture
+//    gets bigger the menu covers a smaller fraction of it -- which is why the
+//    menu shrank and looked further away every time the resolution went up.
+//    The overlay maps the whole texture to its width, so scaling the width by
+//    the same factor keeps the menu's apparent size constant.
+// 2. Pregame vs in-game want different distances: the create-server menu wants
+//    to be close enough to read, the in-map character panel wants to be far
+//    enough not to feel pressed against your face.
+void VR::EffectiveMenuGeometry(float &widthM, float &distM) const
+{
+    const bool inMap = m_Game && m_Game->IsInMap();
+    distM  = inMap ? m_InGameMenuDistance : m_MenuDistanceMeters;
+    widthM = m_MenuWidthMeters;
+
+    if (m_MenuScaleWithRes)
+    {
+        int sw = 1920, sh = 1080;
+        if (m_Game && m_Game->m_EngineClient)
+            m_Game->m_EngineClient->GetScreenSize(sw, sh);
+        if (sh > 1)
+        {
+            float s = (float)sh / 1080.0f;
+            if (s < 0.5f) s = 0.5f;
+            if (s > 3.0f) s = 3.0f;
+            widthM *= s;
+        }
+    }
+    if (distM < 0.3f) distM = 0.3f;
+    if (widthM < 0.2f) widthM = 0.2f;
 }
 
 bool VR::ComputeMenuPointer(int &x, int &y)
@@ -1286,7 +1304,9 @@ bool VR::ComputeMenuPointer(int &x, int &y)
     const float pitch = asinf(fwdY < -1.0f ? -1.0f : (fwdY > 1.0f ? 1.0f : fwdY));
 
     // Half-angle the panel subtends: width/2 over its distance.
-    const float halfW = atanf((m_MenuWidthMeters * 0.5f) / (m_MenuDistanceMeters > 0.1f ? m_MenuDistanceMeters : 2.0f));
+    float fbW = m_MenuWidthMeters, fbD = m_MenuDistanceMeters;
+    EffectiveMenuGeometry(fbW, fbD);
+    const float halfW = atanf((fbW * 0.5f) / fbD);
     const float aspect = (windowHeight > 0) ? ((float)windowWidth / (float)windowHeight) : 1.777f;
     const float halfH = (aspect > 0.01f) ? (halfW / aspect) : halfW;
 
@@ -3442,6 +3462,8 @@ void VR::ParseConfigFile()
     m_MenuWidthMeters = CfgFloat(userConfig, "MenuWidthMeters", m_MenuWidthMeters);
     m_MenuDistanceMeters = CfgFloat(userConfig, "MenuDistanceMeters", m_MenuDistanceMeters);
     m_InGameMenuPanel = CfgBool(userConfig, "InGameMenuPanel", m_InGameMenuPanel);
+    m_InGameMenuDistance = CfgFloat(userConfig, "InGameMenuDistance", m_InGameMenuDistance);
+    m_MenuScaleWithRes = CfgBool(userConfig, "MenuScaleWithRes", m_MenuScaleWithRes);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
     m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
