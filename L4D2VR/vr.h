@@ -319,7 +319,12 @@ public:
 	// SteamVR barely routes laser events to our overlay while in a map, and
 	// the controller-ray fallback has never intersected, so head aiming is
 	// the only pointer that works in both places.
-	int m_MenuAimSource = 0;
+	// 0 = head, 1 = controller, 2 = AUTO (default).
+	// Auto is what actually matches how SteamVR behaves: OUT of a map the
+	// controller laser works well (hundreds of overlay events), so use it; IN
+	// a map SteamVR routes the controller to the game instead and sends almost
+	// none (measured: 2), so fall back to a head ray there.
+	int m_MenuAimSource = 2;
 	bool m_MenuUseWin32 = true;
 	// Kill switch for all OS-level cursor driving (SetCursorPos /
 	// SetForegroundWindow / PostMessage). Turn off to rule the whole
@@ -382,6 +387,11 @@ public:
 	// pitch is positive-DOWN, so +45 brings the shot down onto your point of
 	// aim. This is now a direct pitch offset -- it no longer round-trips
 	// through VectorAngles, which is what inverted pitch previously.
+	// Viewmodel FOV. 0 = use the world FOV (currently ~106 for the HMD's
+	// superset frustum), which is very wide and pushes the weapon toward the
+	// centre of view. A narrower value puts it back where Source normally
+	// draws it. Try 54-75.
+	float m_ViewmodelFov = 0.0f;
 	float m_GunGripAngle = 45.0f;
 	// User tweak ADDED on top of the per-weapon table value, so setting
 	// ViewmodelOffset in config no longer erases the per-weapon pose.

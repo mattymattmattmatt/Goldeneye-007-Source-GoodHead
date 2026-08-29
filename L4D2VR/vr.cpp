@@ -1120,7 +1120,12 @@ bool VR::ComputeMenuPointer(int &x, int &y)
     //
     // Pointing with the head works in both places, needs no laser routing, and
     // suits head-aim mode: look at the item, pull the trigger.
-    const bool useHead = (m_MenuAimSource != 1);
+    // Auto: controller out of a map, head in one. See m_MenuAimSource.
+    bool useHead;
+    if (m_MenuAimSource == 2)
+        useHead = (m_Game && m_Game->IsInMap());
+    else
+        useHead = (m_MenuAimSource != 1);
     vr::HmdMatrix34_t ray{};
     if (useHead)
     {
@@ -2563,8 +2568,11 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
 
     left.fov = m_Fov;
     right.fov = m_Fov;
-    left.fovViewmodel = m_Fov;
-    right.fovViewmodel = m_Fov;
+    // A 106-degree viewmodel FOV drags the weapon toward the centre of view and
+    // makes it disagree with world-space muzzle effects. 0 keeps the world FOV.
+    const float vmFov = (m_ViewmodelFov > 1.0f) ? m_ViewmodelFov : m_Fov;
+    left.fovViewmodel = vmFov;
+    right.fovViewmodel = vmFov;
     left.m_flAspectRatio = m_Aspect;
     right.m_flAspectRatio = m_Aspect;
     left.zNear = 6.0f;
@@ -3283,6 +3291,7 @@ void VR::ParseConfigFile()
     m_SbsWidthMeters = CfgFloat(userConfig, "SbsWidthMeters", m_SbsWidthMeters);
     m_SbsDistance = CfgFloat(userConfig, "SbsDistance", m_SbsDistance);
     m_GunGripAngle = CfgFloat(userConfig, "GunGripAngle", m_GunGripAngle);
+    m_ViewmodelFov = CfgFloat(userConfig, "ViewmodelFov", m_ViewmodelFov);
     m_ViewmodelUserOffset = CfgVec(userConfig, "ViewmodelOffset", m_ViewmodelUserOffset);
     m_ViewmodelAngleOffset = CfgVec(userConfig, "ViewmodelAngleOffset", m_ViewmodelAngleOffset);
     m_PerWeaponOffsets = CfgBool(userConfig, "PerWeaponOffsets", m_PerWeaponOffsets);

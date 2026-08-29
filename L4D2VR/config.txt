@@ -138,7 +138,13 @@ SbsDistance=1.0
 # versus hundreds at the main menu - because we are submitting stereo frames, so
 # it gives the controller to the game instead. Head aiming works in both places:
 # look at the item, pull the trigger. Set 'controller' to use the laser instead.
-MenuAimSource=head
+# auto (default) = controller pointer OUT of a map, head pointer IN one.
+# That matches how SteamVR actually behaves: at the server-select menu the
+# controller laser works well (hundreds of overlay events), but once we start
+# submitting stereo frames SteamVR routes the controller to the game and sends
+# almost none (measured: 2), so the head ray takes over there.
+# Force with 'head' or 'controller'.
+MenuAimSource=auto
 
 MenuInputWin32=true
 MenuInputVguiInternal=false
@@ -203,6 +209,13 @@ MotionControls=false
 # Confirmed in play: at 0, pointing straight ahead shoots ~45 degrees HIGH.
 # Positive pitch is DOWN in Source, so 45 brings the shot onto your aim.
 # Nudge in 5-degree steps if it is slightly off; this hot-reloads.
+# Viewmodel FOV. 0 = use the world FOV, which for the HMD's superset frustum is
+# ~106 degrees -- very wide, and it drags the weapon toward the centre of your
+# view and makes it disagree with the world-space muzzle effect.
+# Try 54-75 to put the gun back where Source normally draws it. Hot-reloads, so
+# nudge it while looking at the gun.
+ViewmodelFov=0
+
 GunGripAngle=45.0
 
 # Per-weapon viewmodel poses from the table in weapons.cpp (pp7, dd44, klobb,
