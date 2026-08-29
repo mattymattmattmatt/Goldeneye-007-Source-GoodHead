@@ -177,10 +177,15 @@ Ensure-Junction (Join-Path $sdk "gesource") $ges
 # fewer pixels: the headset eye is taller than it is wide (aspect ~0.96), so
 # vertical resolution matters most, and 1200 beats 1080.
 #
-# Do NOT use a square resolution. 1280x1280 killed boot on 2026-08-28 and cost
-# several sessions to diagnose.
-$gesWidth  = 1600
-$gesHeight = 1200
+# RULE, learned the hard way: this engine only boots on WIDESCREEN resolutions.
+#   1280x720  (16:9) boots
+#   1920x1080 (16:9) boots, and looked noticeably better in the headset
+#   1600x1200 (4:3)  DOES NOT BOOT
+#   1280x1280 (1:1)  DOES NOT BOOT
+# Taller-than-16:9 would suit the headset eye better, but the engine refuses
+# it, so 16:9 with more lines is the only lever. Do not 'improve' the aspect.
+$gesWidth  = 1920
+$gesHeight = 1080
 
 # engine_no_focus_sleep: Source sleeps 20ms EVERY frame while its window is not
 #   the active app. In VR the window frequently is not, so this caps the whole

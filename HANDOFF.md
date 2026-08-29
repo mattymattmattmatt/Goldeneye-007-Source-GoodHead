@@ -93,6 +93,42 @@ controller type is usually enough to get started.
 
 ---
 
+## RESOLUTION RULE: 16:9 ONLY (2026-08-29)
+
+This engine build refuses to boot on non-widescreen resolutions. It dies during
+video init, waiting forever for client.dll:
+
+| Resolution | Aspect | Boots |
+|---|---|---|
+| 1280x720  | 16:9 | yes |
+| 1920x1080 | 16:9 | yes -- noticeably sharper in the headset |
+| 1600x1200 | 4:3  | **NO** |
+| 1280x1280 | 1:1  | **NO** |
+
+This also explains the 1280x1280 failure that opened this whole session. It was
+never "square" -- it is "not 16:9".
+
+**Resolution is the real image-quality control**, not eye render targets and not
+any in-game setting: everything the headset sees is captured from the game
+window. At 1280x720 each eye was upscaled to a ~2496x2688 panel, a 3.7x vertical
+stretch. 1920x1080 cuts that to ~2.5x and was confirmed better in the headset.
+
+A taller aspect would suit the eye panel far better (the eye is ~0.96, taller
+than wide), but the engine will not accept one. **Do not "improve" the aspect** --
+16:9 with more lines is the only lever. Next step up is 2560x1440.
+
+Width/height are variables at the top of `Launch-GESVR.ps1`.
+
+### Window spanning
+
+At higher resolutions the window was reported filling both monitors. It is now
+re-centred on the primary display once at startup, from the MenuInput worker
+thread (`KeepWindowOnPrimaryMonitor`). That work must stay on that thread -- it
+owns all USER32, and window calls from the render thread deadlocked the game
+earlier in this project.
+
+---
+
 ## WEAPON + HUD REVIEW (19:54)
 
 Static review while the headset was unavailable. Headline: **large parts of the
