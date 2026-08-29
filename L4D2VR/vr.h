@@ -325,6 +325,9 @@ public:
 	// a map SteamVR routes the controller to the game instead and sends almost
 	// none (measured: 2), so fall back to a head ray there.
 	int m_MenuAimSource = 2;
+	// OFF. The captured frame already contains the game's own cursor, which we
+	// drive with SetCursorPos, so drawing our marker over it gave two cursors.
+	bool m_DrawMenuCursor = false;
 	bool m_MenuUseWin32 = true;
 	// Kill switch for all OS-level cursor driving (SetCursorPos /
 	// SetForegroundWindow / PostMessage). Turn off to rule the whole

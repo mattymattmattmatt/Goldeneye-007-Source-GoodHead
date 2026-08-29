@@ -264,6 +264,43 @@ namespace MenuInput
             // half-built window, decided nothing was wrong and never looked
             // again. Also RESIZES, not just moves -- moving a window wider than
             // the monitor cannot make it fit.
+            // Enumerate EVERY visible top-level window this process owns, once.
+            // The game window measures correctly placed on the primary monitor,
+            // yet the display is still reported as spanning both screens - so
+            // something else is on the second one. This says what.
+            {
+                static bool s_enum = false;
+                static DWORD s_enumAt = 0;
+                const DWORD en = GetTickCount();
+                if (s_enumAt == 0) s_enumAt = en;
+                if (!s_enum && (en - s_enumAt) > 8000)
+                {
+                    s_enum = true;
+                    struct E {
+                        static BOOL CALLBACK Proc(HWND h, LPARAM)
+                        {
+                            DWORD pid = 0;
+                            GetWindowThreadProcessId(h, &pid);
+                            if (pid != GetCurrentProcessId() || !IsWindowVisible(h))
+                                return TRUE;
+                            RECT r{};
+                            GetWindowRect(h, &r);
+                            if ((r.right - r.left) < 64 || (r.bottom - r.top) < 64)
+                                return TRUE;
+                            char cls[80] = {}, ttl[120] = {};
+                            GetClassNameA(h, cls, sizeof(cls));
+                            GetWindowTextA(h, ttl, sizeof(ttl));
+                            Game::logMsg("OURWINDOW hwnd=%p class='%s' title='%s' rect=(%ld,%ld)-(%ld,%ld) %ldx%ld",
+                                         h, cls, ttl, r.left, r.top, r.right, r.bottom,
+                                         r.right - r.left, r.bottom - r.top);
+                            return TRUE;
+                        }
+                    };
+                    Game::logMsg("OURWINDOW --- enumerating visible windows of this process ---");
+                    EnumWindows(&E::Proc, 0);
+                }
+            }
+
             static DWORD s_firstSeen = 0;
             static DWORD s_lastFit = 0;
             static int   s_fitLogs = 0;
@@ -835,8 +872,13 @@ void VR::Update()
 
         int cx = -1, cy = -1;
         ComputeMenuPointer(cx, cy);
+        // Pass -1 to suppress our own crosshair. The captured frame ALREADY
+        // contains the game's cursor, which we drive with SetCursorPos, so
+        // drawing a second marker on top of it is what produced two cursors.
         if (g_D3DVR9)
-            g_D3DVR9->CaptureForOverlay(&m_VKHUD, cx, cy);
+            g_D3DVR9->CaptureForOverlay(&m_VKHUD,
+                                        m_DrawMenuCursor ? cx : -1,
+                                        m_DrawMenuCursor ? cy : -1);
         const auto tCapture = vrclock::now();
         ShowMenuPanel();
         const auto tPanel = vrclock::now();
@@ -1152,15 +1194,50 @@ bool VR::ComputeMenuPointer(int &x, int &y)
     ip.vDirection.v[1] = -ctrl.m[1][2];
     ip.vDirection.v[2] = -ctrl.m[2][2];
     vr::VROverlayIntersectionResults_t ir{};
-    if (!m_Overlay->ComputeOverlayIntersection(m_MainMenuHandle, &ip, &ir))
+    if (m_Overlay->ComputeOverlayIntersection(m_MainMenuHandle, &ip, &ir))
+    {
+        float u = ir.vUVs.v[0];
+        float v = 1.0f - ir.vUVs.v[1];
+        if (u < 0.f) u = 0.f; if (u > 1.f) u = 1.f;
+        if (v < 0.f) v = 0.f; if (v > 1.f) v = 1.f;
+        x = (int)(u * (float)(windowWidth - 1));
+        y = (int)(v * (float)(windowHeight - 1));
+        return true;
+    }
+
+    // Intersection failed -- and for the head ray it has failed in every log
+    // ever captured (tip=0), which is why the character-select screen has no
+    // cursor. Fall back to ANGULAR mapping: measure how far the ray has turned
+    // from the panel's own forward direction and map that onto the panel. This
+    // needs no ray/quad hit, so it always produces a cursor, and it degrades
+    // gracefully at the edges instead of vanishing.
+    if (!useHead)
         return false;
 
-    float u = ir.vUVs.v[0];
-    float v = 1.0f - ir.vUVs.v[1];
-    if (u < 0.f) u = 0.f; if (u > 1.f) u = 1.f;
-    if (v < 0.f) v = 0.f; if (v > 1.f) v = 1.f;
-    x = (int)(u * (float)(windowWidth - 1));
-    y = (int)(v * (float)(windowHeight - 1));
+    const float fwdX = -ctrl.m[0][2];
+    const float fwdY = -ctrl.m[1][2];
+    const float fwdZ = -ctrl.m[2][2];
+
+    // Panel forward, captured when the panel was last placed.
+    const float pYaw = g_menuYaw;
+    const float rayYaw = atan2f(-fwdX, -fwdZ);
+    float dYaw = rayYaw - pYaw;
+    while (dYaw >  3.14159265f) dYaw -= 6.28318531f;
+    while (dYaw < -3.14159265f) dYaw += 6.28318531f;
+    const float pitch = asinf(fwdY < -1.0f ? -1.0f : (fwdY > 1.0f ? 1.0f : fwdY));
+
+    // Half-angle the panel subtends: width/2 over its distance.
+    const float halfW = atanf((m_MenuWidthMeters * 0.5f) / (m_MenuDistanceMeters > 0.1f ? m_MenuDistanceMeters : 2.0f));
+    const float aspect = (windowHeight > 0) ? ((float)windowWidth / (float)windowHeight) : 1.777f;
+    const float halfH = (aspect > 0.01f) ? (halfW / aspect) : halfW;
+
+    float nx = (halfW > 0.0001f) ? (dYaw / halfW) : 0.0f;      // -1..1 across
+    float ny = (halfH > 0.0001f) ? (-pitch / halfH) : 0.0f;    // -1..1 down
+    if (nx < -1.f) nx = -1.f; if (nx > 1.f) nx = 1.f;
+    if (ny < -1.f) ny = -1.f; if (ny > 1.f) ny = 1.f;
+
+    x = (int)((nx * 0.5f + 0.5f) * (float)(windowWidth - 1));
+    y = (int)((ny * 0.5f + 0.5f) * (float)(windowHeight - 1));
     return true;
 }
 
@@ -3303,6 +3380,7 @@ void VR::ParseConfigFile()
             m_MenuAimSource = (it->second.find("controller") != std::string::npos) ? 1 : 0;
     }
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
+    m_DrawMenuCursor = CfgBool(userConfig, "DrawMenuCursor", m_DrawMenuCursor);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);
     m_ShowMirrorWindow = CfgBool(userConfig, "ShowMirrorWindow", m_ShowMirrorWindow);
