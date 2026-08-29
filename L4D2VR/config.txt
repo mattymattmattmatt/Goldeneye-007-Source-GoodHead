@@ -129,6 +129,14 @@ MenuDriveCursor=true
 # consumes WM_MOUSEMOVE on its own, so the laser may still work without it.
 MenuUseSetCursorPos=true
 
+# Keep the game window on a single monitor. At higher render resolutions the
+# window was reported spanning both displays. Only the captured backbuffer
+# reaches the headset, so a stretched desktop window costs nothing visually, but
+# it is disruptive to work around. Handled on the input worker thread, which
+# owns all USER32 - doing window work from the render thread is what deadlocked
+# the game earlier in this project.
+KeepWindowOnPrimaryMonitor=true
+
 # How a menu click is delivered. The freeze happens immediately after a click is
 # posted, every time. PostMessage synthesises a message with no hardware input
 # behind it; VGUI calls SetMouseCapture on button-down, and a synthetic press

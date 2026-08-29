@@ -179,8 +179,8 @@ Ensure-Junction (Join-Path $sdk "gesource") $ges
 #
 # Do NOT use a square resolution. 1280x1280 killed boot on 2026-08-28 and cost
 # several sessions to diagnose.
-$gesWidth  = 1920
-$gesHeight = 1080
+$gesWidth  = 1600
+$gesHeight = 1200
 
 # engine_no_focus_sleep: Source sleeps 20ms EVERY frame while its window is not
 #   the active app. In VR the window frequently is not, so this caps the whole

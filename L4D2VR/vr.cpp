@@ -203,6 +203,7 @@ namespace MenuInput
     // what wedges the game, turn this off and rely on WM_MOUSEMOVE alone --
     // Source's inputsystem does consume it.
     static std::atomic<bool> g_useSetCursorPos{ true };
+    static std::atomic<bool> g_fitWindow{ true };
     // Click delivery. PostMessage synthesises a message with no hardware input
     // state behind it; VGUI calls SetMouseCapture on button-down, and a
     // synthetic press whose physical button was never down can leave it waiting
@@ -251,6 +252,36 @@ namespace MenuInput
             g_foreground.store(GetForegroundWindow() == hwnd ? 1 : 0);
             g_iconic.store(IsIconic(hwnd) ? 1 : 0);
             g_visible.store(IsWindowVisible(hwnd) ? 1 : 0);
+
+            // Keep the window on ONE monitor. At higher render resolutions the
+            // game window was reported spanning both displays. Only the captured
+            // backbuffer reaches the headset, so a stretched desktop window costs
+            // nothing visually -- but it is disruptive to work around. Done here
+            // because this thread owns all USER32; doing it from the render
+            // thread is what deadlocked the game earlier in this project.
+            static bool s_fitted = false;
+            if (!s_fitted && g_fitWindow.load())
+            {
+                RECT wr{};
+                if (GetWindowRect(hwnd, &wr))
+                {
+                    const int w = wr.right - wr.left;
+                    const int h = wr.bottom - wr.top;
+                    const int sw = GetSystemMetrics(SM_CXSCREEN);
+                    const int sh = GetSystemMetrics(SM_CYSCREEN);
+                    const int vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+                    if (w > 0 && sw > 0 && (w > sw + 8 || vw > sw + 8))
+                    {
+                        const int nx = (sw > w) ? (sw - w) / 2 : 0;
+                        const int ny = (sh > h) ? (sh - h) / 2 : 0;
+                        SetWindowPos(hwnd, nullptr, nx, ny, 0, 0,
+                                     SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE);
+                        Game::logMsg("Window fitted to primary monitor: was %dx%d at (%ld,%ld), moved to (%d,%d), primary %dx%d virtual %d",
+                                     w, h, wr.left, wr.top, nx, ny, sw, sh, vw);
+                    }
+                    s_fitted = true;
+                }
+            }
 
             if (!g_enabled.load())
                 continue;
@@ -3219,6 +3250,7 @@ void VR::ParseConfigFile()
     g_menuDriveCursor = m_MenuDriveCursor;
     MenuInput::g_enabled.store(m_MenuDriveCursor);
     MenuInput::g_useSetCursorPos.store(CfgBool(userConfig, "MenuUseSetCursorPos", true));
+    MenuInput::g_fitWindow.store(CfgBool(userConfig, "KeepWindowOnPrimaryMonitor", true));
     MenuInput::g_clickViaSendInput.store(CfgBool(userConfig, "MenuClickViaSendInput", false));
     g_theaterThrottleMs = m_TheaterHideThrottleMs;
     m_MenuUseVguiInternal = CfgBool(userConfig, "MenuInputVguiInternal", m_MenuUseVguiInternal);
