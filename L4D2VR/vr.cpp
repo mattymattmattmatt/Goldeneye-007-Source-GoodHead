@@ -3177,6 +3177,7 @@ void VR::ParseConfigFile()
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
     m_WeaponSetupHook = CfgBool(userConfig, "WeaponSetupHook", m_WeaponSetupHook);
     m_ViewmodelRenderablePatch = CfgBool(userConfig, "ViewmodelRenderablePatch", m_ViewmodelRenderablePatch);
+    m_ViewmodelScopedPose = CfgBool(userConfig, "ViewmodelScopedPose", m_ViewmodelScopedPose);
     m_SetupProbe = CfgBool(userConfig, "SetupProbe", m_SetupProbe);
     m_MotionDebug = CfgBool(userConfig, "MotionDebug", m_MotionDebug);
     m_VtableProbe = CfgBool(userConfig, "VtableProbe", m_VtableProbe);

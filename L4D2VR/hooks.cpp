@@ -1165,9 +1165,14 @@ bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &
 	// that had nothing to do with drawing it.
 	if (hkDrawModelSetup.fOriginal)
 	{
-		VmRenderable::g_havePose = applyPose;
+		if (applyPose)
+			VmRenderable::g_havePose = true;
 		const bool r = hkDrawModelSetup.fOriginal(ecx, info, pState, pCustomBoneToWorld, ppBoneToWorldOut);
-		VmRenderable::g_havePose = false;
+		// Latched mode keeps the pose active outside this call: the gun then
+		// stays on the hand through draw paths we do not intercept (firing),
+		// at the cost of the engine also seeing it for culling/attachments.
+		if (!m_VR || m_VR->m_ViewmodelScopedPose)
+			VmRenderable::g_havePose = false;
 		return r;
 	}
 	VmRenderable::g_havePose = false;

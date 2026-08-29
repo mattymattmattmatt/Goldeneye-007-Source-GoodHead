@@ -272,6 +272,15 @@ public:
 	// C_BaseAnimating::SetupBones builds the root transform from these two
 	// accessors, so every bone follows: no IK work needed.
 	bool m_ViewmodelRenderablePatch = true;
+	// true  = override only during the draw call (cleaner, but the gun snaps
+	//         back to the head on any draw path we do not intercept, e.g.
+	//         while firing)
+	// false = override latched on permanently (gun stays on the hand, but the
+	//         engine also gets our pose for culling/attachments, which is what
+	//         made it warp)
+	// Neither is correct: both are symptoms of a RENDER-ONLY override. The
+	// real fix is to move the viewmodel entity itself.
+	bool m_ViewmodelScopedPose = true;
 	// Safe naked capture of slot 18's actual arguments.
 	bool m_SetupProbe = true;
 	// Motion trace: samples the ENTIRE hand->weapon chain 4x/second while in a

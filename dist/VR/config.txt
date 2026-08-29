@@ -61,6 +61,20 @@ WeaponSetupHook=true
 # Set false if the weapon renders wrong or the game becomes unstable.
 ViewmodelRenderablePatch=true
 
+# true  = the hand pose is applied only during the weapon's draw call. Cleaner,
+#         but the gun snaps back to your head on any draw path we do not
+#         intercept -- which is what happens while firing.
+# false = the pose stays applied permanently. The gun stays on your hand through
+#         firing, at the cost of the engine also using it for culling and
+#         attachments, which is what made it warp.
+#
+# NEITHER IS CORRECT. Both are symptoms of a render-only override: the model is
+# drawn at your hand while the weapon ENTITY still sits at your head, so the mesh
+# ends up spanning two transforms (the stretching) and effects spawn from the old
+# position (the offset muzzle flash). Try both and use whichever bothers you
+# less; the real fix is to move the entity, which is the next piece of work.
+ViewmodelScopedPose=true
+
 # Safe naked capture of slot 18's actual arguments. Costs nothing; turn off once
 # the signature is known.
 SetupProbe=true
