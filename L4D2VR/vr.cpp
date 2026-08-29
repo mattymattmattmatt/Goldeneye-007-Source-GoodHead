@@ -668,6 +668,7 @@ int VR::SetActionManifest(const char *fileName)
     m_Input->GetActionHandle("/actions/main/in/Jump", &m_ActionJump);
     m_Input->GetActionHandle("/actions/main/in/PrimaryAttack", &m_ActionPrimaryAttack);
     m_Input->GetActionHandle("/actions/main/in/Reload", &m_ActionReload);
+    m_Input->GetActionHandle("/actions/main/in/TwoHand", &m_ActionTwoHand);
     m_Input->GetActionHandle("/actions/main/in/Use", &m_ActionUse);
     m_Input->GetActionHandle("/actions/main/in/Walk", &m_ActionWalk);
     m_Input->GetActionHandle("/actions/main/in/Turn", &m_ActionTurn);
@@ -2556,9 +2557,13 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
         m_TwoHanded = false;
         if (m_TwoHandedGrip)
         {
+            // Off-hand grip must be HELD, like HaloCEVR. Distance alone meant the
+            // grip engaged any time your hands drifted near each other.
+            const bool gripHeld = !m_TwoHandedNeedsGrip
+                || PressedDigitalAction(m_ActionTwoHand);
             Vector handDelta = m_LeftControllerPosAbs - m_RightControllerPosAbs;
             const float handDist = VectorLength(handDelta);
-            if (handDist > 10.0f && handDist < 32.0f &&
+            if (gripHeld && handDist > 6.0f && handDist < 40.0f &&
                 !Weapons::IsMelee(wpn) && !Weapons::IsDualWieldable(wpn) &&
                 !Weapons::IsThrowable(wpn))
             {
@@ -3182,6 +3187,7 @@ void VR::ParseConfigFile()
     m_ViewmodelAngleOffset = CfgVec(userConfig, "ViewmodelAngleOffset", m_ViewmodelAngleOffset);
     m_PerWeaponOffsets = CfgBool(userConfig, "PerWeaponOffsets", m_PerWeaponOffsets);
     m_TwoHandedGrip = CfgBool(userConfig, "TwoHandedGrip", m_TwoHandedGrip);
+    m_TwoHandedNeedsGrip = CfgBool(userConfig, "TwoHandedNeedsGrip", m_TwoHandedNeedsGrip);
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);

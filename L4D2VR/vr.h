@@ -169,6 +169,7 @@ public:
 	vr::VRActionHandle_t m_ActionPrimaryAttack = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionSecondaryAttack = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionReload = vr::k_ulInvalidActionHandle;
+	vr::VRActionHandle_t m_ActionTwoHand = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionWalk = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionTurn = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionUse = vr::k_ulInvalidActionHandle;
@@ -368,7 +369,11 @@ public:
 	bool m_PerWeaponOffsets = false;
 	// Off-hand near the barrel aims along both hands. Also stranded in
 	// UpdateTracking() until now.
+	// HaloCEVR-style: HOLD the off-hand grip to go two-handed, instead of
+	// guessing from hand distance. Distance alone fired whenever your hands
+	// happened to pass near each other.
 	bool m_TwoHandedGrip = true;
+	bool m_TwoHandedNeedsGrip = true;
 
 	bool m_ShowWristHUD = true;
 	float m_WristLookMaxDistance = 0.6f;

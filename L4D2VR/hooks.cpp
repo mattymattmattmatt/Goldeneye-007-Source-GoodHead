@@ -1119,6 +1119,7 @@ int __fastcall Hooks::dDrawModel(void *ecx, void *edx, int flags, void *pRendera
 // here lands in both the bone setup and the draw.
 bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &info, void *pState, void *pCustomBoneToWorld, void *ppBoneToWorldOut)
 {
+	bool applyPose = false;
 	if (m_VR && m_VR->m_IsVREnabled && m_VR->m_MotionControls
 	    && info.pModel && m_Game && m_Game->m_ModelInfo)
 	{
@@ -1138,7 +1139,7 @@ bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &
 				// point the renderable's transform accessors at our pose instead.
 				VmRenderable::g_origin = info.origin;
 				VmRenderable::g_angles = info.angles;
-				VmRenderable::g_havePose = true;
+				applyPose = true;
 				if (m_VR->m_ViewmodelRenderablePatch)
 					VmRenderable::Patch(info.pRenderable);
 
@@ -1154,8 +1155,22 @@ bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &
 		}
 	}
 
+	// Scope the override to THIS draw only.
+	//
+	// g_havePose used to be latched true forever, so the patched accessors
+	// returned the controller pose for every call the engine ever made on that
+	// class -- culling, attachment lookups, bounds, everything -- not just the
+	// bone setup we care about. That is the "warpy, all over the place" motion:
+	// the weapon's transform was being answered with our hand pose in contexts
+	// that had nothing to do with drawing it.
 	if (hkDrawModelSetup.fOriginal)
-		return hkDrawModelSetup.fOriginal(ecx, info, pState, pCustomBoneToWorld, ppBoneToWorldOut);
+	{
+		VmRenderable::g_havePose = applyPose;
+		const bool r = hkDrawModelSetup.fOriginal(ecx, info, pState, pCustomBoneToWorld, ppBoneToWorldOut);
+		VmRenderable::g_havePose = false;
+		return r;
+	}
+	VmRenderable::g_havePose = false;
 	return false;
 }
 

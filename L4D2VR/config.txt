@@ -154,6 +154,11 @@ PerWeaponOffsets=false
 # the line between your hands. Skipped for melee, dual-wieldables and throwables.
 TwoHandedGrip=true
 
+# HOLD the off-hand grip button to go two-handed, HaloCEVR-style. Previously it
+# engaged purely on hand distance, which fired whenever your hands drifted near
+# each other. Set false to go back to distance-only.
+TwoHandedNeedsGrip=true
+
 # Fine gun placement relative to your hand, in Source units (1 unit ~= 1 inch),
 # as forward,right,up. Positive forward pulls the weapon back toward you.
 # --- Weapon alignment -------------------------------------------------------
