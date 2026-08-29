@@ -351,8 +351,22 @@ namespace MenuInput
                 lastAim = aimSeq;
                 const int x = g_aimX.load();
                 const int y = g_aimY.load();
-                if (x >= 0 && y >= 0 && (x != lastX || y != lastY))
+                // Rate-limit and dead-zone.
+                //
+                // The angular head fallback always returns a position, and a head
+                // is never perfectly still, so this went from "a few updates" to
+                // SetCursorPos at up to 120Hz - fighting Source's own mouse
+                // handling and hanging the game 27 stereo passes into a map.
+                // A few pixels of dead zone and a 30Hz cap keep it usable while
+                // removing the flood.
+                static DWORD s_lastMove = 0;
+                const DWORD mnow = GetTickCount();
+                const int dx = (x > lastX) ? (x - lastX) : (lastX - x);
+                const int dy = (y > lastY) ? (y - lastY) : (lastY - y);
+                const bool moved = (lastX < 0) || (dx > 3) || (dy > 3);
+                if (x >= 0 && y >= 0 && moved && (mnow - s_lastMove) >= 33)
                 {
+                    s_lastMove = mnow;
                     lastX = x; lastY = y;
                     POINT pt = { x, y };
                     ClientToScreen(hwnd, &pt);

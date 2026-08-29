@@ -146,6 +146,11 @@ SbsDistance=1.0
 # Force with 'head' or 'controller'.
 MenuAimSource=auto
 
+# If the in-game character menu hangs the game again, set this false. It stops
+# the head pointer from touching the OS cursor, so you lose the in-map cursor
+# but keep a stable game.
+MenuDriveCursor=true
+
 # Draw our own crosshair marker into the menu image. MUST stay on: Source uses a
 # HARDWARE cursor, composited by Windows and never present in the D3D backbuffer
 # that we capture, so without this there is no cursor visible in the headset at
