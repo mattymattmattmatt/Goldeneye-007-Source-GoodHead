@@ -166,12 +166,28 @@ $gameLink = "G:\gesource"
 Ensure-Junction $gameLink $ges
 Ensure-Junction (Join-Path $sdk "gesource") $ges
 
+# --- Render resolution ------------------------------------------------------
+# EVERYTHING the headset sees is captured from this window, so this is the real
+# resolution control -- not any setting inside the game. At 1280x720 each eye was
+# upscaled to a ~2496x2688 panel, a 3.7x stretch vertically, which is where the
+# jaggies come from.
+#
+# 1920x1080 is 2.25x the pixels and the most widely supported resolution there
+# is. If the GPU can take it, 1600x1200 is actually BETTER for VR despite having
+# fewer pixels: the headset eye is taller than it is wide (aspect ~0.96), so
+# vertical resolution matters most, and 1200 beats 1080.
+#
+# Do NOT use a square resolution. 1280x1280 killed boot on 2026-08-28 and cost
+# several sessions to diagnose.
+$gesWidth  = 1920
+$gesHeight = 1080
+
 # engine_no_focus_sleep: Source sleeps 20ms EVERY frame while its window is not
 #   the active app. In VR the window frequently is not, so this caps the whole
 #   engine and stalls title -> menu. 0 removes the sleep.
 # snd_mute_losefocus: Source mutes audio on focus loss -- the "buggy sound".
 # Resolution is deliberately untouched: 1280x1280 is what broke boot on 08-28.
-$vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 0 +mat_queue_mode 0 +mat_vsync 0 +mat_antialias 0 +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width 1280 -height 720"
+$vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 0 +mat_queue_mode 0 +mat_vsync 0 +mat_antialias 0 +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width $gesWidth -height $gesHeight"
 
 # Must go through Steam so SDK 2007 mounts its VPKs (startup_loading.vtf lives there).
 $steamExe = Join-Path $steam "steam.exe"
