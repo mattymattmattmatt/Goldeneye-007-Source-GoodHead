@@ -2220,6 +2220,12 @@ QAngle VR::GetRecommendedViewmodelAbsAngle()
 
     QAngle::VectorAngles(m_ViewmodelForward, m_ViewmodelUp, result);
 
+    // Model-only tweak. Aim is driven by m_RightControllerAngAbs elsewhere, so
+    // dialling the weapon into your hand here cannot move your point of impact.
+    result.x += m_ViewmodelAngleOffset.x;
+    result.y += m_ViewmodelAngleOffset.y;
+    result.z += m_ViewmodelAngleOffset.z;
+
     return result;
 }
 
@@ -2632,7 +2638,7 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
             const Vector vmWrite = GetRecommendedViewmodelAbsPos();
             Game::logMsg("MOTION rawHand=(%.2f,%.2f,%.2f)m rawHmd=(%.2f,%.2f,%.2f)m armM=%.2f armU=%.1f "
                          "handWorld=(%.1f,%.1f,%.1f) player=(%.1f,%.1f,%.1f) fromPlayer=(%.1f,%.1f,%.1f)|%.1f| "
-                         "vmWrite=(%.1f,%.1f,%.1f) ang=(%.0f,%.0f,%.0f) scale=%.1f execMoves=%ld getOrigin=%ld getAngles=%ld",
+                         "vmWrite=(%.1f,%.1f,%.1f) ang=(%.0f,%.0f,%.0f) hmdAng=(%.0f,%.0f,%.0f) scale=%.1f execMoves=%ld getOrigin=%ld getAngles=%ld",
                          rawHand.x, rawHand.y, rawHand.z,
                          rawHmd.x, rawHmd.y, rawHmd.z,
                          armM, armM * m_VRScale,
@@ -2641,6 +2647,7 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
                          fromPlayer.x, fromPlayer.y, fromPlayer.z, VectorLength(fromPlayer),
                          vmWrite.x, vmWrite.y, vmWrite.z,
                          m_RightControllerAngAbs.x, m_RightControllerAngAbs.y, m_RightControllerAngAbs.z,
+                         m_HmdAngAbs.x, m_HmdAngAbs.y, m_HmdAngAbs.z,
                          m_VRScale, GESVR_ExecMoveCount(),
                          GESVR_RenderOriginCalls(), GESVR_RenderAnglesCalls());
         }
@@ -3172,6 +3179,7 @@ void VR::ParseConfigFile()
     m_SbsDistance = CfgFloat(userConfig, "SbsDistance", m_SbsDistance);
     m_GunGripAngle = CfgFloat(userConfig, "GunGripAngle", m_GunGripAngle);
     m_ViewmodelUserOffset = CfgVec(userConfig, "ViewmodelOffset", m_ViewmodelUserOffset);
+    m_ViewmodelAngleOffset = CfgVec(userConfig, "ViewmodelAngleOffset", m_ViewmodelAngleOffset);
     m_PerWeaponOffsets = CfgBool(userConfig, "PerWeaponOffsets", m_PerWeaponOffsets);
     m_TwoHandedGrip = CfgBool(userConfig, "TwoHandedGrip", m_TwoHandedGrip);
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);

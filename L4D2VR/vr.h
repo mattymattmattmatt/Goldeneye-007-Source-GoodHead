@@ -352,6 +352,11 @@ public:
 	// User tweak ADDED on top of the per-weapon table value, so setting
 	// ViewmodelOffset in config no longer erases the per-weapon pose.
 	Vector m_ViewmodelUserOffset = { 0.0f, 0.0f, 0.0f };
+	// Angle tweak applied to the RENDERED WEAPON ONLY (pitch, yaw, roll in
+	// degrees). Kept separate from GunGripAngle, which corrects AIM: aim is
+	// already reported good, so model alignment must be tunable without
+	// disturbing where the bullets go.
+	Vector m_ViewmodelAngleOffset = { 0.0f, 0.0f, 0.0f };
 	// Per-weapon poses come from Weapons::GetOffset. That table was unreachable
 	// (its only caller, UpdateTracking(), has no call sites), so every gun used
 	// one generic pose. Set false to go back to that.

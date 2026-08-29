@@ -156,7 +156,19 @@ TwoHandedGrip=true
 
 # Fine gun placement relative to your hand, in Source units (1 unit ~= 1 inch),
 # as forward,right,up. Positive forward pulls the weapon back toward you.
+# --- Weapon alignment -------------------------------------------------------
+# Hand tracking is live, so these two dial the gun into your hand. Both
+# hot-reload: edit, save, and the change lands in about a second while you are
+# standing in a map. Neither affects where bullets go -- aim is driven
+# separately by GunGripAngle, which is already correct.
+#
+# Position, in Source units (~1 inch), as forward,right,up relative to your
+# hand. Positive forward pushes the gun away from you.
 ViewmodelOffset=0,0,0
+
+# Rotation of the WEAPON MODEL only, as pitch,yaw,roll in degrees.
+# If the gun looks rotated wrong in your hand, adjust here, not GunGripAngle.
+ViewmodelAngleOffset=0,0,0
 TurnSpeed=0.35
 SnapTurning=false
 SnapTurnAngle=45.0
