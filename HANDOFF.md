@@ -93,39 +93,37 @@ controller type is usually enough to get started.
 
 ---
 
-## RESOLUTION RULE: 16:9 ONLY (2026-08-29)
+## RESOLUTION RULE: CANNOT EXCEED THE DESKTOP (2026-08-29, corrected)
 
-This engine build refuses to boot on non-widescreen resolutions. It dies during
-video init, waiting forever for client.dll:
+In windowed mode Source cannot create a window larger than the desktop. It dies
+during video init, waiting forever for client.dll. On a 1920x1080 desktop:
 
-| Resolution | Aspect | Boots |
+| Resolution | vs desktop | Boots |
 |---|---|---|
-| 1280x720  | 16:9 | yes |
-| 1920x1080 | 16:9 | yes -- noticeably sharper in the headset |
-| 1600x1200 | 4:3  | **NO** |
-| 1280x1280 | 1:1  | **NO** |
+| 1280x720  | fits          | yes |
+| 1920x1080 | fits exactly  | yes |
+| 1600x1200 | 1200 > 1080   | **NO** |
+| 1280x1280 | 1280 > 1080   | **NO** |
+| 2560x1440 | both exceed   | **NO** |
 
-This also explains the 1280x1280 failure that opened this whole session. It was
-never "square" -- it is "not 16:9".
+**An earlier version of this note blamed the ASPECT RATIO. That was wrong.** It
+only looked that way because every taller resolution tested also happened to
+exceed the desktop height. The real constraint is size, not shape - which also
+finally explains the 1280x1280 failure that opened this whole project.
 
-**Resolution is the real image-quality control**, not eye render targets and not
-any in-game setting: everything the headset sees is captured from the game
-window. At 1280x720 each eye was upscaled to a ~2496x2688 panel, a 3.7x vertical
-stretch. 1920x1080 cuts that to ~2.5x and was confirmed better in the headset.
+### Consequence
 
-A taller aspect would suit the eye panel far better (the eye is ~0.96, taller
-than wide), but the engine will not accept one. **Do not "improve" the aspect** --
-16:9 with more lines is the only lever. Next step up is 2560x1440.
+**1920x1080 is the ceiling on a 1080p desktop, and raising the window is a dead
+end for sharpness.** The remaining route is `EyeRenderTargets=true` with
+`EyeRenderScale`, which renders each eye at a MULTIPLE OF THE WINDOW internally
+and is not bound by the desktop at all (1.5 gives 2880x1620 from a 1920x1080
+window).
 
-Width/height are variables at the top of `Launch-GESVR.ps1`.
+That path previously failed only because it was sized to the HMD's recommended
+2496x2688; it now scales the window instead. It also needs watching for the
+"sliver" problem: the 2D menu/HUD still draw into the window backbuffer that
+CaptureForOverlay reads, so the overlay can end up showing a fragment.
 
-### Window spanning
-
-At higher resolutions the window was reported filling both monitors. It is now
-re-centred on the primary display once at startup, from the MenuInput worker
-thread (`KeepWindowOnPrimaryMonitor`). That work must stay on that thread -- it
-owns all USER32, and window calls from the render thread deadlocked the game
-earlier in this project.
 
 ---
 
