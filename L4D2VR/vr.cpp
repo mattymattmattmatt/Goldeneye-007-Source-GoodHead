@@ -729,11 +729,15 @@ VR::VR(Game *game)
     m_Overlay->CreateOverlay("MenuOverlayKey", "MenuOverlay", &m_MainMenuHandle);
     m_Overlay->CreateOverlay("HUDOverlayKey", "HUDOverlay", &m_HUDHandle);
     m_Overlay->CreateOverlay("GESVRWorldKey", "GESVRWorld", &m_WorldHandle);
-    m_Overlay->CreateOverlay("GESVRHudPanelKey", "GESVRHudPanel", &m_HudPanelHandle);
-    // Never interactive: it must not steal the laser from the menu panel.
-    m_Overlay->SetOverlayFlag(m_HudPanelHandle,
-        vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
-    m_Overlay->SetOverlaySortOrder(m_HudPanelHandle, 90);
+    m_Overlay->CreateOverlay("GESVRHudFoesKey",  "GESVRHudFoes",  &m_HudFoesHandle);
+    m_Overlay->CreateOverlay("GESVRHudAmmoKey",  "GESVRHudAmmo",  &m_HudAmmoHandle);
+    m_Overlay->CreateOverlay("GESVRHudRadarKey", "GESVRHudRadar", &m_HudRadarHandle);
+    // Never interactive: they must not steal the laser from the menu panel.
+    for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle, m_HudRadarHandle })
+    {
+        m_Overlay->SetOverlayFlag(h, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
+        m_Overlay->SetOverlaySortOrder(h, 90);
+    }
     m_Overlay->SetOverlayInputMethod(m_MainMenuHandle, vr::VROverlayInputMethod_Mouse);
     m_Overlay->SetOverlayInputMethod(m_HUDHandle, vr::VROverlayInputMethod_Mouse);
     m_Overlay->SetOverlayFlag(m_MainMenuHandle, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
@@ -931,7 +935,7 @@ void VR::Update()
     // the 2D HUD, which is exactly what we want to crop from.
     // The HUD panel draws from this same capture, so it must refresh when
     // either consumer is live -- not just the wrist watch.
-    if (g_D3DVR9 && (m_ShowWristHUD || m_HudPanelVisible))
+    if (g_D3DVR9 && (m_ShowWristHUD || m_HudElementsVisible || m_HudRadarEnabled))
         g_D3DVR9->CaptureForOverlay(&m_VKHUD, -1, -1);
 
     // UpdateWristHUD/UpdateHurtHUD had NO call sites: the whole wrist
@@ -942,13 +946,14 @@ void VR::Update()
         UpdateWristHUD();
         UpdateHurtHUD();
         DetectHeadTap();
-        UpdateHudPanel();
+        UpdateHudElements();
     }
     else
     {
         HideWristOverlays();
-        if (m_Overlay && m_HudPanelHandle)
-            m_Overlay->HideOverlay(m_HudPanelHandle);
+        if (m_Overlay)
+            for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle, m_HudRadarHandle })
+                if (h) m_Overlay->HideOverlay(h);
     }
 
     ProcessInput();
@@ -3268,16 +3273,66 @@ void VR::SubmitWristOverlay(vr::VROverlayHandle_t handle, vr::TrackedDeviceIndex
     m_Overlay->ShowOverlay(handle);
 }
 
+// Parse a crop key written as four fractions: u0 v0 u1 v1.
+static void CfgCrop(const std::unordered_map<std::string, std::string> &cfg,
+                    const char *key, float out[4])
+{
+    auto it = cfg.find(key);
+    if (it == cfg.end())
+        return;
+    float v[4];
+    if (sscanf(it->second.c_str(), "%f %f %f %f", &v[0], &v[1], &v[2], &v[3]) != 4)
+    {
+        Game::logMsg("config: %s needs four numbers 'u0 v0 u1 v1', ignoring", key);
+        return;
+    }
+    for (int i = 0; i < 4; ++i)
+    {
+        if (v[i] < 0.0f) v[i] = 0.0f;
+        if (v[i] > 1.0f) v[i] = 1.0f;
+    }
+    if (v[2] <= v[0] || v[3] <= v[1])
+    {
+        Game::logMsg("config: %s is empty or inverted, ignoring", key);
+        return;
+    }
+    for (int i = 0; i < 4; ++i)
+        out[i] = v[i];
+}
+
 // Head-tap gesture, in the spirit of HaloCEVR's flashlight tap.
 //
 // A tap on the side of the headset shows up as a sharp step in the HMD's
 // reported linear velocity: the head barely moves, but it moves FAST for one
-// or two frames. Comparing velocity frame to frame gives an acceleration
-// proxy without any extra tracking. Ordinary looking around produces smooth,
-// much smaller steps, so a threshold plus a cooldown separates the two
-// cleanly. The cooldown also stops one physical tap toggling several times.
+// or two frames. Comparing velocity frame to frame gives an acceleration proxy
+// without any extra tracking. Ordinary looking around produces smooth, much
+// smaller steps, so a threshold plus a cooldown separates the two; the cooldown
+// also stops one physical tap toggling several times.
+//
+// The largest jolt seen is logged periodically. If taps are not registering,
+// that line says what your taps actually produce, so HudTapThreshold can be set
+// from the log rather than guessed at.
 void VR::DetectHeadTap()
 {
+    const unsigned now = (unsigned)GetTickCount();
+
+    // Fallback toggle. The tap depends on headset, mounting and how hard you
+    // hit it; a key that always works beats a gesture that might not.
+    if (m_HudToggleKey != 0)
+    {
+        const bool down = (GetAsyncKeyState(m_HudToggleKey) & 0x8000) != 0;
+        static bool s_wasDown = false;
+        if (down && !s_wasDown && (m_LastHeadTapMs == 0
+                                   || (now - m_LastHeadTapMs) >= (unsigned)m_HudTapCooldownMs))
+        {
+            m_LastHeadTapMs = now;
+            m_HudElementsVisible = !m_HudElementsVisible;
+            Game::logMsg("HUD toggle key -> HUD elements %s",
+                         m_HudElementsVisible ? "ON" : "OFF");
+        }
+        s_wasDown = down;
+    }
+
     if (!m_HudTapToggle)
         return;
 
@@ -3299,51 +3354,154 @@ void VR::DetectHeadTap()
     const Vector dv = v - m_PrevHeadVel;
     m_PrevHeadVel = v;
 
-    // Vector::Length is declared by the SDK header but not linked into this
-    // project, so compute the magnitude directly.
+    // Vector::Length is declared by the SDK header but not linked here.
     const float jolt = sqrtf(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z);
-    const unsigned now = (unsigned)GetTickCount();
+    if (jolt > m_MaxJoltSeen)
+        m_MaxJoltSeen = jolt;
+    if (m_LastJoltLogMs == 0 || (now - m_LastJoltLogMs) > 3000)
+    {
+        m_LastJoltLogMs = now;
+        Game::logMsg("HeadTap: max jolt over last 3s = %.2f (threshold %.2f)",
+                     m_MaxJoltSeen, m_HudTapThreshold);
+        m_MaxJoltSeen = 0.0f;
+    }
+
     if (jolt < m_HudTapThreshold)
         return;
     if (m_LastHeadTapMs != 0 && (now - m_LastHeadTapMs) < (unsigned)m_HudTapCooldownMs)
         return;
 
     m_LastHeadTapMs = now;
-    m_HudPanelVisible = !m_HudPanelVisible;
-    Game::logMsg("Head tap detected (jolt=%.2f) -> HUD panel %s",
-                 jolt, m_HudPanelVisible ? "ON" : "OFF");
+    m_HudElementsVisible = !m_HudElementsVisible;
+    Game::logMsg("Head tap detected (jolt=%.2f) -> HUD elements %s",
+                 jolt, m_HudElementsVisible ? "ON" : "OFF");
 }
 
-// The 2D HUD lives at the edges of the game's frame, and the per-eye frustum
-// crop throws those edges away -- which is why health and ammo are simply not
-// in view. This puts the captured frame on a panel locked in front of the
-// head, so the whole HUD is readable on demand.
-void VR::UpdateHudPanel()
+// One head-locked HUD element, cropped out of the captured frame.
+void VR::ShowHudElement(vr::VROverlayHandle_t h, const float crop[4],
+                        float x, float y, float dist, float width)
 {
-    if (!m_Overlay || !m_HudPanelHandle)
+    if (!h)
         return;
-
-    if (!m_HudPanelVisible || !TextureReady(m_VKHUD))
-    {
-        m_Overlay->HideOverlay(m_HudPanelHandle);
-        return;
-    }
 
     // HMD space is +x right, +y up, -z forward.
     vr::HmdMatrix34_t xf = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, m_HudPanelHeight,
-        0.0f, 0.0f, 1.0f, -m_HudPanelDistance
+        1.0f, 0.0f, 0.0f, x,
+        0.0f, 1.0f, 0.0f, y,
+        0.0f, 0.0f, 1.0f, -dist
     };
     m_Overlay->SetOverlayTransformTrackedDeviceRelative(
-        m_HudPanelHandle, vr::k_unTrackedDeviceIndex_Hmd, &xf);
-    m_Overlay->SetOverlayWidthInMeters(m_HudPanelHandle, m_HudPanelWidth);
+        h, vr::k_unTrackedDeviceIndex_Hmd, &xf);
+    m_Overlay->SetOverlayWidthInMeters(h, width);
 
-    vr::VRTextureBounds_t bounds = { m_HudPanelU0, m_HudPanelV0,
-                                     m_HudPanelU1, m_HudPanelV1 };
-    m_Overlay->SetOverlayTextureBounds(m_HudPanelHandle, &bounds);
-    SetOverlayTextureLocked(m_Overlay, m_HudPanelHandle, &m_VKHUD.m_VRTexture);
-    m_Overlay->ShowOverlay(m_HudPanelHandle);
+    vr::VRTextureBounds_t b = { crop[0], crop[1], crop[2], crop[3] };
+    m_Overlay->SetOverlayTextureBounds(h, &b);
+    SetOverlayTextureLocked(m_Overlay, h, &m_VKHUD.m_VRTexture);
+    m_Overlay->ShowOverlay(h);
+}
+
+void VR::UpdateHudElements()
+{
+    if (!m_Overlay)
+        return;
+
+    const bool haveTex = TextureReady(m_VKHUD);
+
+    // Foes counter and ammo: carried in view, toggled by the tap.
+    if (m_HudElementsVisible && haveTex)
+    {
+        ShowHudElement(m_HudFoesHandle, m_HudFoesCrop,
+                       m_HudFoesX, m_HudFoesY, m_HudFoesDistance, m_HudFoesWidth);
+        ShowHudElement(m_HudAmmoHandle, m_HudAmmoCrop,
+                       m_HudAmmoX, m_HudAmmoY, m_HudAmmoDistance, m_HudAmmoWidth);
+    }
+    else
+    {
+        if (m_HudFoesHandle) m_Overlay->HideOverlay(m_HudFoesHandle);
+        if (m_HudAmmoHandle) m_Overlay->HideOverlay(m_HudAmmoHandle);
+    }
+
+    // Radar and timer: parked below rather than carried in view, so a glance
+    // down finds them. Positioned relative to where the head IS, but rotated to
+    // face the head, so it reads correctly from whatever angle you look.
+    if (!m_HudRadarEnabled || !haveTex || !m_HudRadarHandle)
+    {
+        if (m_HudRadarHandle) m_Overlay->HideOverlay(m_HudRadarHandle);
+        return;
+    }
+
+    const vr::TrackedDevicePose_t &hmd = m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
+    if (!hmd.bPoseIsValid)
+    {
+        m_Overlay->HideOverlay(m_HudRadarHandle);
+        return;
+    }
+
+    const vr::HmdMatrix34_t &m = hmd.mDeviceToAbsoluteTracking;
+    const Vector headPos(m.m[0][3], m.m[1][3], m.m[2][3]);
+
+    // Head forward flattened to horizontal, so the panel does not swing away
+    // when you look up or down -- only which way you are facing should matter.
+    Vector fwd(-m.m[0][2], 0.0f, -m.m[2][2]);
+    const float fl = sqrtf(fwd.x * fwd.x + fwd.z * fwd.z);
+    if (fl > 0.0001f) { fwd.x /= fl; fwd.z /= fl; }
+    else              { fwd.x = 0.0f; fwd.z = -1.0f; }
+
+    const Vector pos(headPos.x + fwd.x * m_HudRadarForward,
+                     headPos.y - m_HudRadarDrop,
+                     headPos.z + fwd.z * m_HudRadarForward);
+
+    // Billboard: an overlay faces along +z of its own transform, so aim that
+    // straight at the head.
+    Vector z(headPos.x - pos.x, headPos.y - pos.y, headPos.z - pos.z);
+    const float zl = sqrtf(z.x * z.x + z.y * z.y + z.z * z.z);
+    if (zl < 0.0001f)
+    {
+        m_Overlay->HideOverlay(m_HudRadarHandle);
+        return;
+    }
+    z.x /= zl; z.y /= zl; z.z /= zl;
+
+    // Keep the panel's up axis tied to the way you are facing, so the radar is
+    // not upside down when you turn around.
+    Vector ref(fwd.x, 0.0f, fwd.z);
+    Vector xa(ref.y * z.z - ref.z * z.y,
+              ref.z * z.x - ref.x * z.z,
+              ref.x * z.y - ref.y * z.x);
+    float xl = sqrtf(xa.x * xa.x + xa.y * xa.y + xa.z * xa.z);
+    if (xl < 0.0001f)
+    {
+        ref = Vector(0.0f, 0.0f, -1.0f);
+        xa = Vector(ref.y * z.z - ref.z * z.y,
+                    ref.z * z.x - ref.x * z.z,
+                    ref.x * z.y - ref.y * z.x);
+        xl = sqrtf(xa.x * xa.x + xa.y * xa.y + xa.z * xa.z);
+        if (xl < 0.0001f)
+        {
+            m_Overlay->HideOverlay(m_HudRadarHandle);
+            return;
+        }
+    }
+    xa.x /= xl; xa.y /= xl; xa.z /= xl;
+
+    const Vector ya(z.y * xa.z - z.z * xa.y,
+                    z.z * xa.x - z.x * xa.z,
+                    z.x * xa.y - z.y * xa.x);
+
+    vr::HmdMatrix34_t xf = {
+        xa.x, ya.x, z.x, pos.x,
+        xa.y, ya.y, z.y, pos.y,
+        xa.z, ya.z, z.z, pos.z
+    };
+    m_Overlay->SetOverlayTransformAbsolute(
+        m_HudRadarHandle, vr::VRCompositor()->GetTrackingSpace(), &xf);
+    m_Overlay->SetOverlayWidthInMeters(m_HudRadarHandle, m_HudRadarWidth);
+
+    vr::VRTextureBounds_t b = { m_HudRadarCrop[0], m_HudRadarCrop[1],
+                                m_HudRadarCrop[2], m_HudRadarCrop[3] };
+    m_Overlay->SetOverlayTextureBounds(m_HudRadarHandle, &b);
+    SetOverlayTextureLocked(m_Overlay, m_HudRadarHandle, &m_VKHUD.m_VRTexture);
+    m_Overlay->ShowOverlay(m_HudRadarHandle);
 }
 
 void VR::UpdateWristHUD()
@@ -3601,10 +3759,28 @@ void VR::ParseConfigFile()
     m_HudTapToggle = CfgBool(userConfig, "HudTapToggle", m_HudTapToggle);
     m_HudTapThreshold = CfgFloat(userConfig, "HudTapThreshold", m_HudTapThreshold);
     m_HudTapCooldownMs = (int)CfgFloat(userConfig, "HudTapCooldownMs", (float)m_HudTapCooldownMs);
-    m_HudPanelDistance = CfgFloat(userConfig, "HudPanelDistance", m_HudPanelDistance);
-    m_HudPanelWidth = CfgFloat(userConfig, "HudPanelWidth", m_HudPanelWidth);
-    m_HudPanelHeight = CfgFloat(userConfig, "HudPanelHeight", m_HudPanelHeight);
-    m_HudPanelVisible = CfgBool(userConfig, "HudPanelDefaultOn", m_HudPanelVisible);
+    m_HudToggleKey = (int)CfgFloat(userConfig, "HudToggleKey", (float)m_HudToggleKey);
+    m_HudElementsVisible = CfgBool(userConfig, "HudElementsDefaultOn", m_HudElementsVisible);
+
+    m_HudFoesX = CfgFloat(userConfig, "HudFoesX", m_HudFoesX);
+    m_HudFoesY = CfgFloat(userConfig, "HudFoesY", m_HudFoesY);
+    m_HudFoesDistance = CfgFloat(userConfig, "HudFoesDistance", m_HudFoesDistance);
+    m_HudFoesWidth = CfgFloat(userConfig, "HudFoesWidth", m_HudFoesWidth);
+
+    m_HudAmmoX = CfgFloat(userConfig, "HudAmmoX", m_HudAmmoX);
+    m_HudAmmoY = CfgFloat(userConfig, "HudAmmoY", m_HudAmmoY);
+    m_HudAmmoDistance = CfgFloat(userConfig, "HudAmmoDistance", m_HudAmmoDistance);
+    m_HudAmmoWidth = CfgFloat(userConfig, "HudAmmoWidth", m_HudAmmoWidth);
+
+    m_HudRadarEnabled = CfgBool(userConfig, "HudRadarEnabled", m_HudRadarEnabled);
+    m_HudRadarDrop = CfgFloat(userConfig, "HudRadarDrop", m_HudRadarDrop);
+    m_HudRadarForward = CfgFloat(userConfig, "HudRadarForward", m_HudRadarForward);
+    m_HudRadarWidth = CfgFloat(userConfig, "HudRadarWidth", m_HudRadarWidth);
+
+    // Crop rectangles, as fractions of the frame: u0 v0 u1 v1.
+    CfgCrop(userConfig, "HudFoesCrop", m_HudFoesCrop);
+    CfgCrop(userConfig, "HudAmmoCrop", m_HudAmmoCrop);
+    CfgCrop(userConfig, "HudRadarCrop", m_HudRadarCrop);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);
     m_ShowMirrorWindow = CfgBool(userConfig, "ShowMirrorWindow", m_ShowMirrorWindow);

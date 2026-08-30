@@ -320,25 +320,50 @@ public:
 	// VR::EffectiveMenuGeometry -- Source's GameUI is laid out in fixed pixels.
 	bool m_MenuScaleWithRes = true;
 
-	// HUD panel. The 2D HUD sits at the frame's edges and the per-eye frustum
-	// crop discards them, so health/ammo are off-screen in the headset. This
-	// panel shows the captured frame head-locked, toggled by tapping the side
-	// of the headset (see VR::DetectHeadTap).
-	vr::VROverlayHandle_t m_HudPanelHandle = 0;
-	bool  m_HudPanelVisible = false;
-	float m_HudPanelDistance = 1.0f;   // metres in front of the head
-	float m_HudPanelWidth = 1.3f;      // panel width in metres
-	float m_HudPanelHeight = -0.10f;   // slight drop so it is a glance, not a wall
-	// Texture crop as (uMin, vMin, uMax, vMax); full frame by default.
-	float m_HudPanelU0 = 0.0f, m_HudPanelV0 = 0.0f;
-	float m_HudPanelU1 = 1.0f, m_HudPanelV1 = 1.0f;
+	// HUD elements.
+	//
+	// The 2D HUD is drawn at the EDGES of the game's frame and the per-eye
+	// frustum crop discards exactly those edges, so none of it reaches the
+	// headset. Each wanted element is cropped out of the captured frame by
+	// texture bounds and given its own overlay, placed where it is useful.
+	// Elements deliberately NOT carried over: kill feed, score/points text and
+	// the weapon icon.
+	//
+	// Crops are fractions of the frame (u0,v0)-(u1,v1) so they hold at any
+	// resolution, and are config keys because they are read off a screenshot.
+	vr::VROverlayHandle_t m_HudFoesHandle = 0;
+	vr::VROverlayHandle_t m_HudAmmoHandle = 0;
+	vr::VROverlayHandle_t m_HudRadarHandle = 0;
+
+	float m_HudFoesCrop[4]  = { 0.41f, 0.02f, 0.62f, 0.11f };
+	float m_HudAmmoCrop[4]  = { 0.85f, 0.90f, 0.94f, 1.00f };
+	float m_HudRadarCrop[4] = { 0.44f, 0.80f, 0.61f, 1.00f };
+
+	// Head-locked elements, toggled by the head tap.
+	bool  m_HudElementsVisible = false;
+	float m_HudFoesX = 0.00f, m_HudFoesY = 0.24f;
+	float m_HudFoesDistance = 1.2f, m_HudFoesWidth = 0.34f;
+	float m_HudAmmoX = 0.34f, m_HudAmmoY = -0.24f;
+	float m_HudAmmoDistance = 1.2f, m_HudAmmoWidth = 0.20f;
+
+	// Radar + timer: parked below you rather than in view. It keeps its place
+	// so a glance down finds it, but billboards to face the headset.
+	bool  m_HudRadarEnabled = true;
+	float m_HudRadarDrop = 0.50f;      // metres below eye level
+	float m_HudRadarForward = 0.30f;   // metres ahead, along head yaw
+	float m_HudRadarWidth = 0.30f;
 
 	bool  m_HudTapToggle = true;
-	float m_HudTapThreshold = 1.6f;    // m/s step between frames
+	float m_HudTapThreshold = 1.2f;    // m/s step between frames
 	int   m_HudTapCooldownMs = 700;
+	// Fallback toggle key (virtual-key code) for when the tap will not trigger.
+	// 0x70 is F1. Set 0 to disable.
+	int   m_HudToggleKey = 0x70;
 	Vector m_PrevHeadVel = Vector(0.0f, 0.0f, 0.0f);
 	bool  m_HaveHeadVel = false;
 	unsigned m_LastHeadTapMs = 0;
+	float m_MaxJoltSeen = 0.0f;
+	unsigned m_LastJoltLogMs = 0;
 	float m_SbsWidthMeters = 3.17f;
 	float m_SbsDistance = 1.0f;
 
@@ -515,7 +540,9 @@ public:
 	bool ComputeMenuPointer(int &x, int &y);
 	void EffectiveMenuGeometry(float &widthM, float &distM) const;
 	void DetectHeadTap();
-	void UpdateHudPanel();
+	void UpdateHudElements();
+	void ShowHudElement(vr::VROverlayHandle_t h, const float crop[4],
+	                    float x, float y, float dist, float width);
 	void ShowMenuPanel();
 	void HideMenuPanel();
 	void ShowWorldStereoOverlay();
