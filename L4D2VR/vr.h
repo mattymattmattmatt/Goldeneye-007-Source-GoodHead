@@ -250,6 +250,13 @@ public:
 	// CaptureForOverlay reads, so the overlay showed a fragment.
 	// Use EyeRenderScale for a safe middle ground instead.
 	bool m_UseEyeRenderTargets = false;
+	// Size of the superset-frustum eye render targets. Computed in Init from the
+	// HMD's recommended per-eye size divided by how much of the superset image
+	// each eye actually uses, so that AFTER the texture-bounds crop each eye
+	// still has roughly native resolution. The texture and the viewport MUST be
+	// these same numbers -- them disagreeing is what rendered a sliver.
+	uint32_t m_EyeRTWidth = 0;
+	uint32_t m_EyeRTHeight = 0;
 
 	// IVModelRender vtable index of DrawModelExecute. Measured, not guessed:
 	// a naked per-slot counter showed [18]=128689 and [19]=128291 as the two

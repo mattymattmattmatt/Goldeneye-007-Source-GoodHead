@@ -658,17 +658,17 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	{
 		if (!m_VR->m_CreatedVRTextures)
 			m_VR->CreateVRTextures();
-		if (m_VR->m_CreatedVRTextures && m_VR->m_LeftEyeTexture && m_VR->m_RightEyeTexture)
+		if (m_VR->m_CreatedVRTextures && m_VR->m_LeftEyeTexture && m_VR->m_RightEyeTexture
+		    && m_VR->m_EyeRTWidth > 0 && m_VR->m_EyeRTHeight > 0)
 		{
 			rndrContext = m_Game->m_MaterialSystem->GetRenderContext();
 			leftEyeView.x = 0;  leftEyeView.y = 0;
 			rightEyeView.x = 0; rightEyeView.y = 0;
-			// Scale the WINDOW size, never the HMD recommended size. Using
-			// m_RenderWidth/Height (2496x2688) froze the game and left only a
-			// sliver rendering -- that is the documented landmine.
-			const float sc = (m_VR->m_EyeRenderScale > 0.5f) ? m_VR->m_EyeRenderScale : 1.0f;
-			leftEyeView.width  = rightEyeView.width  = (int)(setup.width  * sc);
-			leftEyeView.height = rightEyeView.height = (int)(setup.height * sc);
+			// The viewport MUST equal the eye texture size. Deriving it from the
+			// window instead left the scene rendering into a rectangle that did not
+			// match the target, which is the 'sliver' this path was disabled for.
+			leftEyeView.width  = rightEyeView.width  = (int)m_VR->m_EyeRTWidth;
+			leftEyeView.height = rightEyeView.height = (int)m_VR->m_EyeRTHeight;
 		}
 	}
 	if (traceStereo)

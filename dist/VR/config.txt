@@ -42,7 +42,7 @@ UseVerticalCrop=true
 # to the 1280x720 backbuffer that the overlay capture reads.
 # 1.5 gives 1920x1080 from a 1280x720 window: sharper, nowhere near the cliff.
 # Try EyeRenderTargets=true with this at 1.25 or 1.5 before going higher.
-EyeRenderScale=1.5
+EyeRenderScale=1.0
 
 # Floating menu panel size and distance, in metres. The in-game character/level
 # menu was too big and too close; raise the distance and/or drop the width until
@@ -63,7 +63,7 @@ MenuDistanceMeters=1.6
 #
 # Leave false for the first run of this build (so the menu-freeze fix is tested
 # on its own). Once the menu is stable, set true and the double-image should go.
-EyeRenderTargets=false
+EyeRenderTargets=true
 
 # IVModelRender vtable index of DrawModelExecute -- the hook that lets the mod
 # move the weapon onto your hand. This was NEVER hooked before: offsets.h has an
