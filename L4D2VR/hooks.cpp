@@ -721,6 +721,14 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	                              (void*)m_VR->m_LeftEyeTexture, eyeClear, eyeDraw);
 	hkRenderView.fOriginal(ecx, leftEyeView, eyeClear, eyeDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d L rendered, capturing", pass);
+	// Force the material system to submit its queued work before we capture.
+	//
+	// Source BUFFERS draw calls; our capture bypasses the material system and
+	// talks to the D3D device directly. Without this the capture can read a
+	// target the engine has not finished drawing into -- which is a partially
+	// black, flickering eye, and is the most likely reason the right eye came
+	// back black while the left (whose work the following pass flushed) did not.
+	if (rndrContext) rndrContext->Flush(true);
 	HRESULT hl = g_D3DVR9->CaptureCurrentRT(0, &m_VR->m_VKLeftEye);
 	if (traceStereo) Game::logMsg("stereo pass #%d L ok hr=0x%08X", pass, (unsigned)hl);
 
@@ -730,6 +738,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	                              (void*)m_VR->m_RightEyeTexture);
 	hkRenderView.fOriginal(ecx, rightEyeView, eyeClear, eyeDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d R rendered, capturing", pass);
+	if (rndrContext) rndrContext->Flush(true);
 	HRESULT hr = g_D3DVR9->CaptureCurrentRT(1, &m_VR->m_VKRightEye);
 	if (traceStereo) Game::logMsg("stereo pass #%d R ok hr=0x%08X", pass, (unsigned)hr);
 
