@@ -1134,8 +1134,14 @@ void VR::AfterPresent()
                 // both eyes, so cropping it with each eye's own bounds gives each
                 // a geometrically correct view. What is lost is only the parallax
                 // between them, which is exactly what mono means.
-                el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
-                er = comp->Submit(vr::Eye_Right, &m_VKLeftEye.m_VRTexture, &rb, vr::Submit_Default);
+                // MonoEyeSource picks WHICH texture feeds both eyes. This is the
+                // test that isolates the right eye's black frame: if the right
+                // texture shown to both eyes looks correct, the texture is fine
+                // and the fault is in submitting two textures in one frame. If
+                // it is black in both eyes, the texture itself is empty.
+                SharedTextureHolder &src = (m_MonoEyeSource == 1) ? m_VKRightEye : m_VKLeftEye;
+                el = comp->Submit(vr::Eye_Left,  &src.m_VRTexture, &lb, vr::Submit_Default);
+                er = comp->Submit(vr::Eye_Right, &src.m_VRTexture, &rb, vr::Submit_Default);
             }
             else
             {
@@ -1588,8 +1594,14 @@ void VR::SubmitThreadBody()
                 // both eyes, so cropping it with each eye's own bounds gives each
                 // a geometrically correct view. What is lost is only the parallax
                 // between them, which is exactly what mono means.
-                el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
-                er = comp->Submit(vr::Eye_Right, &m_VKLeftEye.m_VRTexture, &rb, vr::Submit_Default);
+                // MonoEyeSource picks WHICH texture feeds both eyes. This is the
+                // test that isolates the right eye's black frame: if the right
+                // texture shown to both eyes looks correct, the texture is fine
+                // and the fault is in submitting two textures in one frame. If
+                // it is black in both eyes, the texture itself is empty.
+                SharedTextureHolder &src = (m_MonoEyeSource == 1) ? m_VKRightEye : m_VKLeftEye;
+                el = comp->Submit(vr::Eye_Left,  &src.m_VRTexture, &lb, vr::Submit_Default);
+                er = comp->Submit(vr::Eye_Right, &src.m_VRTexture, &rb, vr::Submit_Default);
             }
             else
             {
@@ -3860,6 +3872,7 @@ void VR::ParseConfigFile()
     m_MonoEye = CfgBool(userConfig, "MonoEye", m_MonoEye);
     m_EyeCropLegacyV = CfgBool(userConfig, "EyeCropLegacyV", m_EyeCropLegacyV);
     dxvk::g_GESVR_SwapEyeSurfaces = CfgBool(userConfig, "SwapEyeSurfaces", false);
+    m_MonoEyeSource = (int)CfgFloat(userConfig, "MonoEyeSource", (float)m_MonoEyeSource);
     m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
     m_WeaponSetupHook = CfgBool(userConfig, "WeaponSetupHook", m_WeaponSetupHook);

@@ -265,6 +265,10 @@ public:
 	// Send the left eye's image to both eyes. No stereo depth, but a correct
 	// and sharp picture while the right eye's black frame is unsolved.
 	bool m_MonoEye = true;
+	// Which texture feeds both eyes in mono. 0 = left, 1 = right. Setting 1 is
+	// the test for the right eye's black frame: it shows the right texture on
+	// its own, separating a bad texture from a bad two-texture submit.
+	int m_MonoEyeSource = 0;
 	// Restore the old vertical crop convention. The old one cropped the bottom
 	// of the image where the eye needs the top, which pushed the view upward.
 	// TRUE is the original convention. Flipping it was tested and made the left
