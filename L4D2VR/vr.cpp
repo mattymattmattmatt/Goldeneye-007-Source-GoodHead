@@ -1104,6 +1104,25 @@ void VR::AfterPresent()
             // gives a correct, sharp, comfortable image with no stereo depth,
             // which beats playing with one eye blacked out. MonoEye=false
             // restores true stereo once the right eye is fixed.
+            // One-time: are the two eye textures actually distinct and valid?
+            // Mono works by submitting the LEFT texture for both eyes, so the
+            // only thing separating working mono from working stereo is whether
+            // m_VKRightEye is a good handle. Reading these fields costs nothing
+            // and touches no GPU state.
+            {
+                static bool s_once = false;
+                if (!s_once)
+                {
+                    s_once = true;
+                    Game::logMsg("EYETEX left img=%llu %ux%u | right img=%llu %ux%u | same=%d",
+                                 (unsigned long long)m_VKLeftEye.m_VulkanData.m_nImage,
+                                 m_VKLeftEye.m_VulkanData.m_nWidth, m_VKLeftEye.m_VulkanData.m_nHeight,
+                                 (unsigned long long)m_VKRightEye.m_VulkanData.m_nImage,
+                                 m_VKRightEye.m_VulkanData.m_nWidth, m_VKRightEye.m_VulkanData.m_nHeight,
+                                 (int)(m_VKLeftEye.m_VulkanData.m_nImage == m_VKRightEye.m_VulkanData.m_nImage));
+                }
+            }
+
             if (m_MonoEye)
             {
                 // Same texture, but each eye keeps its OWN crop.

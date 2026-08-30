@@ -232,7 +232,7 @@ MotionControls=false
 # view and makes it disagree with the world-space muzzle effect.
 # Try 54-75 to put the gun back where Source normally draws it. Hot-reloads, so
 # nudge it while looking at the gun.
-ViewmodelFov=70
+ViewmodelFov=0
 
 GunGripAngle=45.0
 
