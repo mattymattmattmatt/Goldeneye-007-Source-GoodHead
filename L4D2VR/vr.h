@@ -243,12 +243,32 @@ public:
 	// captured from the window backbuffer and upscaled to a ~2496x2688 panel,
 	// which is the jaggies. Renders each eye into its own RT at true HMD
 	// resolution instead. Costs performance; EyeRenderTargets=false reverts.
-	// OFF again. Enabling it froze the game and left only a sliver visible:
-	// the eye views were sized to the FULL HMD recommended RT (2496x2688),
-	// which is the long-standing landmine in HANDOFF.md, and it also breaks
-	// the 2D path -- the menu/HUD still draw to the 1280x720 backbuffer that
-	// CaptureForOverlay reads, so the overlay showed a fragment.
-	// Use EyeRenderScale for a safe middle ground instead.
+	// OFF: this path renders sharply but the RIGHT eye is only ~60% drawn.
+	//
+	// The old note here blamed the sliver on using the HMD's recommended size.
+	// That was WRONG and it cost real time. What actually happened:
+	//   - the textures were allocated at one size and the viewport set from
+	//     another, so the scene drew into a rectangle that did not match its
+	//     target. Size was never the problem.
+	//   - RT_SIZE_NO_CHANGE clamps a target to the framebuffer, and the SDK
+	//     says it is only valid for targets with no depth buffer. RT_SIZE_LITERAL
+	//     is the one that means what it says.
+	//   - the 2D path is handled: the HUD draws in its own backbuffer pass.
+	//
+	// Measured, not assumed:
+	//   - both eye targets render FULLY (read back and checked, 2565x2661 of
+	//     2565x2661), so the engine honours a target larger than the framebuffer
+	//   - both texture handles are valid, distinct and correctly sized
+	//   - the crop bounds and compositor path are correct, which mono proves by
+	//     submitting ONE texture with each eye's own bounds and looking right
+	//   - the material system must be flushed before capturing or the capture
+	//     reads an unfinished target; that took the right eye 20% -> 60%
+	//
+	// What remains: the SECOND RenderView of a frame draws at the BACKBUFFER's
+	// viewport instead of the target's (1080 of 1873 rows = the 60%). Neither a
+	// forced rebind through null nor separate targets changed that. The next
+	// thing to try is asking the engine directly -- GetRenderTargetDimensions is
+	// slot 10 of IMatRenderContext -- rather than reasoning about it again.
 	bool m_UseEyeRenderTargets = false;
 	// Size of the superset-frustum eye render targets. Computed in Init from the
 	// HMD's recommended per-eye size divided by how much of the superset image
@@ -272,12 +292,22 @@ public:
 	// Render both eyes into ONE target, capturing each before the next pass
 	// overwrites it. Saves a colour and a depth buffer with no loss of
 	// resolution, which matters in a 32-bit process.
+	// NOTE: when this is on, m_RightEyeTexture is the SAME pointer as
+	// m_LeftEyeTexture, not a second texture. Nothing releases them today, but
+	// any future cleanup must not free both.
 	bool m_SharedEyeTarget = true;
-	// Restore the old vertical crop convention. The old one cropped the bottom
-	// of the image where the eye needs the top, which pushed the view upward.
-	// TRUE is the original convention. Flipping it was tested and made the left
-	// eye visibly wrong, so the original is correct for this headset whatever the
-	// sign convention suggests. The high gun is the viewmodel FOV, not this.
+	// TRUE keeps the original vertical crop convention.
+	//
+	// The arithmetic argues the other way: horizontal uses 0.5 + 0.5*left/tan
+	// while vertical used 0.5 - 0.5*bottom/tan, and with the measured frustum
+	// that crops the bottom 84% where the eye appears to need the top 84%.
+	// Flipping it was tried and the result looked wrong -- BUT two other things
+	// changed in the same build, so that is NOT a clean result and the theory
+	// is unproven either way. If you revisit it, change this alone.
+	//
+	// The high gun is also still unexplained. ViewmodelFov=70 did not fix it and
+	// made the weapon disagree with world-space muzzle effects, so it is back at
+	// 0 (world FOV). Do not assume either cause without testing it on its own.
 	bool m_EyeCropLegacyV = true;
 
 	// IVModelRender vtable index of DrawModelExecute. Measured, not guessed:

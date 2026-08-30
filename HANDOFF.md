@@ -186,11 +186,43 @@ end for sharpness.** The remaining route is `EyeRenderTargets=true` with
 and is not bound by the desktop at all (1.5 gives 2880x1620 from a 1920x1080
 window).
 
-That path previously failed only because it was sized to the HMD's recommended
-2496x2688; it now scales the window instead. It also needs watching for the
-"sliver" problem: the 2D menu/HUD still draw into the window backbuffer that
-CaptureForOverlay reads, so the overlay can end up showing a fragment.
+That account of the sliver was WRONG, and believing it cost real time. What
+actually happened, established by measurement on 2026-08-30:
 
+* The textures were allocated at one size while the viewport was set from
+  another, so the scene drew into a rectangle that did not match its target.
+  The size was never the problem.
+* `RT_SIZE_NO_CHANGE` clamps a render target to the framebuffer, and the SDK
+  header says it is "only allowed for render targets that don't want a depth
+  buffer" -- ours ask for one. `RT_SIZE_LITERAL` is the mode that means what it
+  says: "Don't clamp it to the frame buffer size. Really."
+* The 2D path is solved: the HUD is stripped from the eye passes and drawn in
+  its own backbuffer pass, so `CaptureForOverlay` still sees a full frame.
+
+Measured facts, not inferences:
+
+* Both eye targets render FULLY -- read back and checked, 2565x2661 of
+  2565x2661. The engine honours a target larger than the framebuffer.
+* Both eye texture handles are valid, distinct, and correctly sized.
+* The crop bounds and the compositor path are correct. Mono proves this: it
+  submits ONE texture with each eye's own bounds and looks right in both eyes.
+* The material system MUST be flushed (`IMatRenderContext::Flush(true)`) before
+  capturing. Source buffers draw calls and our capture talks to D3D directly,
+  so without it we read an unfinished target. This took the right eye from
+  ~20% to ~60% drawn, and it explains why the LEFT eye was always fine: the
+  pass that followed it flushed its work, and the right pass had nothing
+  following it.
+
+**What remains unsolved:** the SECOND `RenderView` of a frame draws at the
+BACKBUFFER's viewport rather than the target's -- 1080 of 1873 rows is the 60%.
+Forcing a rebind through null did not change it, and neither did separate
+targets. Do not guess at this a fourth time: `GetRenderTargetDimensions` is
+slot 10 of `IMatRenderContext`, and logging it per pass will say plainly what
+the engine thinks the viewport is.
+
+Meanwhile `MonoEye=true` gives full resolution and a correct picture in both
+eyes at the cost of stereo depth, and `EyeRenderTargets=false` is the working
+stereo path at the old resolution. Both are one config line.
 
 ---
 
