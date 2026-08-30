@@ -267,7 +267,10 @@ public:
 	bool m_MonoEye = true;
 	// Restore the old vertical crop convention. The old one cropped the bottom
 	// of the image where the eye needs the top, which pushed the view upward.
-	bool m_EyeCropLegacyV = false;
+	// TRUE is the original convention. Flipping it was tested and made the left
+	// eye visibly wrong, so the original is correct for this headset whatever the
+	// sign convention suggests. The high gun is the viewmodel FOV, not this.
+	bool m_EyeCropLegacyV = true;
 
 	// IVModelRender vtable index of DrawModelExecute. Measured, not guessed:
 	// a naked per-slot counter showed [18]=128689 and [19]=128291 as the two

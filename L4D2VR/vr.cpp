@@ -1106,8 +1106,16 @@ void VR::AfterPresent()
             // restores true stereo once the right eye is fixed.
             if (m_MonoEye)
             {
+                // Same texture, but each eye keeps its OWN crop.
+                //
+                // Sending the left eye's crop to both eyes hands the right eye a
+                // picture built for the left eye's frustum, which reads as warped
+                // and mismatched. The render is the SUPERSET frustum and covers
+                // both eyes, so cropping it with each eye's own bounds gives each
+                // a geometrically correct view. What is lost is only the parallax
+                // between them, which is exactly what mono means.
                 el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
-                er = comp->Submit(vr::Eye_Right, &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
+                er = comp->Submit(vr::Eye_Right, &m_VKLeftEye.m_VRTexture, &rb, vr::Submit_Default);
             }
             else
             {
@@ -1552,8 +1560,16 @@ void VR::SubmitThreadBody()
             // restores true stereo once the right eye is fixed.
             if (m_MonoEye)
             {
+                // Same texture, but each eye keeps its OWN crop.
+                //
+                // Sending the left eye's crop to both eyes hands the right eye a
+                // picture built for the left eye's frustum, which reads as warped
+                // and mismatched. The render is the SUPERSET frustum and covers
+                // both eyes, so cropping it with each eye's own bounds gives each
+                // a geometrically correct view. What is lost is only the parallax
+                // between them, which is exactly what mono means.
                 el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
-                er = comp->Submit(vr::Eye_Right, &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
+                er = comp->Submit(vr::Eye_Right, &m_VKLeftEye.m_VRTexture, &rb, vr::Submit_Default);
             }
             else
             {

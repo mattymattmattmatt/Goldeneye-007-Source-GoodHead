@@ -232,7 +232,7 @@ MotionControls=false
 # view and makes it disagree with the world-space muzzle effect.
 # Try 54-75 to put the gun back where Source normally draws it. Hot-reloads, so
 # nudge it while looking at the gun.
-ViewmodelFov=0
+ViewmodelFov=70
 
 GunGripAngle=45.0
 
@@ -414,4 +414,4 @@ MonoEye=true
 
 # Restore the old vertical crop convention (cropped the bottom where the eye
 # needs the top, which pushed the whole view upward).
-EyeCropLegacyV=false
+EyeCropLegacyV=true
