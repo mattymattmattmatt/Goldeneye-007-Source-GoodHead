@@ -319,6 +319,26 @@ public:
 	// Keep the menu the same apparent size as resolution changes. See
 	// VR::EffectiveMenuGeometry -- Source's GameUI is laid out in fixed pixels.
 	bool m_MenuScaleWithRes = true;
+
+	// HUD panel. The 2D HUD sits at the frame's edges and the per-eye frustum
+	// crop discards them, so health/ammo are off-screen in the headset. This
+	// panel shows the captured frame head-locked, toggled by tapping the side
+	// of the headset (see VR::DetectHeadTap).
+	vr::VROverlayHandle_t m_HudPanelHandle = 0;
+	bool  m_HudPanelVisible = false;
+	float m_HudPanelDistance = 1.0f;   // metres in front of the head
+	float m_HudPanelWidth = 1.3f;      // panel width in metres
+	float m_HudPanelHeight = -0.10f;   // slight drop so it is a glance, not a wall
+	// Texture crop as (uMin, vMin, uMax, vMax); full frame by default.
+	float m_HudPanelU0 = 0.0f, m_HudPanelV0 = 0.0f;
+	float m_HudPanelU1 = 1.0f, m_HudPanelV1 = 1.0f;
+
+	bool  m_HudTapToggle = true;
+	float m_HudTapThreshold = 1.6f;    // m/s step between frames
+	int   m_HudTapCooldownMs = 700;
+	Vector m_PrevHeadVel = Vector(0.0f, 0.0f, 0.0f);
+	bool  m_HaveHeadVel = false;
+	unsigned m_LastHeadTapMs = 0;
 	float m_SbsWidthMeters = 3.17f;
 	float m_SbsDistance = 1.0f;
 
@@ -494,6 +514,8 @@ public:
 	void AfterPresent();
 	bool ComputeMenuPointer(int &x, int &y);
 	void EffectiveMenuGeometry(float &widthM, float &distM) const;
+	void DetectHeadTap();
+	void UpdateHudPanel();
 	void ShowMenuPanel();
 	void HideMenuPanel();
 	void ShowWorldStereoOverlay();

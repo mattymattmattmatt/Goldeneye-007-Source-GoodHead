@@ -729,6 +729,11 @@ VR::VR(Game *game)
     m_Overlay->CreateOverlay("MenuOverlayKey", "MenuOverlay", &m_MainMenuHandle);
     m_Overlay->CreateOverlay("HUDOverlayKey", "HUDOverlay", &m_HUDHandle);
     m_Overlay->CreateOverlay("GESVRWorldKey", "GESVRWorld", &m_WorldHandle);
+    m_Overlay->CreateOverlay("GESVRHudPanelKey", "GESVRHudPanel", &m_HudPanelHandle);
+    // Never interactive: it must not steal the laser from the menu panel.
+    m_Overlay->SetOverlayFlag(m_HudPanelHandle,
+        vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
+    m_Overlay->SetOverlaySortOrder(m_HudPanelHandle, 90);
     m_Overlay->SetOverlayInputMethod(m_MainMenuHandle, vr::VROverlayInputMethod_Mouse);
     m_Overlay->SetOverlayInputMethod(m_HUDHandle, vr::VROverlayInputMethod_Mouse);
     m_Overlay->SetOverlayFlag(m_MainMenuHandle, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
@@ -924,7 +929,9 @@ void VR::Update()
     // filled by the MENU branch -- so in game it held a stale menu frame
     // forever. At Present the backbuffer holds the finished frame including
     // the 2D HUD, which is exactly what we want to crop from.
-    if (g_D3DVR9 && m_ShowWristHUD)
+    // The HUD panel draws from this same capture, so it must refresh when
+    // either consumer is live -- not just the wrist watch.
+    if (g_D3DVR9 && (m_ShowWristHUD || m_HudPanelVisible))
         g_D3DVR9->CaptureForOverlay(&m_VKHUD, -1, -1);
 
     // UpdateWristHUD/UpdateHurtHUD had NO call sites: the whole wrist
@@ -934,9 +941,15 @@ void VR::Update()
     {
         UpdateWristHUD();
         UpdateHurtHUD();
+        DetectHeadTap();
+        UpdateHudPanel();
     }
     else
+    {
         HideWristOverlays();
+        if (m_Overlay && m_HudPanelHandle)
+            m_Overlay->HideOverlay(m_HudPanelHandle);
+    }
 
     ProcessInput();
     const auto tEnd = vrclock::now();
@@ -3255,6 +3268,84 @@ void VR::SubmitWristOverlay(vr::VROverlayHandle_t handle, vr::TrackedDeviceIndex
     m_Overlay->ShowOverlay(handle);
 }
 
+// Head-tap gesture, in the spirit of HaloCEVR's flashlight tap.
+//
+// A tap on the side of the headset shows up as a sharp step in the HMD's
+// reported linear velocity: the head barely moves, but it moves FAST for one
+// or two frames. Comparing velocity frame to frame gives an acceleration
+// proxy without any extra tracking. Ordinary looking around produces smooth,
+// much smaller steps, so a threshold plus a cooldown separates the two
+// cleanly. The cooldown also stops one physical tap toggling several times.
+void VR::DetectHeadTap()
+{
+    if (!m_HudTapToggle)
+        return;
+
+    const vr::TrackedDevicePose_t &hmd = m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
+    if (!hmd.bPoseIsValid)
+    {
+        m_HaveHeadVel = false;
+        return;
+    }
+
+    const Vector v(hmd.vVelocity.v[0], hmd.vVelocity.v[1], hmd.vVelocity.v[2]);
+    if (!m_HaveHeadVel)
+    {
+        m_PrevHeadVel = v;
+        m_HaveHeadVel = true;
+        return;
+    }
+
+    const Vector dv = v - m_PrevHeadVel;
+    m_PrevHeadVel = v;
+
+    // Vector::Length is declared by the SDK header but not linked into this
+    // project, so compute the magnitude directly.
+    const float jolt = sqrtf(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z);
+    const unsigned now = (unsigned)GetTickCount();
+    if (jolt < m_HudTapThreshold)
+        return;
+    if (m_LastHeadTapMs != 0 && (now - m_LastHeadTapMs) < (unsigned)m_HudTapCooldownMs)
+        return;
+
+    m_LastHeadTapMs = now;
+    m_HudPanelVisible = !m_HudPanelVisible;
+    Game::logMsg("Head tap detected (jolt=%.2f) -> HUD panel %s",
+                 jolt, m_HudPanelVisible ? "ON" : "OFF");
+}
+
+// The 2D HUD lives at the edges of the game's frame, and the per-eye frustum
+// crop throws those edges away -- which is why health and ammo are simply not
+// in view. This puts the captured frame on a panel locked in front of the
+// head, so the whole HUD is readable on demand.
+void VR::UpdateHudPanel()
+{
+    if (!m_Overlay || !m_HudPanelHandle)
+        return;
+
+    if (!m_HudPanelVisible || !TextureReady(m_VKHUD))
+    {
+        m_Overlay->HideOverlay(m_HudPanelHandle);
+        return;
+    }
+
+    // HMD space is +x right, +y up, -z forward.
+    vr::HmdMatrix34_t xf = {
+        1.0f, 0.0f, 0.0f, 0.0f,
+        0.0f, 1.0f, 0.0f, m_HudPanelHeight,
+        0.0f, 0.0f, 1.0f, -m_HudPanelDistance
+    };
+    m_Overlay->SetOverlayTransformTrackedDeviceRelative(
+        m_HudPanelHandle, vr::k_unTrackedDeviceIndex_Hmd, &xf);
+    m_Overlay->SetOverlayWidthInMeters(m_HudPanelHandle, m_HudPanelWidth);
+
+    vr::VRTextureBounds_t bounds = { m_HudPanelU0, m_HudPanelV0,
+                                     m_HudPanelU1, m_HudPanelV1 };
+    m_Overlay->SetOverlayTextureBounds(m_HudPanelHandle, &bounds);
+    SetOverlayTextureLocked(m_Overlay, m_HudPanelHandle, &m_VKHUD.m_VRTexture);
+    m_Overlay->ShowOverlay(m_HudPanelHandle);
+}
+
 void VR::UpdateWristHUD()
 {
     if (!m_ShowWristHUD || !m_Overlay || !m_RenderedHud)
@@ -3507,6 +3598,13 @@ void VR::ParseConfigFile()
                 (it->second.find("cross") != std::string::npos) ? 0 : 1;
     }
     dxvk::g_GESVR_ForceMenuOpaque = CfgBool(userConfig, "ForceMenuOpaque", true);
+    m_HudTapToggle = CfgBool(userConfig, "HudTapToggle", m_HudTapToggle);
+    m_HudTapThreshold = CfgFloat(userConfig, "HudTapThreshold", m_HudTapThreshold);
+    m_HudTapCooldownMs = (int)CfgFloat(userConfig, "HudTapCooldownMs", (float)m_HudTapCooldownMs);
+    m_HudPanelDistance = CfgFloat(userConfig, "HudPanelDistance", m_HudPanelDistance);
+    m_HudPanelWidth = CfgFloat(userConfig, "HudPanelWidth", m_HudPanelWidth);
+    m_HudPanelHeight = CfgFloat(userConfig, "HudPanelHeight", m_HudPanelHeight);
+    m_HudPanelVisible = CfgBool(userConfig, "HudPanelDefaultOn", m_HudPanelVisible);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);
     m_ShowMirrorWindow = CfgBool(userConfig, "ShowMirrorWindow", m_ShowMirrorWindow);

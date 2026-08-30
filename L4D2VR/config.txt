@@ -329,3 +329,24 @@ VRReticleStyle=dot
 
 # Force the menu panel opaque. Without this it goes see-through in a map.
 ForceMenuOpaque=true
+
+# Tap the side of the headset to toggle the HUD panel on and off.
+HudTapToggle=true
+
+# Tap sensitivity: velocity step in m/s between frames. Lower = easier to trigger.
+HudTapThreshold=1.6
+
+# Ignore further taps for this long, so one tap toggles once.
+HudTapCooldownMs=700
+
+# HUD panel distance from your eyes, in metres.
+HudPanelDistance=1.0
+
+# HUD panel width in metres.
+HudPanelWidth=1.3
+
+# HUD panel vertical offset; negative sits it below eye line.
+HudPanelHeight=-0.10
+
+# Start with the HUD panel showing.
+HudPanelDefaultOn=false
