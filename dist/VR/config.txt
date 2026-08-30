@@ -63,7 +63,7 @@ MenuDistanceMeters=1.6
 #
 # Leave false for the first run of this build (so the menu-freeze fix is tested
 # on its own). Once the menu is stable, set true and the double-image should go.
-EyeRenderTargets=true
+EyeRenderTargets=false
 
 # IVModelRender vtable index of DrawModelExecute -- the hook that lets the mod
 # move the weapon onto your hand. This was NEVER hooked before: offsets.h has an
