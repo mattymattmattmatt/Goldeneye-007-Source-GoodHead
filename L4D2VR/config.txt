@@ -313,7 +313,7 @@ HurtHUDUMax=0.50
 HurtHUDVMax=1.00
 
 # Aiming reticle arm length as a fraction of eye height. 0.006 is small.
-VRReticleSize=0.006
+VRReticleSize=0.004
 
 # Put the in-map character/level select on the flat panel so the VR pointer works.
 InGameMenuPanel=true
@@ -323,3 +323,9 @@ InGameMenuDistance=2.4
 
 # Keep menu apparent size constant as resolution changes.
 MenuScaleWithRes=true
+
+# Aiming reticle shape: dot or cross.
+VRReticleStyle=dot
+
+# Force the menu panel opaque. Without this it goes see-through in a map.
+ForceMenuOpaque=true

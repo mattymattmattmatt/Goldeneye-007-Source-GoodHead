@@ -448,7 +448,8 @@ namespace VRSubmit
     static std::atomic<bool> g_useThread{ false };
 }
 
-namespace dxvk { extern bool g_GESVR_DrawReticle; extern float g_GESVR_ReticleScale; }
+namespace dxvk { extern bool g_GESVR_DrawReticle; extern float g_GESVR_ReticleScale;
+                extern int g_GESVR_ReticleStyle; extern bool g_GESVR_ForceMenuOpaque; }
 extern long GESVR_ExecMoveCount();
 extern long GESVR_RenderOriginCalls();
 extern long GESVR_RenderAnglesCalls();
@@ -3496,7 +3497,16 @@ void VR::ParseConfigFile()
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_DrawMenuCursor = CfgBool(userConfig, "DrawMenuCursor", m_DrawMenuCursor);
     dxvk::g_GESVR_DrawReticle = CfgBool(userConfig, "VRReticle", true);
-    dxvk::g_GESVR_ReticleScale = CfgFloat(userConfig, "VRReticleSize", 0.006f);
+    dxvk::g_GESVR_ReticleScale = CfgFloat(userConfig, "VRReticleSize", 0.004f);
+    {
+        // Same shape as the MenuAimSource key above: this config has no
+        // string helper, only CfgBool/CfgFloat/CfgVec.
+        auto it = userConfig.find("VRReticleStyle");
+        if (it != userConfig.end())
+            dxvk::g_GESVR_ReticleStyle =
+                (it->second.find("cross") != std::string::npos) ? 0 : 1;
+    }
+    dxvk::g_GESVR_ForceMenuOpaque = CfgBool(userConfig, "ForceMenuOpaque", true);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);
     m_ShowMirrorWindow = CfgBool(userConfig, "ShowMirrorWindow", m_ShowMirrorWindow);
