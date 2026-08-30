@@ -524,6 +524,7 @@ public:
 	void InstallApplicationManifest(const char *fileName);
 	static void MakeVRPath(char *out, size_t outCount, const char *relative);
 	void Update();
+	void ComputeEyeRTSize();
 	void CreateVRTextures();
 	void SubmitVRTextures();
 	void RepositionOverlays();

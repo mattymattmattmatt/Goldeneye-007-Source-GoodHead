@@ -688,48 +688,6 @@ VR::VR(Game *game)
     m_Fov = 2.0f * atan(tanHalfFov[0]) * 360 / (3.14159265358979323846 * 2);
     m_HaveTextureBounds = (tanHalfFov[0] > 0.01f && tanHalfFov[1] > 0.01f);
 
-    // Eye render target size.
-    //
-    // Both eyes are rendered with the SUPERSET frustum and then cropped per eye
-    // at submit time by m_TextureBounds. So an eye only ever uses a fraction of
-    // the image, and to end up with the HMD's native per-eye resolution after
-    // that crop the superset has to be correspondingly larger.
-    //
-    // Height follows from width via m_Aspect rather than being computed
-    // separately: the crop bounds assume the texture covers the superset frustum
-    // exactly, so any other aspect would stretch the result.
-    {
-        const float uSpanL = fabsf(m_TextureBounds[0].uMax - m_TextureBounds[0].uMin);
-        const float uSpanR = fabsf(m_TextureBounds[1].uMax - m_TextureBounds[1].uMin);
-        float uSpan = (uSpanL < uSpanR) ? uSpanL : uSpanR;   // tighter crop needs more pixels
-        if (uSpan < 0.20f) uSpan = 0.20f;                    // guard against nonsense bounds
-
-        float sc = m_EyeRenderScale;
-        if (sc < 0.5f) sc = 0.5f;
-        if (sc > 2.0f) sc = 2.0f;
-
-        float w = ((float)m_RenderWidth / uSpan) * sc;
-        // A 32-bit process with DXVK on top does not have room to be greedy.
-        if (w < 640.0f)  w = 640.0f;
-        if (w > 3072.0f) w = 3072.0f;
-
-        float aspect = (m_Aspect > 0.2f && m_Aspect < 5.0f) ? m_Aspect : 1.0f;
-        float h = w / aspect;
-        if (h < 640.0f)  h = 640.0f;
-        if (h > 3072.0f) { h = 3072.0f; w = h * aspect; }
-
-        m_EyeRTWidth  = (uint32_t)(w + 0.5f);
-        m_EyeRTHeight = (uint32_t)(h + 0.5f);
-        Game::logMsg("Eye RT size %ux%u (hmd recommends %ux%u per eye, crop keeps %.2f of width, scale %.2f)",
-                     m_EyeRTWidth, m_EyeRTHeight, m_RenderWidth, m_RenderHeight, uSpan, sc);
-    }
-    Game::logMsg("Eye frusta: superset fov=%.2f aspect=%.3f | L u[%.4f..%.4f] v[%.4f..%.4f] | R u[%.4f..%.4f] v[%.4f..%.4f]",
-                 m_Fov, m_Aspect,
-                 m_TextureBounds[0].uMin, m_TextureBounds[0].uMax,
-                 m_TextureBounds[0].vMin, m_TextureBounds[0].vMax,
-                 m_TextureBounds[1].uMin, m_TextureBounds[1].uMax,
-                 m_TextureBounds[1].vMin, m_TextureBounds[1].vMax);
-
     InstallApplicationManifest("manifest.vrmanifest");
     SetActionManifest("action_manifest.json");
 
@@ -1593,6 +1551,47 @@ void VR::SubmitBlackEyes()
     VRSubmit::g_eyesReady.store(false);
 }
 
+// Eye render target size.
+//
+// Both eyes are rendered with the SUPERSET frustum and cropped per eye at submit
+// time by m_TextureBounds, so an eye only uses a fraction of the image. To end
+// up with native per-eye resolution AFTER that crop the superset has to be
+// correspondingly larger.
+//
+// Height follows from width via m_Aspect rather than being computed separately:
+// the crop bounds assume the texture covers the superset frustum exactly, so any
+// other aspect would stretch the result.
+//
+// Called from CreateVRTextures, NOT from Init: init runs before config.txt is
+// parsed, so computing it there silently used the built-in EyeRenderScale and
+// ignored the configured one.
+void VR::ComputeEyeRTSize()
+{
+    const float uSpanL = fabsf(m_TextureBounds[0].uMax - m_TextureBounds[0].uMin);
+    const float uSpanR = fabsf(m_TextureBounds[1].uMax - m_TextureBounds[1].uMin);
+    float uSpan = (uSpanL < uSpanR) ? uSpanL : uSpanR;   // tighter crop needs more pixels
+    if (uSpan < 0.20f) uSpan = 0.20f;                    // guard against nonsense bounds
+
+    float sc = m_EyeRenderScale;
+    if (sc < 0.5f) sc = 0.5f;
+    if (sc > 2.0f) sc = 2.0f;
+
+    float w = ((float)m_RenderWidth / uSpan) * sc;
+    // A 32-bit process with DXVK on top does not have room to be greedy.
+    if (w < 640.0f)  w = 640.0f;
+    if (w > 3072.0f) w = 3072.0f;
+
+    float aspect = (m_Aspect > 0.2f && m_Aspect < 5.0f) ? m_Aspect : 1.0f;
+    float h = w / aspect;
+    if (h < 640.0f)  h = 640.0f;
+    if (h > 3072.0f) { h = 3072.0f; w = h * aspect; }
+
+    m_EyeRTWidth  = (uint32_t)(w + 0.5f);
+    m_EyeRTHeight = (uint32_t)(h + 0.5f);
+    Game::logMsg("Eye RT size %ux%u (hmd recommends %ux%u per eye, crop keeps %.2f of width, scale %.2f)",
+                 m_EyeRTWidth, m_EyeRTHeight, m_RenderWidth, m_RenderHeight, uSpan, sc);
+}
+
 void VR::CreateVRTextures()
 {
     int windowWidth = 1280, windowHeight = 720;
@@ -1602,6 +1601,8 @@ void VR::CreateVRTextures()
     // The eye textures must be exactly the size the viewport will be set to.
     // Creating them at the HMD size while rendering at a window-derived size is
     // what produced the 'only a sliver renders' failure.
+    ComputeEyeRTSize();
+
     // SEPARATE depth, not SHARED: the shared depth buffer is sized for the
     // backbuffer, and these targets are deliberately larger than it. Rendering
     // into a colour target bigger than its depth buffer is exactly the kind of
@@ -1614,10 +1615,10 @@ void VR::CreateVRTextures()
     m_Game->m_MaterialSystem->BeginRenderTargetAllocation();
 
     m_CreatingTextureID = Texture_LeftEye;
-    m_LeftEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("leftEye0", rtW, rtH, RT_SIZE_NO_CHANGE, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
+    m_LeftEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("leftEye0", rtW, rtH, RT_SIZE_LITERAL, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
     
     m_CreatingTextureID = Texture_RightEye;
-    m_RightEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEye0", rtW, rtH, RT_SIZE_NO_CHANGE, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
+    m_RightEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEye0", rtW, rtH, RT_SIZE_LITERAL, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
     
     m_CreatingTextureID = Texture_HUD;
     m_HUDTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("vrHUD", windowWidth, windowHeight, RT_SIZE_NO_CHANGE, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SHARED, TEXTUREFLAGS_NOMIP);
