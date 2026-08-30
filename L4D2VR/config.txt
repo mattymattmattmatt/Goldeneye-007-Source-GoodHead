@@ -415,3 +415,8 @@ MonoEye=true
 # Restore the old vertical crop convention (cropped the bottom where the eye
 # needs the top, which pushed the whole view upward).
 EyeCropLegacyV=true
+
+# Diagnostic for the black right eye in stereo (MonoEye=false). Swaps which
+# internal surface each eye captures into. If the black eye moves to the LEFT,
+# the surface is at fault; if it stays on the right, the second capture is.
+SwapEyeSurfaces=false

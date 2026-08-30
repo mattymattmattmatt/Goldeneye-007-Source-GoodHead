@@ -464,7 +464,8 @@ namespace VRSubmit
 
 namespace dxvk { extern bool g_GESVR_DrawReticle; extern float g_GESVR_ReticleScale;
                 extern int g_GESVR_ReticleStyle; extern bool g_GESVR_ForceMenuOpaque;
-                extern float g_GESVR_ReticleAspect; }
+                extern float g_GESVR_ReticleAspect;
+                extern bool g_GESVR_SwapEyeSurfaces; }
 extern long GESVR_ExecMoveCount();
 extern long GESVR_RenderOriginCalls();
 extern long GESVR_RenderAnglesCalls();
@@ -3858,6 +3859,7 @@ void VR::ParseConfigFile()
     m_EyeHudPass = CfgBool(userConfig, "EyeHudPass", m_EyeHudPass);
     m_MonoEye = CfgBool(userConfig, "MonoEye", m_MonoEye);
     m_EyeCropLegacyV = CfgBool(userConfig, "EyeCropLegacyV", m_EyeCropLegacyV);
+    dxvk::g_GESVR_SwapEyeSurfaces = CfgBool(userConfig, "SwapEyeSurfaces", false);
     m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
     m_WeaponSetupHook = CfgBool(userConfig, "WeaponSetupHook", m_WeaponSetupHook);
