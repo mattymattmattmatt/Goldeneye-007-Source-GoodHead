@@ -313,7 +313,7 @@ HurtHUDUMax=0.50
 HurtHUDVMax=1.00
 
 # Aiming reticle arm length as a fraction of eye height. 0.006 is small.
-VRReticleSize=0.004
+VRReticleSize=0.0025
 
 # Put the in-map character/level select on the flat panel so the VR pointer works.
 InGameMenuPanel=true
@@ -331,7 +331,7 @@ VRReticleStyle=dot
 ForceMenuOpaque=true
 
 # Tap the side of the headset to toggle the HUD panel on and off.
-HudTapToggle=true
+HudTapToggle=false
 
 # Tap sensitivity: velocity step in m/s between frames. Lower = easier to trigger.
 HudTapThreshold=1.2
@@ -348,10 +348,10 @@ HudTapCooldownMs=700
 # Start with the HUD panel showing.
 
 # Fallback toggle key, virtual-key code. 112 = F1. 0 disables.
-HudToggleKey=112
+HudToggleKey=0
 
 # Start with the Foes/ammo readouts showing.
-HudElementsDefaultOn=true
+HudElementsDefaultOn=false
 
 # Crop of the Foes counter, as fractions: u0 v0 u1 v1.
 HudFoesCrop=0.41 0.02 0.62 0.11
@@ -382,3 +382,6 @@ HudAmmoDistance=1.2
 
 # Ammo readout width in metres.
 HudAmmoWidth=0.20
+
+# Reticle horizontal correction. 0 = derive from the eye surface. Raise if it still looks tall.
+VRReticleAspect=0

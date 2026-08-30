@@ -463,7 +463,8 @@ namespace VRSubmit
 }
 
 namespace dxvk { extern bool g_GESVR_DrawReticle; extern float g_GESVR_ReticleScale;
-                extern int g_GESVR_ReticleStyle; extern bool g_GESVR_ForceMenuOpaque; }
+                extern int g_GESVR_ReticleStyle; extern bool g_GESVR_ForceMenuOpaque;
+                extern float g_GESVR_ReticleAspect; }
 extern long GESVR_ExecMoveCount();
 extern long GESVR_RenderOriginCalls();
 extern long GESVR_RenderAnglesCalls();
@@ -3691,7 +3692,8 @@ void VR::ParseConfigFile()
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_DrawMenuCursor = CfgBool(userConfig, "DrawMenuCursor", m_DrawMenuCursor);
     dxvk::g_GESVR_DrawReticle = CfgBool(userConfig, "VRReticle", true);
-    dxvk::g_GESVR_ReticleScale = CfgFloat(userConfig, "VRReticleSize", 0.004f);
+    dxvk::g_GESVR_ReticleScale = CfgFloat(userConfig, "VRReticleSize", 0.0025f);
+    dxvk::g_GESVR_ReticleAspect = CfgFloat(userConfig, "VRReticleAspect", 0.0f);
     {
         // Same shape as the MenuAimSource key above: this config has no
         // string helper, only CfgBool/CfgFloat/CfgVec.
