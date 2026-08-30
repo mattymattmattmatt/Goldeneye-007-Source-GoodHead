@@ -315,7 +315,7 @@ public:
 	bool m_InGameMenuPanel = true;
 	// Refresh the overlay capture every in-game frame regardless of HUD
 	// settings. That capture also applies the menu alpha fix.
-	bool m_AlwaysCaptureOverlay = true;
+	bool m_AlwaysCaptureOverlay = false;
 
 	// Console commands run once per map, from the ExtraCvars config key.
 	// Exists so renderer settings can be bisected without a rebuild.

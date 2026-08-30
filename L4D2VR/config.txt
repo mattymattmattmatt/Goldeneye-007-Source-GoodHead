@@ -388,7 +388,7 @@ VRReticleAspect=0
 
 # Refresh the overlay capture every in-game frame. This also applies the menu
 # alpha fix; turning it off can make menus look see-through/blurry.
-AlwaysCaptureOverlay=true
+AlwaysCaptureOverlay=false
 
 # Console commands run once, ~1.5s after each map loads. Semicolon separated.
 # These exist to hunt the in-game blur: the menu is sharp until the world
