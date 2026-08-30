@@ -313,6 +313,9 @@ public:
 	// panel instead of leaving them inside the 3D view. Detected via the OS
 	// cursor becoming visible. Set false to restore the old behaviour.
 	bool m_InGameMenuPanel = true;
+	// Refresh the overlay capture every in-game frame regardless of HUD
+	// settings. That capture also applies the menu alpha fix.
+	bool m_AlwaysCaptureOverlay = true;
 	// The in-map panel wants to sit further back than the create-server menu,
 	// which wants to stay close enough to read. They used to share one distance.
 	float m_InGameMenuDistance = 2.4f;

@@ -385,3 +385,7 @@ HudAmmoWidth=0.20
 
 # Reticle horizontal correction. 0 = derive from the eye surface. Raise if it still looks tall.
 VRReticleAspect=0
+
+# Refresh the overlay capture every in-game frame. This also applies the menu
+# alpha fix; turning it off can make menus look see-through/blurry.
+AlwaysCaptureOverlay=true

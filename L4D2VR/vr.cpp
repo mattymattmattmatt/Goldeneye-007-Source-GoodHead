@@ -949,7 +949,13 @@ void VR::Update()
     // the 2D HUD, which is exactly what we want to crop from.
     // The HUD panel draws from this same capture, so it must refresh when
     // either consumer is live -- not just the wrist watch.
-    if (g_D3DVR9 && (m_ShowWristHUD || m_HudElementsVisible))
+    // Keep refreshing the overlay capture in game even with the HUD off.
+    //
+    // This capture is also what runs ForceOpaqueAlpha. While the radar existed
+    // the gate was true every frame; turning the HUD off silently stopped it,
+    // and the menu went see-through/blurry again at the same time. Decoupled
+    // so HUD settings cannot switch the alpha fix off as a side effect.
+    if (g_D3DVR9 && (m_ShowWristHUD || m_HudElementsVisible || m_AlwaysCaptureOverlay))
         g_D3DVR9->CaptureForOverlay(&m_VKHUD, -1, -1);
 
     // UpdateWristHUD/UpdateHurtHUD had NO call sites: the whole wrist
@@ -3664,6 +3670,7 @@ void VR::ParseConfigFile()
     m_MenuWidthMeters = CfgFloat(userConfig, "MenuWidthMeters", m_MenuWidthMeters);
     m_MenuDistanceMeters = CfgFloat(userConfig, "MenuDistanceMeters", m_MenuDistanceMeters);
     m_InGameMenuPanel = CfgBool(userConfig, "InGameMenuPanel", m_InGameMenuPanel);
+    m_AlwaysCaptureOverlay = CfgBool(userConfig, "AlwaysCaptureOverlay", m_AlwaysCaptureOverlay);
     m_InGameMenuDistance = CfgFloat(userConfig, "InGameMenuDistance", m_InGameMenuDistance);
     m_MenuScaleWithRes = CfgBool(userConfig, "MenuScaleWithRes", m_MenuScaleWithRes);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
