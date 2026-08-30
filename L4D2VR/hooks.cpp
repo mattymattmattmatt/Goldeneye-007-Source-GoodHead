@@ -704,8 +704,6 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 		: nClearFlags;
 
 	if (rndrContext) rndrContext->SetRenderTarget(m_VR->m_LeftEyeTexture);
-	if (traceStereo) Game::logMsg("stereo pass #%d L render... clear=0x%X whatToDraw=0x%X",
-	                              pass, eyeClear, whatToDraw);
 	// Keep the 2D HUD out of the eye targets.
 	//
 	// The HUD is laid out in WINDOW pixels, and the eye targets are a different
@@ -718,13 +716,18 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 		? (whatToDraw & ~RENDERVIEW_DRAWHUD)
 		: whatToDraw;
 
+	if (traceStereo) Game::logMsg("stereo pass #%d L render... view=%dx%d rt=%p clear=0x%X draw=0x%X",
+	                              pass, leftEyeView.width, leftEyeView.height,
+	                              (void*)m_VR->m_LeftEyeTexture, eyeClear, eyeDraw);
 	hkRenderView.fOriginal(ecx, leftEyeView, eyeClear, eyeDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d L rendered, capturing", pass);
 	HRESULT hl = g_D3DVR9->CaptureCurrentRT(0, &m_VR->m_VKLeftEye);
 	if (traceStereo) Game::logMsg("stereo pass #%d L ok hr=0x%08X", pass, (unsigned)hl);
 
 	if (rndrContext) rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
-	if (traceStereo) Game::logMsg("stereo pass #%d R render...", pass);
+	if (traceStereo) Game::logMsg("stereo pass #%d R render... view=%dx%d rt=%p",
+	                              pass, rightEyeView.width, rightEyeView.height,
+	                              (void*)m_VR->m_RightEyeTexture);
 	hkRenderView.fOriginal(ecx, rightEyeView, eyeClear, eyeDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d R rendered, capturing", pass);
 	HRESULT hr = g_D3DVR9->CaptureCurrentRT(1, &m_VR->m_VKRightEye);
