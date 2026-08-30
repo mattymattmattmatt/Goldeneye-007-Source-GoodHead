@@ -156,9 +156,26 @@ if (Test-Path $binkProxy) {
     Write-Host "Installed Bink preload proxy (forces our d3d9.dll to load)"
 }
 
+# Install the VR folder, but NEVER clobber config.txt.
+#
+# This used to copy VR\* with -Force on every launch, which overwrote the
+# player's config every single time -- so any setting tuned by hand silently
+# reverted on the next run, and every knob in that file was effectively
+# read-only. The manifest and action bindings still get refreshed; config.txt
+# is written only when it is missing.
 foreach ($vrDest in @((Join-Path $sdk "VR"), (Join-Path $sdk "bin\VR"))) {
     New-Item -ItemType Directory -Force -Path $vrDest | Out-Null
-    Copy-Item (Join-Path $dist "VR\*") $vrDest -Recurse -Force
+    Get-ChildItem (Join-Path $dist "VR") -Force | ForEach-Object {
+        $target = Join-Path $vrDest $_.Name
+        if ($_.Name -ieq "config.txt") {
+            if (-not (Test-Path $target)) {
+                Copy-Item $_.FullName $target -Force
+                Write-Host "Installed default config.txt (yours will be kept from now on)"
+            }
+        } else {
+            Copy-Item $_.FullName $target -Recurse -Force
+        }
+    }
 }
 
 # Spaceless -game path so Source doesn't truncate "Program Files" / "Source SDK Base 2007".

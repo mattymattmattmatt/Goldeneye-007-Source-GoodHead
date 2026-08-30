@@ -1,4 +1,4 @@
-# ===========================================================================
+﻿# ===========================================================================
 # GESVR - HEAD-AIM VR MODE
 # ---------------------------------------------------------------------------
 # Configured to play the game properly in VR without motion weapons: full
@@ -410,7 +410,7 @@ EyeHudPass=true
 
 # Send the left eye's image to both eyes. No stereo depth, but a correct and
 # sharp picture. Set false for true stereo once the right eye is fixed.
-MonoEye=true
+MonoEye=false
 
 # Restore the old vertical crop convention (cropped the bottom where the eye
 # needs the top, which pushed the whole view upward).
