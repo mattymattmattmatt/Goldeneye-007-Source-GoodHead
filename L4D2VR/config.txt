@@ -429,4 +429,4 @@ MonoEyeSource=0
 # Render both eyes into ONE target, capturing each before the next pass
 # overwrites it. Saves a colour and a depth buffer at no cost to resolution.
 # Set false to go back to a separate target per eye.
-SharedEyeTarget=true
+SharedEyeTarget=false
