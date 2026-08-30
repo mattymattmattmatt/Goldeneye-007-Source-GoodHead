@@ -703,7 +703,19 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 		? (nClearFlags | VIEW_CLEAR_COLOR | VIEW_CLEAR_DEPTH | VIEW_CLEAR_FULL_TARGET)
 		: nClearFlags;
 
-	if (rndrContext) rndrContext->SetRenderTarget(m_VR->m_LeftEyeTexture);
+	// Bind through null so the bind is never treated as redundant.
+	//
+	// Setting a render target resets the viewport to that target's size. With a
+	// shared target the second eye passes the SAME pointer, so the material
+	// system skips the call as a no-op -- and with it the viewport reset. The
+	// second pass then drew at the backbuffer's 1920x1080 inside a 1806x1873
+	// target: full width, top 58% only, black underneath, which is exactly what
+	// the right eye showed. Going via null forces a real rebind both times.
+	if (rndrContext)
+	{
+		rndrContext->SetRenderTarget(nullptr);
+		rndrContext->SetRenderTarget(m_VR->m_LeftEyeTexture);
+	}
 	// Keep the 2D HUD out of the eye targets.
 	//
 	// The HUD is laid out in WINDOW pixels, and the eye targets are a different
@@ -732,7 +744,11 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	HRESULT hl = g_D3DVR9->CaptureCurrentRT(0, &m_VR->m_VKLeftEye);
 	if (traceStereo) Game::logMsg("stereo pass #%d L ok hr=0x%08X", pass, (unsigned)hl);
 
-	if (rndrContext) rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
+	if (rndrContext)
+	{
+		rndrContext->SetRenderTarget(nullptr);
+		rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
+	}
 	if (traceStereo) Game::logMsg("stereo pass #%d R render... view=%dx%d rt=%p",
 	                              pass, rightEyeView.width, rightEyeView.height,
 	                              (void*)m_VR->m_RightEyeTexture);
