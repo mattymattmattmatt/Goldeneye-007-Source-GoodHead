@@ -257,6 +257,10 @@ public:
 	// these same numbers -- them disagreeing is what rendered a sliver.
 	uint32_t m_EyeRTWidth = 0;
 	uint32_t m_EyeRTHeight = 0;
+	// Draw the 2D HUD in its own backbuffer pass instead of into the eye
+	// targets, where it lands at the wrong size and only in one eye.
+	// Set false if the extra pass costs more than it is worth.
+	bool m_EyeHudPass = true;
 
 	// IVModelRender vtable index of DrawModelExecute. Measured, not guessed:
 	// a naked per-slot counter showed [18]=128689 and [19]=128291 as the two

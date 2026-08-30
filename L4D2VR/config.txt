@@ -401,3 +401,9 @@ AlwaysCaptureOverlay=false
 #   mat_filtertextures 1 ; mat_filterlightmaps 1
 # If none of it helps, try $gesAA = 0 in Launch-GESVR.ps1 to rule out MSAA.
 ExtraCvars=mat_software_aa_strength 0; mat_local_contrast_enable 0; mat_grain_scale_override 0
+
+# Draw the 2D HUD in its own backbuffer pass rather than into the eye render
+# targets, where it lands at the wrong size and in only one eye. Set false if
+# the extra pass costs more than it is worth (the HUD then returns to the
+# right eye, misplaced).
+EyeHudPass=true

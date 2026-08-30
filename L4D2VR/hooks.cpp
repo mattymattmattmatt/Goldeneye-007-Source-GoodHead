@@ -583,6 +583,22 @@ void __fastcall Hooks::dViewRenderRender(void *ecx, void *edx, void *rect)
 
 extern void GESVR_NoteStereoPass();
 
+// Source's CViewRender clear flags.
+enum GESVRClearFlags
+{
+	VIEW_CLEAR_COLOR       = 0x01,
+	VIEW_CLEAR_DEPTH       = 0x02,
+	VIEW_CLEAR_FULL_TARGET = 0x04,
+	VIEW_NO_DRAW           = 0x08,
+};
+
+// Source's RenderView 'what to draw' bits.
+enum GESVRRenderViewInfo
+{
+	RENDERVIEW_DRAWVIEWMODEL = 0x01,
+	RENDERVIEW_DRAWHUD       = 0x02,
+};
+
 void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int nClearFlags, int whatToDraw)
 {
 	// Install the vtable probe lazily -- it lives below the hook-setup code,
@@ -675,16 +691,41 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 		Game::logMsg("stereo pass #%d eyeRT=%d size=%dx%d", pass,
 		             (int)(rndrContext != nullptr), leftEyeView.width, leftEyeView.height);
 
+	// Each eye target must be cleared in full.
+	//
+	// These are dedicated targets now, not the shared backbuffer, so nothing
+	// else clears them. Without a colour clear, anything the scene does not
+	// cover shows whatever was in the texture -- the white blobs. Without a
+	// depth clear the second eye inherits the first eye's depth and rejects
+	// geometry that should be visible. FULL_TARGET because the target is
+	// larger than the viewport the engine would otherwise clear.
+	const int eyeClear = rndrContext
+		? (nClearFlags | VIEW_CLEAR_COLOR | VIEW_CLEAR_DEPTH | VIEW_CLEAR_FULL_TARGET)
+		: nClearFlags;
+
 	if (rndrContext) rndrContext->SetRenderTarget(m_VR->m_LeftEyeTexture);
-	if (traceStereo) Game::logMsg("stereo pass #%d L render...", pass);
-	hkRenderView.fOriginal(ecx, leftEyeView, nClearFlags, whatToDraw);
+	if (traceStereo) Game::logMsg("stereo pass #%d L render... clear=0x%X whatToDraw=0x%X",
+	                              pass, eyeClear, whatToDraw);
+	// Keep the 2D HUD out of the eye targets.
+	//
+	// The HUD is laid out in WINDOW pixels, and the eye targets are a different
+	// size and aspect, so drawing it there puts it up and to the left and
+	// scatters artefacts. It only lands in one eye because the engine draws it
+	// once per frame, which is why the right eye was the damaged one.
+	//
+	// The viewmodel bit stays: the weapon belongs in the eyes.
+	const int eyeDraw = (rndrContext && m_VR->m_EyeHudPass)
+		? (whatToDraw & ~RENDERVIEW_DRAWHUD)
+		: whatToDraw;
+
+	hkRenderView.fOriginal(ecx, leftEyeView, eyeClear, eyeDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d L rendered, capturing", pass);
 	HRESULT hl = g_D3DVR9->CaptureCurrentRT(0, &m_VR->m_VKLeftEye);
 	if (traceStereo) Game::logMsg("stereo pass #%d L ok hr=0x%08X", pass, (unsigned)hl);
 
 	if (rndrContext) rndrContext->SetRenderTarget(m_VR->m_RightEyeTexture);
 	if (traceStereo) Game::logMsg("stereo pass #%d R render...", pass);
-	hkRenderView.fOriginal(ecx, rightEyeView, nClearFlags, whatToDraw);
+	hkRenderView.fOriginal(ecx, rightEyeView, eyeClear, eyeDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d R rendered, capturing", pass);
 	HRESULT hr = g_D3DVR9->CaptureCurrentRT(1, &m_VR->m_VKRightEye);
 	if (traceStereo) Game::logMsg("stereo pass #%d R ok hr=0x%08X", pass, (unsigned)hr);
@@ -702,6 +743,17 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	// Hand the backbuffer back, or the HUD/menu would draw into the eye
 	// texture and the desktop window would go black.
 	if (rndrContext) rndrContext->SetRenderTarget(nullptr);
+
+	// Now draw the 2D layer to the backbuffer, at window size, where it belongs.
+	// VIEW_NO_DRAW asks the engine to skip the 3D view and do only the 2D pass;
+	// if this engine ignores that bit the cost is a third scene render, so it is
+	// behind EyeHudPass. The menu overlay captures the backbuffer, so the in-map
+	// menu depends on this drawing somewhere.
+	if (rndrContext && m_VR->m_EyeHudPass && (whatToDraw & RENDERVIEW_DRAWHUD))
+	{
+		if (traceStereo) Game::logMsg("stereo pass #%d HUD pass to backbuffer", pass);
+		hkRenderView.fOriginal(ecx, setup, VIEW_NO_DRAW, whatToDraw);
+	}
 	g_inStereoPass = false;
 }
 

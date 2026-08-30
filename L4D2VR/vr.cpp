@@ -3777,6 +3777,7 @@ void VR::ParseConfigFile()
     m_InGameMenuDistance = CfgFloat(userConfig, "InGameMenuDistance", m_InGameMenuDistance);
     m_MenuScaleWithRes = CfgBool(userConfig, "MenuScaleWithRes", m_MenuScaleWithRes);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
+    m_EyeHudPass = CfgBool(userConfig, "EyeHudPass", m_EyeHudPass);
     m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
     m_WeaponSetupHook = CfgBool(userConfig, "WeaponSetupHook", m_WeaponSetupHook);
