@@ -676,13 +676,25 @@ VR::VR(Game *game)
 
     m_TextureBounds[0].uMin = 0.5f + 0.5f * l_left / tanHalfFov[0];
     m_TextureBounds[0].uMax = 0.5f + 0.5f * l_right / tanHalfFov[0];
-    m_TextureBounds[0].vMin = 0.5f - 0.5f * l_bottom / tanHalfFov[1];
-    m_TextureBounds[0].vMax = 0.5f - 0.5f * l_top / tanHalfFov[1];
+    // Vertical crop: same sign convention as the horizontal above.
+    //
+    // This used to read (0.5 - 0.5*bottom) / (0.5 - 0.5*top), which flips the
+    // convention between the two axes. With the measured frustum that produced
+    // v[0.162..1.000] -- the BOTTOM 84% of the image -- where the eye actually
+    // needs the TOP 84%, v[0.000..0.838]. Sampling too low pushes everything in
+    // view upward, which is why the gun sat so high. EyeCropLegacyV restores the
+    // old behaviour if this is ever wrong for a different headset.
+    m_TextureBounds[0].vMin = m_EyeCropLegacyV ? (0.5f - 0.5f * l_bottom / tanHalfFov[1])
+                                               : (0.5f + 0.5f * l_top    / tanHalfFov[1]);
+    m_TextureBounds[0].vMax = m_EyeCropLegacyV ? (0.5f - 0.5f * l_top    / tanHalfFov[1])
+                                               : (0.5f + 0.5f * l_bottom / tanHalfFov[1]);
 
     m_TextureBounds[1].uMin = 0.5f + 0.5f * r_left / tanHalfFov[0];
     m_TextureBounds[1].uMax = 0.5f + 0.5f * r_right / tanHalfFov[0];
-    m_TextureBounds[1].vMin = 0.5f - 0.5f * r_bottom / tanHalfFov[1];
-    m_TextureBounds[1].vMax = 0.5f - 0.5f * r_top / tanHalfFov[1];
+    m_TextureBounds[1].vMin = m_EyeCropLegacyV ? (0.5f - 0.5f * r_bottom / tanHalfFov[1])
+                                               : (0.5f + 0.5f * r_top    / tanHalfFov[1]);
+    m_TextureBounds[1].vMax = m_EyeCropLegacyV ? (0.5f - 0.5f * r_top    / tanHalfFov[1])
+                                               : (0.5f + 0.5f * r_bottom / tanHalfFov[1]);
 
     m_Aspect = tanHalfFov[0] / tanHalfFov[1];
     m_Fov = 2.0f * atan(tanHalfFov[0]) * 360 / (3.14159265358979323846 * 2);
@@ -1085,8 +1097,23 @@ void VR::AfterPresent()
                 lb.vMin = rb.vMin = 0.0f;
                 lb.vMax = rb.vMax = 1.0f;
             }
-            el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture,  &lb, vr::Submit_Default);
-            er = comp->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &rb, vr::Submit_Default);
+            // Mono: send the LEFT image to both eyes.
+            //
+            // The left eye renders correctly at full resolution; the right eye
+            // comes back black and the cause is still open. Duplicating the left
+            // gives a correct, sharp, comfortable image with no stereo depth,
+            // which beats playing with one eye blacked out. MonoEye=false
+            // restores true stereo once the right eye is fixed.
+            if (m_MonoEye)
+            {
+                el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
+                er = comp->Submit(vr::Eye_Right, &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
+            }
+            else
+            {
+                el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture,  &lb, vr::Submit_Default);
+                er = comp->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &rb, vr::Submit_Default);
+            }
             submitted = true;
         }
         else if (VRSubmit::g_blackReady.load() && TextureReady(m_SubmitBlack))
@@ -1516,8 +1543,23 @@ void VR::SubmitThreadBody()
             // Vulkan queues are single-thread-access. Bracket OpenVR's submit so it
             // cannot race DXVK's submission thread on the same VkQueue.
             if (g_D3DVR9) g_D3DVR9->LockSubmission();
-            el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture,  &lb, vr::Submit_Default);
-            er = comp->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &rb, vr::Submit_Default);
+            // Mono: send the LEFT image to both eyes.
+            //
+            // The left eye renders correctly at full resolution; the right eye
+            // comes back black and the cause is still open. Duplicating the left
+            // gives a correct, sharp, comfortable image with no stereo depth,
+            // which beats playing with one eye blacked out. MonoEye=false
+            // restores true stereo once the right eye is fixed.
+            if (m_MonoEye)
+            {
+                el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
+                er = comp->Submit(vr::Eye_Right, &m_VKLeftEye.m_VRTexture, &lb, vr::Submit_Default);
+            }
+            else
+            {
+                el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture,  &lb, vr::Submit_Default);
+                er = comp->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &rb, vr::Submit_Default);
+            }
             if (g_D3DVR9) g_D3DVR9->UnlockSubmission();
         }
         else if (VRSubmit::g_blackReady.load() && TextureReady(m_SubmitBlack))
@@ -3779,6 +3821,8 @@ void VR::ParseConfigFile()
     m_MenuScaleWithRes = CfgBool(userConfig, "MenuScaleWithRes", m_MenuScaleWithRes);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
     m_EyeHudPass = CfgBool(userConfig, "EyeHudPass", m_EyeHudPass);
+    m_MonoEye = CfgBool(userConfig, "MonoEye", m_MonoEye);
+    m_EyeCropLegacyV = CfgBool(userConfig, "EyeCropLegacyV", m_EyeCropLegacyV);
     m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
     m_WeaponSetupHook = CfgBool(userConfig, "WeaponSetupHook", m_WeaponSetupHook);
