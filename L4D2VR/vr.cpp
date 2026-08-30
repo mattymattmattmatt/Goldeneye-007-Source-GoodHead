@@ -188,12 +188,6 @@ void GESVR_NoteStereoPass()
 // also publishes window state back, so even the diagnostic logging on the
 // Present path reads an atomic instead of calling FindWindow/GetForegroundWindow.
 // ============================================================================
-// Published to the present path, which must not call USER32 itself.
-namespace dxvk {
-    extern std::atomic<uint32_t> g_GESVR_ClientW;
-    extern std::atomic<uint32_t> g_GESVR_ClientH;
-}
-
 namespace MenuInput
 {
     static std::atomic<bool> g_run{ false };
@@ -288,21 +282,6 @@ namespace MenuInput
                 curVis = (ci.ptScreenPos.x >= wr.left && ci.ptScreenPos.x < wr.right &&
                           ci.ptScreenPos.y >= wr.top  && ci.ptScreenPos.y < wr.bottom);
             g_gameCursorShowing.store(curVis);
-
-            // Publish the client size for the present path, which must never
-            // call USER32 itself -- doing so is what deadlocked Present.
-            {
-                RECT cr{};
-                if (GetClientRect(hwnd, &cr))
-                {
-                    const LONG cw = cr.right - cr.left, ch = cr.bottom - cr.top;
-                    if (cw > 0 && ch > 0)
-                    {
-                        dxvk::g_GESVR_ClientW.store((uint32_t)cw);
-                        dxvk::g_GESVR_ClientH.store((uint32_t)ch);
-                    }
-                }
-            }
 
             g_foreground.store(GetForegroundWindow() == hwnd ? 1 : 0);
             g_iconic.store(IsIconic(hwnd) ? 1 : 0);
