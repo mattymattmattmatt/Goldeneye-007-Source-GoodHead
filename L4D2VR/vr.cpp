@@ -3756,7 +3756,7 @@ void VR::ParseConfigFile()
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_DrawMenuCursor = CfgBool(userConfig, "DrawMenuCursor", m_DrawMenuCursor);
     dxvk::g_GESVR_DrawReticle = CfgBool(userConfig, "VRReticle", true);
-    dxvk::g_GESVR_ReticleScale = CfgFloat(userConfig, "VRReticleSize", 0.0025f);
+    dxvk::g_GESVR_ReticleScale = CfgFloat(userConfig, "VRReticleSize", 0.0007f);
     dxvk::g_GESVR_ReticleAspect = CfgFloat(userConfig, "VRReticleAspect", 0.0f);
     {
         // Same shape as the MenuAimSource key above: this config has no

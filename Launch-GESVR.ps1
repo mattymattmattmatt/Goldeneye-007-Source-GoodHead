@@ -193,19 +193,19 @@ Ensure-Junction (Join-Path $sdk "gesource") $ges
 # the route to more sharpness. Use EyeRenderTargets + EyeRenderScale instead:
 # that renders each eye at a MULTIPLE OF THE WINDOW internally and is not bound
 # by the desktop at all.
-# Image quality knobs. These are the main levers against jaggies now that the
-# window is already at the desktop resolution ceiling.
-#   $gesAA    - MSAA samples. 4 is a good default; set 0 if the eyes go black
-#               (the log will say [EYE] StretchRect FAILED if MSAA is the cause).
-#   $gesAniso - anisotropic filtering, sharpens floors/walls seen at an angle.
-#   picmip -1 - highest texture detail.
-#   $gesPicmip - texture detail. -1 forces detail BEYOND the in-game High
-#               setting; combined with High it hung the NVIDIA driver during
-#               texture upload in a 32-bit process (stack: D3D9Initializer
-#               ::Flush -> submit -> nvoglv32). 0 = high, 1 = medium, 2 = low.
-$gesPicmip = 0
-$gesAA     = 4
-$gesAniso  = 8
+# Image quality: the launcher no longer overrides the game's own video
+# settings. Forcing them caused real damage -- mat_picmip -1 pushes texture
+# detail BEYOND the in-game High setting, and in a 32-bit process on top of
+# DXVK it hung the NVIDIA driver during texture upload (stack:
+# D3D9Initializer::Flush -> submit -> nvoglv32), so maps would not load.
+# They also bought nothing: the softness is post-processing, not aliasing.
+#
+# Set $gesForceGraphics = $true to re-enable the overrides below.
+$gesForceGraphics = $false
+$gesPicmip = 0      # 0 = high, 1 = medium, 2 = low. -1 is beyond High: avoid.
+$gesAA     = 4      # MSAA samples.
+$gesAniso  = 8      # anisotropic filtering.
+
 $gesWidth  = 1920
 $gesHeight = 1080
 
@@ -214,7 +214,11 @@ $gesHeight = 1080
 #   engine and stalls title -> menu. 0 removes the sleep.
 # snd_mute_losefocus: Source mutes audio on focus loss -- the "buggy sound".
 # Resolution is deliberately untouched: 1280x1280 is what broke boot on 08-28.
-$vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 1 +mat_queue_mode 0 +mat_vsync 0 +mat_antialias $gesAA +mat_forceaniso $gesAniso +mat_picmip $gesPicmip +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width $gesWidth -height $gesHeight"
+$vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 1 +mat_queue_mode 0 +mat_vsync 0 +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width $gesWidth -height $gesHeight"
+
+if ($gesForceGraphics) {
+    $vrArgs += " +mat_antialias $gesAA +mat_forceaniso $gesAniso +mat_picmip $gesPicmip"
+}
 
 # Must go through Steam so SDK 2007 mounts its VPKs (startup_loading.vtf lives there).
 $steamExe = Join-Path $steam "steam.exe"
