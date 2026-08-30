@@ -389,3 +389,15 @@ VRReticleAspect=0
 # Refresh the overlay capture every in-game frame. This also applies the menu
 # alpha fix; turning it off can make menus look see-through/blurry.
 AlwaysCaptureOverlay=true
+
+# Console commands run once, ~1.5s after each map loads. Semicolon separated.
+# These exist to hunt the in-game blur: the menu is sharp until the world
+# loads and sharp again on the last frame before the game stops rendering,
+# and Source's post-processing only runs while a 3D scene exists.
+# Bisect by removing one at a time. Others worth trying:
+#   mat_hdr_level 0          (disables HDR/bloom, changes lighting noticeably)
+#   mat_bloomscale 0
+#   mat_motion_blur_enabled 0
+#   mat_filtertextures 1 ; mat_filterlightmaps 1
+# If none of it helps, try $gesAA = 0 in Launch-GESVR.ps1 to rule out MSAA.
+ExtraCvars=mat_software_aa_strength 0; mat_local_contrast_enable 0; mat_grain_scale_override 0

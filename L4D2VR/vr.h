@@ -316,6 +316,12 @@ public:
 	// Refresh the overlay capture every in-game frame regardless of HUD
 	// settings. That capture also applies the menu alpha fix.
 	bool m_AlwaysCaptureOverlay = true;
+
+	// Console commands run once per map, from the ExtraCvars config key.
+	// Exists so renderer settings can be bisected without a rebuild.
+	std::string m_ExtraCvars;
+	bool m_ExtraCvarsDone = false;
+	unsigned m_InMapSinceMs = 0;
 	// The in-map panel wants to sit further back than the create-server menu,
 	// which wants to stay close enough to read. They used to share one distance.
 	float m_InGameMenuDistance = 2.4f;
@@ -538,6 +544,7 @@ public:
 	bool ComputeMenuPointer(int &x, int &y);
 	void EffectiveMenuGeometry(float &widthM, float &distM) const;
 	void DetectHeadTap();
+	void ApplyExtraCvars();
 	void UpdateHudElements();
 	void ShowHudElement(vr::VROverlayHandle_t h, const float crop[4],
 	                    float x, float y, float dist, float width);

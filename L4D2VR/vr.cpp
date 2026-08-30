@@ -963,6 +963,7 @@ void VR::Update()
     // were inert. Only runs in map.
     if (m_Game && m_Game->IsInMap())
     {
+        ApplyExtraCvars();
         UpdateWristHUD();
         UpdateHurtHUD();
         DetectHeadTap();
@@ -970,6 +971,8 @@ void VR::Update()
     }
     else
     {
+        m_ExtraCvarsDone = false;
+        m_InMapSinceMs = 0;
         HideWristOverlays();
         if (m_Overlay)
             for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle })
@@ -3456,6 +3459,55 @@ void VR::UpdateHudElements()
 
 }
 
+// Run user-supplied console commands once the map is up.
+//
+// The menu is sharp until the world loads and sharp again on the very last
+// frame before the game stops rendering -- both are moments when no 3D scene
+// exists. Source's post-processing only runs when there IS one, so the blur is
+// in the frame we capture, not in how the overlay displays it. Which effect is
+// responsible is a question about GE:S's renderer that only testing answers, so
+// this makes the list a config key rather than a rebuild.
+void VR::ApplyExtraCvars()
+{
+    if (m_ExtraCvarsDone || m_ExtraCvars.empty())
+        return;
+
+    // Let the map finish coming up; cvars set mid-load can be overwritten.
+    const unsigned now = (unsigned)GetTickCount();
+    if (m_InMapSinceMs == 0)
+    {
+        m_InMapSinceMs = now;
+        return;
+    }
+    if ((now - m_InMapSinceMs) < 1500)
+        return;
+
+    m_ExtraCvarsDone = true;
+    if (!m_Game)
+        return;
+
+    size_t start = 0;
+    while (start < m_ExtraCvars.size())
+    {
+        size_t end = m_ExtraCvars.find(';', start);
+        if (end == std::string::npos)
+            end = m_ExtraCvars.size();
+        std::string cmd = m_ExtraCvars.substr(start, end - start);
+        size_t b = cmd.find_first_not_of(" \t");
+        size_t e = cmd.find_last_not_of(" \t");
+        if (b != std::string::npos && e != std::string::npos)
+        {
+            cmd = cmd.substr(b, e - b + 1);
+            if (!cmd.empty())
+            {
+                m_Game->ClientCmd_Unrestricted(cmd.c_str());
+                Game::logMsg("ExtraCvars: %s", cmd.c_str());
+            }
+        }
+        start = end + 1;
+    }
+}
+
 void VR::UpdateWristHUD()
 {
     if (!m_ShowWristHUD || !m_Overlay || !m_RenderedHud)
@@ -3671,6 +3723,11 @@ void VR::ParseConfigFile()
     m_MenuDistanceMeters = CfgFloat(userConfig, "MenuDistanceMeters", m_MenuDistanceMeters);
     m_InGameMenuPanel = CfgBool(userConfig, "InGameMenuPanel", m_InGameMenuPanel);
     m_AlwaysCaptureOverlay = CfgBool(userConfig, "AlwaysCaptureOverlay", m_AlwaysCaptureOverlay);
+    {
+        auto it = userConfig.find("ExtraCvars");
+        if (it != userConfig.end())
+            m_ExtraCvars = it->second;
+    }
     m_InGameMenuDistance = CfgFloat(userConfig, "InGameMenuDistance", m_InGameMenuDistance);
     m_MenuScaleWithRes = CfgBool(userConfig, "MenuScaleWithRes", m_MenuScaleWithRes);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
