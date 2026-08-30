@@ -1707,8 +1707,25 @@ void VR::CreateVRTextures()
     m_CreatingTextureID = Texture_LeftEye;
     m_LeftEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("leftEye0", rtW, rtH, RT_SIZE_LITERAL, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
     
-    m_CreatingTextureID = Texture_RightEye;
-    m_RightEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEye0", rtW, rtH, RT_SIZE_LITERAL, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
+    // One target for both eyes, by default.
+    //
+    // Each eye is captured immediately after it is rendered, so the second pass
+    // can reuse the first one's target -- the clear at the top of each pass wipes
+    // it. That saves a full colour AND depth buffer: at this size roughly 52MB of
+    // the ~156MB these targets were costing, in a 32-bit process where that
+    // margin decides whether a map loads. It costs no resolution at all.
+    //
+    // It also removes the second SetRenderTarget entirely, which is one of the
+    // remaining suspects for the right eye's black frame.
+    if (m_SharedEyeTarget)
+    {
+        m_RightEyeTexture = m_LeftEyeTexture;
+    }
+    else
+    {
+        m_CreatingTextureID = Texture_RightEye;
+        m_RightEyeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("rightEye0", rtW, rtH, RT_SIZE_LITERAL, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
+    }
     
     m_CreatingTextureID = Texture_HUD;
     m_HUDTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("vrHUD", windowWidth, windowHeight, RT_SIZE_NO_CHANGE, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SHARED, TEXTUREFLAGS_NOMIP);
@@ -1721,9 +1738,9 @@ void VR::CreateVRTextures()
     m_Game->m_MaterialSystem->EndRenderTargetAllocation();
 
     m_CreatedVRTextures = (m_LeftEyeTexture && m_RightEyeTexture);
-    Game::logMsg("CreateVRTextures left=%p right=%p hud=%p ok=%d size=%dx%d",
+    Game::logMsg("CreateVRTextures left=%p right=%p hud=%p ok=%d size=%dx%d shared=%d",
                  m_LeftEyeTexture, m_RightEyeTexture, m_HUDTexture,
-                 (int)m_CreatedVRTextures, rtW, rtH);
+                 (int)m_CreatedVRTextures, rtW, rtH, (int)m_SharedEyeTarget);
 }
 
 void VR::SubmitVRTextures()
@@ -3873,6 +3890,7 @@ void VR::ParseConfigFile()
     m_EyeCropLegacyV = CfgBool(userConfig, "EyeCropLegacyV", m_EyeCropLegacyV);
     dxvk::g_GESVR_SwapEyeSurfaces = CfgBool(userConfig, "SwapEyeSurfaces", false);
     m_MonoEyeSource = (int)CfgFloat(userConfig, "MonoEyeSource", (float)m_MonoEyeSource);
+    m_SharedEyeTarget = CfgBool(userConfig, "SharedEyeTarget", m_SharedEyeTarget);
     m_ModelDrawExecuteSlot = (int)CfgFloat(userConfig, "ModelDrawExecuteSlot", (float)m_ModelDrawExecuteSlot);
     m_ModelDrawSetupSlot = (int)CfgFloat(userConfig, "ModelDrawSetupSlot", (float)m_ModelDrawSetupSlot);
     m_WeaponSetupHook = CfgBool(userConfig, "WeaponSetupHook", m_WeaponSetupHook);

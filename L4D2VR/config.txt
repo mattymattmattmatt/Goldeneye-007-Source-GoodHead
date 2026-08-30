@@ -42,7 +42,7 @@ UseVerticalCrop=true
 # to the 1280x720 backbuffer that the overlay capture reads.
 # 1.5 gives 1920x1080 from a 1280x720 window: sharper, nowhere near the cliff.
 # Try EyeRenderTargets=true with this at 1.25 or 1.5 before going higher.
-EyeRenderScale=1.0
+EyeRenderScale=0.85
 
 # Floating menu panel size and distance, in metres. The in-game character/level
 # menu was too big and too close; raise the distance and/or drop the width until
@@ -425,3 +425,8 @@ SwapEyeSurfaces=false
 # 1 is a test: it shows the right texture alone, separating a bad texture
 # from a bad two-texture submit. Set back to 0 for normal mono.
 MonoEyeSource=1
+
+# Render both eyes into ONE target, capturing each before the next pass
+# overwrites it. Saves a colour and a depth buffer at no cost to resolution.
+# Set false to go back to a separate target per eye.
+SharedEyeTarget=true

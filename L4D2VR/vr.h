@@ -269,6 +269,10 @@ public:
 	// the test for the right eye's black frame: it shows the right texture on
 	// its own, separating a bad texture from a bad two-texture submit.
 	int m_MonoEyeSource = 0;
+	// Render both eyes into ONE target, capturing each before the next pass
+	// overwrites it. Saves a colour and a depth buffer with no loss of
+	// resolution, which matters in a 32-bit process.
+	bool m_SharedEyeTarget = true;
 	// Restore the old vertical crop convention. The old one cropped the bottom
 	// of the image where the eye needs the top, which pushed the view upward.
 	// TRUE is the original convention. Flipping it was tested and made the left
