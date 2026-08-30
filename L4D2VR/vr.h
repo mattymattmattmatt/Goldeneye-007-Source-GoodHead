@@ -333,11 +333,9 @@ public:
 	// resolution, and are config keys because they are read off a screenshot.
 	vr::VROverlayHandle_t m_HudFoesHandle = 0;
 	vr::VROverlayHandle_t m_HudAmmoHandle = 0;
-	vr::VROverlayHandle_t m_HudRadarHandle = 0;
 
 	float m_HudFoesCrop[4]  = { 0.41f, 0.02f, 0.62f, 0.11f };
 	float m_HudAmmoCrop[4]  = { 0.85f, 0.90f, 0.94f, 1.00f };
-	float m_HudRadarCrop[4] = { 0.44f, 0.80f, 0.61f, 1.00f };
 
 	// Head-locked elements, toggled by the head tap.
 	bool  m_HudElementsVisible = false;
@@ -346,12 +344,6 @@ public:
 	float m_HudAmmoX = 0.34f, m_HudAmmoY = -0.24f;
 	float m_HudAmmoDistance = 1.2f, m_HudAmmoWidth = 0.20f;
 
-	// Radar + timer: parked below you rather than in view. It keeps its place
-	// so a glance down finds it, but billboards to face the headset.
-	bool  m_HudRadarEnabled = true;
-	float m_HudRadarDrop = 0.50f;      // metres below eye level
-	float m_HudRadarForward = 0.30f;   // metres ahead, along head yaw
-	float m_HudRadarWidth = 0.30f;
 
 	bool  m_HudTapToggle = true;
 	float m_HudTapThreshold = 1.2f;    // m/s step between frames
@@ -360,6 +352,9 @@ public:
 	// 0x70 is F1. Set 0 to disable.
 	int   m_HudToggleKey = 0x70;
 	Vector m_PrevHeadVel = Vector(0.0f, 0.0f, 0.0f);
+	Vector m_PrevHeadPos = Vector(0.0f, 0.0f, 0.0f);
+	unsigned m_LastHeadSampleMs = 0;
+	unsigned m_LastHudToggleSeq = 0;
 	bool  m_HaveHeadVel = false;
 	unsigned m_LastHeadTapMs = 0;
 	float m_MaxJoltSeen = 0.0f;

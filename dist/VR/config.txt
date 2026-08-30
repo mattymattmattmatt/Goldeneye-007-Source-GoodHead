@@ -351,7 +351,7 @@ HudTapCooldownMs=700
 HudToggleKey=112
 
 # Start with the Foes/ammo readouts showing.
-HudElementsDefaultOn=false
+HudElementsDefaultOn=true
 
 # Crop of the Foes counter, as fractions: u0 v0 u1 v1.
 HudFoesCrop=0.41 0.02 0.62 0.11
@@ -382,18 +382,3 @@ HudAmmoDistance=1.2
 
 # Ammo readout width in metres.
 HudAmmoWidth=0.20
-
-# Show the radar + timer parked below you.
-HudRadarEnabled=true
-
-# Crop covering radar and timer: u0 v0 u1 v1.
-HudRadarCrop=0.44 0.80 0.61 1.00
-
-# How far below eye level the radar sits, in metres.
-HudRadarDrop=0.50
-
-# How far in front of you the radar sits, in metres.
-HudRadarForward=0.30
-
-# Radar panel width in metres.
-HudRadarWidth=0.30

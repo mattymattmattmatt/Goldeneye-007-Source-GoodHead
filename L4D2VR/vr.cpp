@@ -220,6 +220,11 @@ namespace MenuInput
     // GetCursorInfo is USER32, so it is polled on THIS thread and nowhere else.
     static std::atomic<bool> g_gameCursorShowing{ false };
 
+    // HUD toggle key. Polled here because this thread owns USER32; the render
+    // thread just watches the sequence number.
+    static std::atomic<int>      g_hudToggleKey{ 0 };
+    static std::atomic<unsigned> g_hudToggleSeq{ 0 };
+
     // Published back for the render thread to read cheaply.
     static std::atomic<void*> g_hwnd{ nullptr };
     static std::atomic<int>  g_foreground{ 0 };
@@ -261,6 +266,15 @@ namespace MenuInput
             // window during play would read as 'showing' and wrongly flip us into
             // menu mode. Require it to be over the game window as well: in play
             // Source keeps it centred AND hidden, so only a real panel sets both.
+            {
+                const int vk = g_hudToggleKey.load();
+                static bool s_keyWasDown = false;
+                const bool keyDown = (vk != 0) && ((GetAsyncKeyState(vk) & 0x8000) != 0);
+                if (keyDown && !s_keyWasDown)
+                    g_hudToggleSeq.fetch_add(1);
+                s_keyWasDown = keyDown;
+            }
+
             CURSORINFO ci{}; ci.cbSize = sizeof(ci);
             RECT wr{};
             bool curVis = false;
@@ -731,9 +745,8 @@ VR::VR(Game *game)
     m_Overlay->CreateOverlay("GESVRWorldKey", "GESVRWorld", &m_WorldHandle);
     m_Overlay->CreateOverlay("GESVRHudFoesKey",  "GESVRHudFoes",  &m_HudFoesHandle);
     m_Overlay->CreateOverlay("GESVRHudAmmoKey",  "GESVRHudAmmo",  &m_HudAmmoHandle);
-    m_Overlay->CreateOverlay("GESVRHudRadarKey", "GESVRHudRadar", &m_HudRadarHandle);
     // Never interactive: they must not steal the laser from the menu panel.
-    for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle, m_HudRadarHandle })
+    for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle })
     {
         m_Overlay->SetOverlayFlag(h, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
         m_Overlay->SetOverlaySortOrder(h, 90);
@@ -935,7 +948,7 @@ void VR::Update()
     // the 2D HUD, which is exactly what we want to crop from.
     // The HUD panel draws from this same capture, so it must refresh when
     // either consumer is live -- not just the wrist watch.
-    if (g_D3DVR9 && (m_ShowWristHUD || m_HudElementsVisible || m_HudRadarEnabled))
+    if (g_D3DVR9 && (m_ShowWristHUD || m_HudElementsVisible))
         g_D3DVR9->CaptureForOverlay(&m_VKHUD, -1, -1);
 
     // UpdateWristHUD/UpdateHurtHUD had NO call sites: the whole wrist
@@ -952,7 +965,7 @@ void VR::Update()
     {
         HideWristOverlays();
         if (m_Overlay)
-            for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle, m_HudRadarHandle })
+            for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle })
                 if (h) m_Overlay->HideOverlay(h);
     }
 
@@ -3316,21 +3329,17 @@ void VR::DetectHeadTap()
 {
     const unsigned now = (unsigned)GetTickCount();
 
-    // Fallback toggle. The tap depends on headset, mounting and how hard you
-    // hit it; a key that always works beats a gesture that might not.
-    if (m_HudToggleKey != 0)
+    // Fallback toggle. The key is polled on the MenuInput thread, which owns
+    // all USER32 -- calling GetAsyncKeyState from here would put a USER32 call
+    // on the Present callstack, which is the exact rule whose violation inside
+    // DXVK caused the re-entrant Present freeze.
+    const unsigned toggleSeq = MenuInput::g_hudToggleSeq.load();
+    if (toggleSeq != m_LastHudToggleSeq)
     {
-        const bool down = (GetAsyncKeyState(m_HudToggleKey) & 0x8000) != 0;
-        static bool s_wasDown = false;
-        if (down && !s_wasDown && (m_LastHeadTapMs == 0
-                                   || (now - m_LastHeadTapMs) >= (unsigned)m_HudTapCooldownMs))
-        {
-            m_LastHeadTapMs = now;
-            m_HudElementsVisible = !m_HudElementsVisible;
-            Game::logMsg("HUD toggle key -> HUD elements %s",
-                         m_HudElementsVisible ? "ON" : "OFF");
-        }
-        s_wasDown = down;
+        m_LastHudToggleSeq = toggleSeq;
+        m_HudElementsVisible = !m_HudElementsVisible;
+        Game::logMsg("HUD toggle key -> HUD elements %s",
+                     m_HudElementsVisible ? "ON" : "OFF");
     }
 
     if (!m_HudTapToggle)
@@ -3343,16 +3352,33 @@ void VR::DetectHeadTap()
         return;
     }
 
-    const Vector v(hmd.vVelocity.v[0], hmd.vVelocity.v[1], hmd.vVelocity.v[2]);
+    // Derive motion from POSITION, not from the pose's vVelocity field.
+    //
+    // vVelocity read 0.00-0.03 for an entire session including plenty of head
+    // movement -- this runtime simply does not populate it -- so no tap could
+    // ever cross any threshold. Position is tracked properly, so difference it
+    // here: once for velocity, again for the jolt that a tap produces.
+    const vr::HmdMatrix34_t &hm = hmd.mDeviceToAbsoluteTracking;
+    const Vector pos(hm.m[0][3], hm.m[1][3], hm.m[2][3]);
+
+    float dt = (m_LastHeadSampleMs == 0) ? 0.0f : (float)(now - m_LastHeadSampleMs) * 0.001f;
+    m_LastHeadSampleMs = now;
+    if (dt < 0.004f) dt = 0.004f;
+    if (dt > 0.100f) dt = 0.100f;
+
     if (!m_HaveHeadVel)
     {
-        m_PrevHeadVel = v;
+        m_PrevHeadPos = pos;
+        m_PrevHeadVel = Vector(0.0f, 0.0f, 0.0f);
         m_HaveHeadVel = true;
         return;
     }
 
-    const Vector dv = v - m_PrevHeadVel;
-    m_PrevHeadVel = v;
+    const Vector d(pos.x - m_PrevHeadPos.x, pos.y - m_PrevHeadPos.y, pos.z - m_PrevHeadPos.z);
+    m_PrevHeadPos = pos;
+    const Vector vel(d.x / dt, d.y / dt, d.z / dt);
+    const Vector dv(vel.x - m_PrevHeadVel.x, vel.y - m_PrevHeadVel.y, vel.z - m_PrevHeadVel.z);
+    m_PrevHeadVel = vel;
 
     // Vector::Length is declared by the SDK header but not linked here.
     const float jolt = sqrtf(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z);
@@ -3421,87 +3447,6 @@ void VR::UpdateHudElements()
         if (m_HudAmmoHandle) m_Overlay->HideOverlay(m_HudAmmoHandle);
     }
 
-    // Radar and timer: parked below rather than carried in view, so a glance
-    // down finds them. Positioned relative to where the head IS, but rotated to
-    // face the head, so it reads correctly from whatever angle you look.
-    if (!m_HudRadarEnabled || !haveTex || !m_HudRadarHandle)
-    {
-        if (m_HudRadarHandle) m_Overlay->HideOverlay(m_HudRadarHandle);
-        return;
-    }
-
-    const vr::TrackedDevicePose_t &hmd = m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
-    if (!hmd.bPoseIsValid)
-    {
-        m_Overlay->HideOverlay(m_HudRadarHandle);
-        return;
-    }
-
-    const vr::HmdMatrix34_t &m = hmd.mDeviceToAbsoluteTracking;
-    const Vector headPos(m.m[0][3], m.m[1][3], m.m[2][3]);
-
-    // Head forward flattened to horizontal, so the panel does not swing away
-    // when you look up or down -- only which way you are facing should matter.
-    Vector fwd(-m.m[0][2], 0.0f, -m.m[2][2]);
-    const float fl = sqrtf(fwd.x * fwd.x + fwd.z * fwd.z);
-    if (fl > 0.0001f) { fwd.x /= fl; fwd.z /= fl; }
-    else              { fwd.x = 0.0f; fwd.z = -1.0f; }
-
-    const Vector pos(headPos.x + fwd.x * m_HudRadarForward,
-                     headPos.y - m_HudRadarDrop,
-                     headPos.z + fwd.z * m_HudRadarForward);
-
-    // Billboard: an overlay faces along +z of its own transform, so aim that
-    // straight at the head.
-    Vector z(headPos.x - pos.x, headPos.y - pos.y, headPos.z - pos.z);
-    const float zl = sqrtf(z.x * z.x + z.y * z.y + z.z * z.z);
-    if (zl < 0.0001f)
-    {
-        m_Overlay->HideOverlay(m_HudRadarHandle);
-        return;
-    }
-    z.x /= zl; z.y /= zl; z.z /= zl;
-
-    // Keep the panel's up axis tied to the way you are facing, so the radar is
-    // not upside down when you turn around.
-    Vector ref(fwd.x, 0.0f, fwd.z);
-    Vector xa(ref.y * z.z - ref.z * z.y,
-              ref.z * z.x - ref.x * z.z,
-              ref.x * z.y - ref.y * z.x);
-    float xl = sqrtf(xa.x * xa.x + xa.y * xa.y + xa.z * xa.z);
-    if (xl < 0.0001f)
-    {
-        ref = Vector(0.0f, 0.0f, -1.0f);
-        xa = Vector(ref.y * z.z - ref.z * z.y,
-                    ref.z * z.x - ref.x * z.z,
-                    ref.x * z.y - ref.y * z.x);
-        xl = sqrtf(xa.x * xa.x + xa.y * xa.y + xa.z * xa.z);
-        if (xl < 0.0001f)
-        {
-            m_Overlay->HideOverlay(m_HudRadarHandle);
-            return;
-        }
-    }
-    xa.x /= xl; xa.y /= xl; xa.z /= xl;
-
-    const Vector ya(z.y * xa.z - z.z * xa.y,
-                    z.z * xa.x - z.x * xa.z,
-                    z.x * xa.y - z.y * xa.x);
-
-    vr::HmdMatrix34_t xf = {
-        xa.x, ya.x, z.x, pos.x,
-        xa.y, ya.y, z.y, pos.y,
-        xa.z, ya.z, z.z, pos.z
-    };
-    m_Overlay->SetOverlayTransformAbsolute(
-        m_HudRadarHandle, vr::VRCompositor()->GetTrackingSpace(), &xf);
-    m_Overlay->SetOverlayWidthInMeters(m_HudRadarHandle, m_HudRadarWidth);
-
-    vr::VRTextureBounds_t b = { m_HudRadarCrop[0], m_HudRadarCrop[1],
-                                m_HudRadarCrop[2], m_HudRadarCrop[3] };
-    m_Overlay->SetOverlayTextureBounds(m_HudRadarHandle, &b);
-    SetOverlayTextureLocked(m_Overlay, m_HudRadarHandle, &m_VKHUD.m_VRTexture);
-    m_Overlay->ShowOverlay(m_HudRadarHandle);
 }
 
 void VR::UpdateWristHUD()
@@ -3760,6 +3705,7 @@ void VR::ParseConfigFile()
     m_HudTapThreshold = CfgFloat(userConfig, "HudTapThreshold", m_HudTapThreshold);
     m_HudTapCooldownMs = (int)CfgFloat(userConfig, "HudTapCooldownMs", (float)m_HudTapCooldownMs);
     m_HudToggleKey = (int)CfgFloat(userConfig, "HudToggleKey", (float)m_HudToggleKey);
+    MenuInput::g_hudToggleKey.store(m_HudToggleKey);
     m_HudElementsVisible = CfgBool(userConfig, "HudElementsDefaultOn", m_HudElementsVisible);
 
     m_HudFoesX = CfgFloat(userConfig, "HudFoesX", m_HudFoesX);
@@ -3772,15 +3718,14 @@ void VR::ParseConfigFile()
     m_HudAmmoDistance = CfgFloat(userConfig, "HudAmmoDistance", m_HudAmmoDistance);
     m_HudAmmoWidth = CfgFloat(userConfig, "HudAmmoWidth", m_HudAmmoWidth);
 
-    m_HudRadarEnabled = CfgBool(userConfig, "HudRadarEnabled", m_HudRadarEnabled);
-    m_HudRadarDrop = CfgFloat(userConfig, "HudRadarDrop", m_HudRadarDrop);
-    m_HudRadarForward = CfgFloat(userConfig, "HudRadarForward", m_HudRadarForward);
-    m_HudRadarWidth = CfgFloat(userConfig, "HudRadarWidth", m_HudRadarWidth);
-
     // Crop rectangles, as fractions of the frame: u0 v0 u1 v1.
     CfgCrop(userConfig, "HudFoesCrop", m_HudFoesCrop);
     CfgCrop(userConfig, "HudAmmoCrop", m_HudAmmoCrop);
-    CfgCrop(userConfig, "HudRadarCrop", m_HudRadarCrop);
+    Game::logMsg("HUD: toggleKey=%d tapThreshold=%.2f startVisible=%d "
+                 "foesCrop=%.2f,%.2f-%.2f,%.2f ammoCrop=%.2f,%.2f-%.2f,%.2f",
+                 m_HudToggleKey, m_HudTapThreshold, (int)m_HudElementsVisible,
+                 m_HudFoesCrop[0], m_HudFoesCrop[1], m_HudFoesCrop[2], m_HudFoesCrop[3],
+                 m_HudAmmoCrop[0], m_HudAmmoCrop[1], m_HudAmmoCrop[2], m_HudAmmoCrop[3]);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);
     m_ShowMirrorWindow = CfgBool(userConfig, "ShowMirrorWindow", m_ShowMirrorWindow);
