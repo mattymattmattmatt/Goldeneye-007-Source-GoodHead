@@ -47,8 +47,8 @@ static std::atomic<int>  g_watchInMap{ 0 };
 static std::atomic<int>  g_watchStereoPass{ 0 };
 static std::atomic<bool> g_watchdogRun{ false };
 static std::atomic<bool> g_vrQuitting{ false };
-// Time of the last click queued while the pause menu (GameUI in a map) was up.
-static std::atomic<long long> g_lastPauseClickMs{ 0 };
+// Time of the last click queued on a game menu (main or pause).
+static std::atomic<long long> g_lastMenuClickMs{ 0 };
 
 static long long NowMs()
 {
@@ -292,16 +292,18 @@ static void GESVR_WatchdogThread()
             // ntdll wait, entire stack steamclient, inMap still 1). Present
             // never returns, so the engine cannot finish quitting. The user
             // already asked to exit, so leave.
-            // Three conditions, so a slow map load is never killed: the last
-            // good frame came right after a PAUSE-menu click (main-menu clicks
-            // do not count), we are still in the map, and the stuck thread is
-            // inside steamclient. The click time is not cleared on healthy
-            // frames -- a Quit click is followed by 1-2 good Presents first.
-            const long long clicked = g_lastPauseClickMs.load();
+            // Quitting from the MAIN menu hangs the same way (21:27 run:
+            // inMap=0, every frame steamclient), so any menu click arms it.
+            // Two conditions keep a slow map load safe: the last good frame
+            // came right after a menu click, and the stuck thread is inside
+            // steamclient -- a map load stalls in engine/materialsystem. The
+            // click time is not cleared on healthy frames: a Quit click is
+            // followed by 1-2 good Presents before steamclient hangs.
+            const long long clicked = g_lastMenuClickMs.load();
             if (stalled > 5000 && clicked != 0 && (last - clicked) < 3000 &&
-                g_watchInMap.load() == 1 && GESVR_StalledInSteamClient())
+                GESVR_StalledInSteamClient())
             {
-                Game::logMsg("WATCHDOG: pause-menu click then Present stuck in steamclient %lld ms; forcing exit", stalled);
+                Game::logMsg("WATCHDOG: menu click then Present stuck in steamclient %lld ms; forcing exit", stalled);
                 g_vrQuitting.store(true);
                 g_watchdogRun.store(false);
                 TerminateProcess(GetCurrentProcess(), 0);
@@ -1319,10 +1321,8 @@ void VR::AfterPresent()
     if (g_pendMouseDown && g_menuDriveCursor)
     {
         MenuInput::QueueClick();
-        // Arms the watchdog's Quit force-exit. Pause menu only: character
-        // select is in-map + cursor but not GameUI, and never hangs this way.
-        if (inMap && m_Game && m_Game->IsGameUIVisible())
-            g_lastPauseClickMs.store(NowMs());
+        // Arms the watchdog's Quit force-exit (main or pause menu).
+        g_lastMenuClickMs.store(NowMs());
     }
     g_pendMouseDown = false;
     g_pendMouseUp = false;
@@ -2820,7 +2820,7 @@ void VR::ProcessInput()
 
     // GE:S aim mode is +aimmode (SHIFT on desktop), not +attack2 -- MOUSE2 is
     // +aimdetonate. Aim mode is what zooms the sniper scope.
-    if (PressedDigitalAction(m_ActionScope))
+    if (ScopeHeld())
         MoveCmd("+aimmode");
     else
         MoveCmd("-aimmode");
@@ -3261,11 +3261,20 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     m_Ipd = m_EyeToHeadTransformPosRight.x * 2.0f;
     m_EyeZ = m_EyeToHeadTransformPosRight.z;
 
-    // Real IPD (~6.3cm). Scale 43.2 -> ~1.4u. Keep ~2u so depth is obvious
-    // without the 8u (~37cm) warp from the earlier build.
-    float halfIpd = (m_Ipd > 0.001f) ? (m_Ipd * m_IpdScale * m_VRScale) * 0.5f : 2.0f;
-    if (halfIpd < 1.8f) halfIpd = 1.8f;
-    if (halfIpd > 2.6f) halfIpd = 2.6f;
+    // Eye separation in game units: your real IPD times VRScale. This is what
+    // sets how big the world feels -- the brain reads distances against its
+    // own IPD, so eye height feels like (game eye height / VRScale): 64 units
+    // at VRScale 40 is 1.6 m.
+    //
+    // It used to be clamped to at least 1.8 per eye "so depth is obvious".
+    // That pinned it at 1.8 whatever VRScale said (every HMD log line read
+    // halfIpd=1.80), i.e. ~3.6 u for a 6.4 cm IPD = 56 units per metre, which
+    // made eye height feel like ~1.15 m -- the "height feels too low" report
+    // -- and made the World scale setting do nothing at all. The clamp is now
+    // only a sanity range; use IPDScale to exaggerate depth deliberately.
+    float halfIpd = (m_Ipd > 0.001f) ? (m_Ipd * m_IpdScale * m_VRScale) * 0.5f : 1.28f;
+    if (halfIpd < 0.5f) halfIpd = 0.5f;
+    if (halfIpd > 4.0f) halfIpd = 4.0f;
 
     Vector eyeOrigin = setup.origin + m_HmdPosLocalInWorld;
     eyeOrigin.z += m_HeightOffsetMeters * m_VRScale;
@@ -3282,7 +3291,7 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     // Base FOV is only relearned after the grip has been up for a moment, so a
     // zoom still animating back out is not mistaken for the unzoomed FOV.
     float eyeFov = m_Fov;
-    const bool scopeHeld = PressedDigitalAction(m_ActionScope);
+    const bool scopeHeld = ScopeHeld();
     if (!scopeHeld)
     {
         if (++m_ScopeReleasedFrames > 30 || m_ScopeBaseFov < 1.0f)
@@ -3515,6 +3524,31 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     }
 }
 
+
+// Left grip = GE:S aim mode (scope). The Scope action is new, and SteamVR
+// keeps using a player's cached bindings until they are reset, so in the
+// 21:11 run it never fired once. Those bindings already have the left grip on
+// TwoHand, which only means anything with motion controls on -- so in head-aim
+// mode it counts as the scope too.
+bool VR::ScopeHeld()
+{
+    if (PressedDigitalAction(m_ActionScope))
+        return true;
+    if (!m_MotionControls && PressedDigitalAction(m_ActionTwoHand))
+        return true;
+    static bool s_checked = false;
+    if (!s_checked && m_Input && m_ActionScope != vr::k_ulInvalidActionHandle)
+    {
+        vr::InputDigitalActionData_t d{};
+        if (m_Input->GetDigitalActionData(m_ActionScope, &d, sizeof(d), vr::k_ulInvalidInputValueHandle) == vr::VRInputError_None)
+        {
+            s_checked = true;
+            Game::logMsg("Scope action %s", d.bActive ? "bound"
+                         : "NOT bound (old cached SteamVR bindings) -- using the TwoHand grip instead");
+        }
+    }
+    return false;
+}
 
 void VR::ResetPosition()
 {

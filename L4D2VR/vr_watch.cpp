@@ -54,30 +54,29 @@ std::wstring WeaponName(const std::string &viewmodel)
     if (dot != std::string::npos)
         base = base.substr(0, dot);
 
+    // Every v_*.mdl GE:S ships (models/weapons/*), matched exactly. The first
+    // version matched substrings and had guessed names: the automatic shotgun
+    // is "autosg", the grenade launcher "gl", throwing knives "tknife".
     static const struct { const char *key; const wchar_t *name; } kNames[] = {
-        { "silver_pp7", L"SILVER PP7" },   { "pp7_silver", L"SILVER PP7" },
-        { "golden_pp7", L"GOLD PP7" },     { "pp7_gold", L"GOLD PP7" },
-        { "pp7_s", L"PP7 (SILENCED)" },    { "pp7", L"PP7 SPECIAL ISSUE" },
-        { "dd44", L"DD44 DOSTOVEI" },      { "klobb", L"KLOBB" },
-        { "kf7", L"KF7 SOVIET" },          { "zmg", L"ZMG (9MM)" },
-        { "d5k_s", L"D5K (SILENCED)" },    { "d5k", L"D5K DEUTSCHE" },
-        { "phantom", L"PHANTOM" },         { "ar33", L"AR33 ASSAULT RIFLE" },
-        { "rcp90", L"RC-P90" },            { "rcp-90", L"RC-P90" },
-        { "auto_shotgun", L"AUTOMATIC SHOTGUN" }, { "autoshotgun", L"AUTOMATIC SHOTGUN" },
-        { "shotgun", L"SHOTGUN" },         { "sniper", L"SNIPER RIFLE" },
-        { "cougar", L"COUGAR MAGNUM" },    { "magnum", L"COUGAR MAGNUM" },
-        { "golden_gun", L"GOLDEN GUN" },   { "goldengun", L"GOLDEN GUN" },
-        { "moonraker", L"MOONRAKER LASER" },
-        { "rocket", L"ROCKET LAUNCHER" },  { "grenade_launcher", L"GRENADE LAUNCHER" },
-        { "grenadelauncher", L"GRENADE LAUNCHER" },
-        { "grenade", L"HAND GRENADES" },
-        { "remote", L"REMOTE MINES" },     { "proxim", L"PROXIMITY MINES" },
-        { "timed", L"TIMED MINES" },       { "mine", L"MINES" },
-        { "throwing", L"THROWING KNIVES" }, { "knife", L"HUNTING KNIFE" },
-        { "slapper", L"SLAPPERS" },        { "watch", L"WATCH LASER" },
+        { "pp7", L"PP7 SPECIAL ISSUE" },       { "pp7_s", L"PP7 (SILENCED)" },
+        { "pp7_gold", L"GOLD PP7" },           { "pp7_silver", L"SILVER PP7" },
+        { "dd44", L"DD44 DOSTOVEI" },          { "klobb", L"KLOBB" },
+        { "kf7", L"KF7 SOVIET" },              { "zmg", L"ZMG (9MM)" },
+        { "d5k", L"D5K DEUTSCHE" },            { "d5k_silenced", L"D5K (SILENCED)" },
+        { "phantom", L"PHANTOM" },             { "ar33", L"AR33 ASSAULT RIFLE" },
+        { "rcp90", L"RC-P90" },                { "shotgun", L"SHOTGUN" },
+        { "autosg", L"AUTOMATIC SHOTGUN" },    { "sniperrifle", L"SNIPER RIFLE" },
+        { "cougar_magnum", L"COUGAR MAGNUM" }, { "goldengun", L"GOLDEN GUN" },
+        { "moonraker", L"MOONRAKER LASER" },   { "gl", L"GRENADE LAUNCHER" },
+        { "rocket_launcher", L"ROCKET LAUNCHER" }, { "grenade", L"HAND GRENADES" },
+        { "remotemine", L"REMOTE MINES" },     { "proximitymine", L"PROXIMITY MINES" },
+        { "timedmine", L"TIMED MINES" },       { "knife", L"HUNTING KNIFE" },
+        { "tknife", L"THROWING KNIVES" },      { "slappers", L"SLAPPERS" },
+        { "tazerboy", L"TASER" },              { "briefcasetoken", L"BRIEFCASE" },
+        { "flagtoken", L"FLAG" },              { "keytoken", L"KEY" },
     };
     for (const auto &n : kNames)
-        if (base.find(n.key) != std::string::npos)
+        if (base == n.key)
             return n.name;
 
     std::wstring out;

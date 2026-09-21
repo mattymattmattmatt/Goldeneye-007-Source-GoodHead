@@ -259,6 +259,8 @@ TurnSpeed=0.35
 SnapTurning=false
 SnapTurnAngle=45.0
 LeftHanded=false
+# World scale, game units per metre. Also sets how tall you feel: eye height
+# feels like 64 / VRScale metres standing. 40 is life size; lower = taller.
 VRScale=40.0
 # Lifts the camera, in metres, if standing play feels too short. Camera only:
 # shots still come from the game's eye height and the gun stays where it was,
@@ -268,6 +270,8 @@ HeightOffsetMeters=0.0
 # and this carries the zoom into the headset by magnifying the whole view.
 # false = aim mode still works, but the view never zooms.
 ScopeZoom=true
+# Multiplies your real eye separation. Above 1 exaggerates depth but makes
+# the world feel smaller (you taller); leave at 1 for true scale.
 IPDScale=1.0
 HideArms=true
 HudDistance=1.3

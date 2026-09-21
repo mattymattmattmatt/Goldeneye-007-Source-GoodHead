@@ -558,6 +558,7 @@ public:
 	void ResolvePlayerNetvars();
 	int ReadLocalHealth();
 	void ReadWatchStats(WatchStats &out);
+	bool ScopeHeld();
 	void RefreshActiveWeapon();
 	int ReadRoundTimeLeft(void *player);
 	bool IsLookingAtOffhandWatch();

@@ -252,15 +252,6 @@ static void BuildModel(VR *vr)
         [vr]() { return vr->m_LeftHanded ? 1 : 0; },
         [vr](int i) { vr->m_LeftHanded = (i != 0); },
         "LeftHanded", { "false", "true" }));
-    {
-        Item recenter;
-        recenter.label = L"Recenter";
-        recenter.hint = L"Takes your current head position as the new standing spot.";
-        recenter.kind = Kind::Button;
-        recenter.names = { L"Recenter now" };
-        recenter.action = [vr]() { vr->ResetPosition(); };
-        comfort.items.push_back(recenter);
-    }
     g_tabs.push_back(comfort);
 
     Tab aim{ L"Aiming" };
@@ -302,7 +293,7 @@ static void BuildModel(VR *vr)
     display.items.push_back(Numeric(L"Menu size", L"Width of the main menu panel.",
         &vr->m_MenuWidthMeters, "MenuWidthMeters", Range(1.2f, 3.6f, 0.2f),
         [](float v) { return Fmt(L"%.1f m", v); }, []() { GESVR_RequestMenuReplace(); }));
-    display.items.push_back(Numeric(L"World scale", L"Game units per metre. Lower makes you feel taller. Default 40.",
+    display.items.push_back(Numeric(L"World scale", L"Lower: you feel taller, the world smaller. 40 is life size.",
         &vr->m_VRScale, "VRScale", Range(34.0f, 48.0f, 1.0f),
         [](float v) { return Fmt(L"%.0f", v); }));
     g_tabs.push_back(display);

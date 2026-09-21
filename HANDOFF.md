@@ -5,6 +5,26 @@ Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in The
 
 ---
 
+## HEIGHT, SCOPE, QUIT-FROM-MAIN-MENU (2026-09-21 21:11 run)
+
+* **World scale did nothing; standing felt short.** halfIpd was clamped to
+  >= 1.8 u, so it was 1.8 every frame whatever VRScale said: ~3.6 u for a
+  6.4 cm IPD = 56 u/m, so 64 u of eye height felt like ~1.15 m. Clamp is now a
+  sanity range (0.5..4). Perceived standing eye height = 64 / VRScale m
+  (40 -> 1.6 m). The player's bin\VR\config.txt had been left at VRScale=34
+  while it was inert; reset to 40.
+* **Scope never fired**: no `Scope held` line in any session -- the new Scope
+  action is unbound in the player's cached SteamVR bindings. ScopeHeld() also
+  accepts TwoHand (already on the left grip in the old bindings) when motion
+  controls are off. `Scope action bound|NOT bound` is logged once.
+* **Quit from the MAIN menu hung** in steamclient like the pause-menu one
+  (inMap=0), and the watchdog only armed on pause-menu clicks. Now any menu
+  click arms it; the steamclient stack check still protects map loads.
+* **Recenter** removed from the panel: same function as the left stick click,
+  and it only resets position, so from a menu it showed nothing.
+* **Weapon names** are an exact table of every GE:S v_*.mdl (autosg, gl,
+  tknife, tazerboy, tokens...), not substrings.
+
 ## MENU POINTER: CONTROLLER ONLY (2026-09-21)
 
 The 17:49 run played in VR (VGUI signal works: vgui=0 in play, 1 in menus).
