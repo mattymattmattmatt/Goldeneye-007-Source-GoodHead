@@ -5,6 +5,221 @@ Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in The
 
 ---
 
+## MENU POINTER: CONTROLLER ONLY (2026-09-21)
+
+The 17:49 run played in VR (VGUI signal works: vgui=0 in play, 1 in menus).
+Reported: a second, head-tracked cursor on menus that had to be lined up with
+the SteamVR laser to click. Three bugs made it:
+
+1. `MenuAimSource=auto` parsed as HEAD: the parser only knew "controller"
+   (`find("controller") ? 1 : 0`), so every AIMSRC line ever said `head`.
+2. On every frame without a laser MouseMove -- i.e. whenever the laser held
+   still -- the head ray took over the aim, moving the game cursor (where
+   clicks land) to where you were looking.
+3. Our marker was drawn at that head point on exactly those frames.
+
+Now: `MenuAimSource` is gone; aim = SteamVR laser point while it is on the
+panel (kept while still; ended by VREvent_FocusLeave, or 1 s silence with our
+ray off the panel), else OUR ray from the pointing controller's **tip**
+component (`GetPointerPose`: IVRRenderModels::GetComponentState "tip", i.e.
+where SteamVR's laser starts, not the raw pose). Marker drawn only when the
+laser is not on the panel, at that same aim. Clicks: one path, one 350 ms
+cooldown (the laser ButtonDown and the trigger action used to both click),
+and only with a valid aim. Laser state resets after any gap in menu frames.
+The VR settings panel uses the same rules (its head fallback is gone).
+Log: `AIMSRC laser|controller-ray|none`, `Menu click (laser|trigger)`,
+`Pointer: device N model '...' tip found`.
+
+Weapon name: `RefreshActiveWeapon` (10 Hz in map) reads the held weapon's
+`m_iViewModelIndex` -> IModelInfo::GetModel -> GetModelName. The shotgun had
+read "SLAPPERS" because GE:S draws the slapper hands after the gun and the old
+source was "last v_ model drawn". That guess is now only a fallback until the
+netvar path works. Log: `Active weapon models/... (viewmodel index N)`.
+
+## IN-MAP MENU SIGNAL IS NOW VGUI, NOT THE WIN32 CURSOR (2026-09-21)
+
+The 17:39 run (full VGUI guard back) was STILL locked in menu mode. The new
+CURSOR line settled why: in map the Win32 cursor was visible on 118/118 polls
+a second, never centred -- the Win32 cursor is simply not a usable signal in
+this setup, guard or no guard. (Only the trigger worked because menu mode
+posts it to the game as a mouse click; ProcessInput never runs there.)
+
+`ComputeMenuMode` now asks VGUI: ISurface::IsCursorVisible, i.e.
+`_currentCursor != dc_none`, which CalculateMouseVisible sets every frame
+from "is any visible popup taking mouse input". Found by RTTI
+(`.?AVCMatSystemSurface@@` -> COL -> vtable) and disassembly of GE:S's own
+vguimatsurface.dll: **slot 51** = `33 C0 83 B9 90 02 00 00 01 0F 95 C0 C3`,
+slot 50 = SetCursor writing the same field. The SDK header's layout would put
+it at 52 -- wrong. The bytes are verified before the first call; if they do
+not match, it falls back to the Win32 cursor and logs so. Log lines:
+`VGUI IsCursorVisible verified at vtable slot 51`, and `CURSOR vgui=N | win32 ...`.
+If vgui=1 during normal play, some GE:S popup really is taking the mouse and
+that is the next thing to find.
+
+Head-tap HUD removed entirely at the user's request (DetectHeadTap,
+UpdateHudElements, the Foes/Ammo overlays, HudTap*/HudFoes*/HudAmmo* keys).
+The wrist watch replaces it.
+
+## STUCK IN MENU MODE (2026-09-21 17:31 run) -- VGUI guard restored
+
+Whole map in menu mode: no GAME frame, no Menu mode 1 -> 0 line, only the 2D panel.
+19th (Grok full VGUI guard): in-map stable. 17:15 (guard narrowed to menus): flicker.
+17:31 (narrowed + 400 ms cursor hysteresis): locked on. Common factor is the narrowed
+guard, so dVGui_Paint is back to `if (g_inStereoPass) return;`. Hysteresis kept but off
+is now 250 ms. New `CURSOR polls= visible= nullImage= centred=` line every ~90 frames in
+map shows the raw cursor signal behind menu mode -- read it before touching this again.
+
+## FIRST TEST OF SETTINGS + WATCH (2026-09-21 17:15 run)
+
+What worked: VR Settings opened from the GE:S menu (spew hook fired), saves
+landed in config.txt, netvars resolved for the first time ever --
+`CGEMPPlayer: health=136 armor=5328 maxHealth=5336 maxArmor=5332
+activeWeapon=3344 ammo=3024`, weapon `clip1=2036 primaryAmmoType=2028`
+(the armour-preferring class pick was needed: `CHL2MP_Player` came first
+with armor=-1). Round timer is `CGEGameTimer` (props: m_bEnabled m_bStarted
+m_bPaused m_flPauseTimeRemaining m_flLength m_flEndTime), entity index 15.
+
+What went wrong, and the fix for each:
+
+* **In-map menu mode flickered.** On character select the cursor-visible
+  signal toggled between polls, and IsMenuMode() was re-evaluated separately
+  in RenderView, Update and AfterPresent, so the headset swapped between menu
+  mode (2D panel, black world, watch hidden) and game mode frame to frame.
+  Fix: hysteresis in the MenuInput thread (on = cursor in 3 of the last 8
+  polls; off = unseen 400 ms) and menu mode computed ONCE per frame at the top
+  of Update (`ComputeMenuMode`, cached in `m_MenuMode`). Transitions now log
+  as `Menu mode 0 -> 1 (...)`, max 4 per second.
+* **Settings panel / watch flashed on redraw.** SetOverlayFromFile loads
+  asynchronously and blanks the overlay meanwhile; hover changes and the
+  watch's per-second timer redraw each caused a flash. Fix:
+  `vr_flipoverlay.h`, two overlays per panel, load into the hidden one and
+  swap on VREvent_ImageLoaded (or after 250 ms).
+* **Freeze at 17:17:19**, ~1 s after spawning, following a 518 ms
+  AfterPresent. Symbolised with `Release/d3d9.map` (script: scratchpad
+  `symbolize.py`): D3D9DeviceEx::Present -> D3D9SwapChainEx::PresentImage ->
+  DxvkDevice::waitForSubmission -> DxvkSubmissionQueue::synchronizeSubmission.
+  DXVK's submission thread never finished the previous frame; the lock
+  pairs were audited and are balanced. Not solved. The watchdog now also
+  logs `THREAD <id>: ...` for every other thread with d3d9.dll on its stack
+  (copied while suspended, resolved after resume), so the next freeze says
+  where the submission thread is stuck. Symbolise those offsets with the
+  map file of the SAME build.
+* **Timer**: now honours m_bEnabled and m_flPauseTimeRemaining, and takes
+  "now" from the player's m_flSimulationTime (the measured tick rate came
+  out 1/67 s instead of 1/66.67 and would drift).
+
+## AUDIT BEFORE FIRST TEST (2026-09-21)
+
+* **Grok's `dVGui_Paint` guard was too wide.** `if (g_inStereoPass) return;`
+  blocked every VGUI paint during the stereo RenderView, and the hooked engine
+  `VGui_Paint` is also what paints the in-game HUD, scoreboard and chat there.
+  Now gated on `g_stereoMenu` (IsMenuMode() at the start of the pass), so only
+  character/team select is kept out of the eyes. If the HUD elements were
+  blank since Grok's build, this was why.
+* **Player netvars** now prefer a player class that also networks armour, in
+  case `CBasePlayer` is listed before GE:S's own player class.
+* **Spew hook** has a re-entrancy guard, so a second spew wrapper chained
+  after ours cannot loop back into it.
+
+## WRIST WATCH (2026-09-21)
+
+`vr_watch.cpp`, replacing the old crop-the-HUD wrist overlays, which had
+never once been visible: `UpdateWristHUD` bailed on `m_RenderedHud`, which is
+only set on the `EyeRenderTargets=true` path. (`UpdateHurtHUD` still has that
+gate, so the damage flash is still inert.)
+
+* **Look.** Modelled on a fan "Q Watch" face: steel bezel, GoldenEye 64
+  segmented health (left, red to pale yellow) and armour (right, blue to cyan)
+  arcs, 12 blocks each, filled from the bottom; green LCD screen with weapon
+  name, big clip count / reserve, and `TIME m:ss` in a timed round. Font is
+  Bahnschrift SemiBold Condensed (ships with Windows 10), Arial Narrow fallback.
+* **Plumbing.** Same as the settings panel: GDI on a draw thread via the
+  shared `vr_canvas.cpp` (Canvas + PNG writer, now used by both), PNG to
+  %TEMP%, `SetOverlayFromFile` on the render thread. Stats read at 10 Hz,
+  redraw only on change.
+* **Placement.** Device-relative to the off-hand controller (no lag), with
+  the rotation recomputed each frame so the face points at the headset.
+  `WatchOffset` (forward,left,up m), `WatchWidth`, `WatchAlwaysVisible`,
+  plus the existing `WristLookMaxDistance` / `WristLookMinDot`.
+* **Numbers.** `RecvPropStub` was 48 bytes; Source 2007 RecvProp is 60, so
+  every netvar walk read garbage after the first prop. That is why
+  `Player netvars on ...` never appeared in any log. Fixed; the walk now also
+  finds armour, max health/armour, `m_hActiveWeapon`, `m_iAmmo`,
+  `m_nTickBase`, and on the weapon classes `m_iClip1` / `m_iPrimaryAmmoType`.
+  Weapon name comes from the viewmodel path (`m_ActiveWeaponModel`, which now
+  only accepts `v_` models: ammo crates and dropped guns used to overwrite it).
+* **Round timer is a guess.** Any class with "timer" in its name that has an
+  end-time prop (`m_flTimerEndTime` etc.) is used; its entity is found by
+  matching `GetClientClass()` (IClientNetworkable vtable slot 2); game time is
+  tick base x a tick interval measured against the wall clock. Every class
+  named *timer*/*gamerules*/*round* has its props logged as `NETVARS ...`,
+  so if the time never shows, the log says what GE:S actually networks.
+  Look for `Round timer candidate`, `Round timer entity at index`,
+  `Round timer: remaining=`.
+* **Preview:** `watch_preview.cpp` in the session scratchpad compiled
+  `vr_watch.cpp` + `vr_canvas.cpp` with stubs and rendered sample states.
+
+## VR SETTINGS PANEL (2026-09-21)
+
+`vr_settings.cpp`. A "VR Settings" entry in the GE:S main/pause menu opens an
+in-headset settings panel; left X toggles it in any menu as a fallback.
+
+* **Menu entry.** `Launch-GESVR.ps1` inserts a block above Options in
+  `gesource\resource\GameMenu.res` (backup: `GameMenu.res.gesvr-orig`). It runs
+  `engine echo gesvr_vrsettings`; `VRSettings::InstallMenuHook` chains into
+  tier0's `SpewOutputFunc` (exported, with `GetSpewOutputFunc`) and swallows
+  that line. No ConCommand/ICvar ABI involved. Re-chained every 120 frames in
+  case the engine installs its own spew function later.
+  Log: `VRSettings: menu hook installed`, `VRSettings: opened`.
+* **Panel.** Its own overlay (`GESVRSettingsKey`, sort 40, 1.2 m at 1.25 m).
+  Drawn with GDI on a worker thread at 2x, filtered down, written as a
+  stored-deflate PNG to %TEMP% and handed over with `SetOverlayFromFile` from
+  the render thread. No D3D, no Vulkan queue, and IVROverlay stays on one
+  thread. Redraws only on change (hover/click), capped ~30/s.
+* **Input.** SteamVR laser mouse events on our overlay; our own controller
+  ray, then head ray, via `ComputeOverlayIntersection` when no laser for
+  400 ms. Click = laser button, A, trigger action or legacy trigger edge
+  (300 ms cooldown). B / Y / left X close. While open `ProcessMenuInput` does
+  not run and the game menu's queued laser events are drained, so nothing
+  leaks through to the game. The game menu is dimmed to alpha 0.35 meanwhile.
+* **Saving.** Every change sets the member immediately and queues a write to
+  `bin\VR\config.txt` (all duplicate `key=` lines replaced, else appended;
+  temp file + MoveFileEx so the hot-reload thread never reads half a file).
+* **Reticle.** New styles ring / ringdot and `VRReticleColor`
+  (yellow/white/green/red/cyan) in `d3d9_vr.cpp`. Ring styles need size 3+ to
+  read as a ring; below that they collapse to a dot.
+* **Preview without a headset:** the panel was checked by compiling
+  `vr_settings.cpp` into a small exe with stubs for the VR/Game functions it
+  calls, rendering each tab to PNG. Worth redoing after any layout change.
+
+## SCOPE + CLEANUP OF GROK'S PASS (2026-09-19)
+
+Grok's uncommitted pass (menu black-behind-panel, level menu panel, Quit
+watchdog, GetLastPoses) was reviewed and kept, with these changes:
+
+* **Scope on left grip.** GE:S aim mode is `+aimmode` (SHIFT on desktop);
+  `+attack2` is not it -- MOUSE2 is `+aimdetonate`. New action
+  `/actions/main/in/Scope`, bound to left grip on all three controllers
+  alongside `TwoHand`. The eyes render at the HMD FOV and ignore the engine's
+  zoomed `setup.fov`, so `ApplyHeadAndIpd` applies the engine's tan-ratio to the
+  eye FOV (whole-view magnification). Log line: `Scope held=...`. If
+  `engineFov` does not drop when scoped, GE:S zooms some other way and this
+  needs rethinking. `ScopeZoom=false` disables it.
+  **SteamVR caches bindings**: if the grip does nothing, reselect the default
+  binding in SteamVR's controller settings for the app.
+* **Quit watchdog narrowed.** It killed the process after ANY menu click
+  followed by a 4s stall, which includes starting a map from the main menu.
+  Now requires: click on the pause menu (in map + GameUI), still in map,
+  5s stall, and the stuck thread's stack inside `steamclient.dll`.
+* **Removed:** per-frame `r_drawvgui 0/1` ClientCmds (queued, so they ran
+  back-to-back next frame and did nothing; VGUI is kept out of the eyes by the
+  `g_inStereoPass` guard in `dVGui_Paint`), the never-set `g_stereoLeftRT`
+  viewport overrides (leftover from the reverted resolution attempt), and the
+  head-aim height hack in `dCalcViewModelView` (0x115360 is not the real
+  function; see FULL REVIEW).
+* **`HeightOffsetMeters`** (default 0): lifts the camera only. Shots still leave
+  the engine eye, so they land that far below the reticle at every range.
+
 ## READ THIS FIRST (morning of 2026-08-28)
 
 The build installed at **01:58** has never been playtested. It contains six fixes,

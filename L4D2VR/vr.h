@@ -6,6 +6,7 @@
 #define MAX_STR_LEN 256
 
 class Game;
+struct WatchStats;
 class IDirect3DTexture9;
 class IDirect3DSurface9;
 class ITexture;
@@ -45,8 +46,6 @@ public:
 	vr::VROverlayHandle_t m_MainMenuHandle = 0;
 	vr::VROverlayHandle_t m_HUDHandle = 0;
 	vr::VROverlayHandle_t m_WorldHandle = 0;
-	vr::VROverlayHandle_t m_WristWatchHandle = 0;   // health/armor, Bond-watch on the off hand
-	vr::VROverlayHandle_t m_WristAmmoHandle = 0;    // ammo, stacked with the watch
 	vr::VROverlayHandle_t m_HurtHUDHandle = 0;      // health bars in front of the HMD when damaged
 
 	float m_HorizontalOffsetLeft = 0.0f;
@@ -170,6 +169,7 @@ public:
 	vr::VRActionHandle_t m_ActionSecondaryAttack = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionReload = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionTwoHand = vr::k_ulInvalidActionHandle;
+	vr::VRActionHandle_t m_ActionScope = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionWalk = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionTurn = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionUse = vr::k_ulInvalidActionHandle;
@@ -388,45 +388,6 @@ public:
 	// VR::EffectiveMenuGeometry -- Source's GameUI is laid out in fixed pixels.
 	bool m_MenuScaleWithRes = true;
 
-	// HUD elements.
-	//
-	// The 2D HUD is drawn at the EDGES of the game's frame and the per-eye
-	// frustum crop discards exactly those edges, so none of it reaches the
-	// headset. Each wanted element is cropped out of the captured frame by
-	// texture bounds and given its own overlay, placed where it is useful.
-	// Elements deliberately NOT carried over: kill feed, score/points text and
-	// the weapon icon.
-	//
-	// Crops are fractions of the frame (u0,v0)-(u1,v1) so they hold at any
-	// resolution, and are config keys because they are read off a screenshot.
-	vr::VROverlayHandle_t m_HudFoesHandle = 0;
-	vr::VROverlayHandle_t m_HudAmmoHandle = 0;
-
-	float m_HudFoesCrop[4]  = { 0.41f, 0.02f, 0.62f, 0.11f };
-	float m_HudAmmoCrop[4]  = { 0.85f, 0.90f, 0.94f, 1.00f };
-
-	// Head-locked elements, toggled by the head tap.
-	bool  m_HudElementsVisible = false;
-	float m_HudFoesX = 0.00f, m_HudFoesY = 0.24f;
-	float m_HudFoesDistance = 1.2f, m_HudFoesWidth = 0.34f;
-	float m_HudAmmoX = 0.34f, m_HudAmmoY = -0.24f;
-	float m_HudAmmoDistance = 1.2f, m_HudAmmoWidth = 0.20f;
-
-
-	bool  m_HudTapToggle = true;
-	float m_HudTapThreshold = 1.2f;    // m/s step between frames
-	int   m_HudTapCooldownMs = 700;
-	// Fallback toggle key (virtual-key code) for when the tap will not trigger.
-	// 0x70 is F1. Set 0 to disable.
-	int   m_HudToggleKey = 0x70;
-	Vector m_PrevHeadVel = Vector(0.0f, 0.0f, 0.0f);
-	Vector m_PrevHeadPos = Vector(0.0f, 0.0f, 0.0f);
-	unsigned m_LastHeadSampleMs = 0;
-	unsigned m_LastHudToggleSeq = 0;
-	bool  m_HaveHeadVel = false;
-	unsigned m_LastHeadTapMs = 0;
-	float m_MaxJoltSeen = 0.0f;
-	unsigned m_LastJoltLogMs = 0;
 	float m_SbsWidthMeters = 3.17f;
 	float m_SbsDistance = 1.0f;
 
@@ -434,21 +395,18 @@ public:
 	// Win32 messages to the "Valve001" window are vtable-independent and cannot
 	// corrupt the stack. The IInputInternal path depends on a VGUI vtable whose
 	// 2007 layout is unconfirmed, so it stays off unless explicitly enabled.
-	// 0 = aim menus with the HEAD (default), 1 = with the controller.
-	// SteamVR barely routes laser events to our overlay while in a map, and
-	// the controller-ray fallback has never intersected, so head aiming is
-	// the only pointer that works in both places.
-	// 0 = head, 1 = controller, 2 = AUTO (default).
-	// Auto is what actually matches how SteamVR behaves: OUT of a map the
-	// controller laser works well (hundreds of overlay events), so use it; IN
-	// a map SteamVR routes the controller to the game instead and sends almost
-	// none (measured: 2), so fall back to a head ray there.
-	int m_MenuAimSource = 2;
-	// ON. Turning it off was wrong: Source's cursor is a HARDWARE cursor,
-	// composited by Windows and never present in the D3D backbuffer that
-	// CaptureForOverlay copies. With our marker off there was no cursor in
-	// the headset at all. The 'two cursors' were our marker plus the real
-	// Windows cursor visible on the desktop monitor - not two in VR.
+	// Menus are pointed at with the CONTROLLER only (the pointing hand: right,
+	// or left with LeftHanded). SteamVR's laser point is used while its laser
+	// is on the panel; elsewhere (in-map menus, where SteamVR shows no laser)
+	// our own ray from the same controller tip. There used to be a head
+	// pointer too, and the config parser turned "auto" into "head", so a head
+	// cursor took over on every frame the laser held still.
+	int m_MenuAimX = -1, m_MenuAimY = -1;   // last aim on the game menu, window px
+	bool m_MenuLaserOnPanel = false;         // SteamVR's laser is on the game menu
+	// Our marker is the only cursor in the headset when SteamVR's laser is not
+	// on the panel: Source's cursor is a hardware cursor, composited by Windows
+	// and never in the captured frame. It is drawn at the controller aim point,
+	// the same point clicks go to, and never while SteamVR's own dot is there.
 	bool m_DrawMenuCursor = true;
 	bool m_MenuUseWin32 = true;
 	// Kill switch for all OS-level cursor driving (SetCursorPos /
@@ -543,25 +501,44 @@ public:
 	bool m_TwoHandedGrip = true;
 	bool m_TwoHandedNeedsGrip = true;
 
+	// Scope (left grip = +aimmode). GE:S zooms by narrowing the engine FOV, which
+	// the eyes ignore because they use the HMD's FOV; this carries the zoom
+	// ratio across. m_ScopeBaseFov is the engine FOV when not zoomed.
+	bool m_ScopeZoom = true;
+	float m_ScopeBaseFov = 0.0f;
+	int m_ScopeReleasedFrames = 0;
+
+	// Lifts the camera, in metres, for playing standing. Only the camera: the
+	// engine's eye (where shots come from) and the weapon stay put.
+	float m_HeightOffsetMeters = 0.0f;
+
+	// Wrist watch (vr_watch.cpp). Shown when you look at the off hand, or always.
 	bool m_ShowWristHUD = true;
+	bool m_WatchAlwaysVisible = false;
 	float m_WristLookMaxDistance = 0.6f;
 	float m_WristLookMinDot = 0.45f;
-	float m_WristWatchWidth = 0.11f;
-	float m_WristAmmoWidth = 0.12f;
-	Vector m_WristOffset = { -0.15f, 0.10f, 0.04f };      // forward, left, up
-	Vector m_WristRotationDeg = { 40.0f, 8.0f, 0.0f };    // roll, pitch, yaw
-	Vector m_WristWatchFineOffset = { 0.0f, 0.0f, 0.02f };
-	Vector m_WristAmmoFineOffset = { -0.02f, 0.0f, 0.05f };
-	vr::VRTextureBounds_t m_WristWatchBounds = { 0.00f, 0.78f, 0.46f, 1.00f };
-	vr::VRTextureBounds_t m_WristAmmoBounds = { 0.54f, 0.78f, 1.00f, 1.00f };
+	float m_WatchWidth = 0.10f;
+	Vector m_WatchOffset = { -0.13f, 0.0f, 0.04f };      // forward, left, up, metres
 	vr::VRTextureBounds_t m_HurtHUDBounds = { 0.00f, 0.78f, 0.50f, 1.00f };
 	float m_HurtHUDWidth = 0.55f;
 	float m_HurtHUDDistance = 0.85f;
 	float m_HurtHUDSeconds = 2.5f;
 	int m_HurtHealthThreshold = 80;
 
+	// Networked-variable offsets, found by walking the client class tables.
 	int m_HealthNetvar = -1;
 	int m_ArmorNetvar = -1;
+	int m_MaxHealthNetvar = -1;
+	int m_MaxArmorNetvar = -1;
+	int m_ActiveWeaponNetvar = -1;
+	int m_AmmoNetvar = -1;
+	int m_TickBaseNetvar = -1;
+	int m_Clip1Netvar = -1;
+	int m_PrimaryAmmoTypeNetvar = -1;
+	int m_ViewModelIndexNetvar = -1;
+	// Set once the held weapon's name comes from its own m_iViewModelIndex;
+	// from then on the DrawModelExecute guess (last v_ model drawn) is ignored.
+	bool m_WeaponFromNetvar = false;
 	int m_LastHealth = -1;
 	std::chrono::steady_clock::time_point m_HurtUntil{};
 	bool m_LookingAtWrist = false;
@@ -577,15 +554,13 @@ public:
 	void SubmitVRTextures();
 	void RepositionOverlays();
 	void CreateWristOverlays();
-	void HideWristOverlays();
-	void UpdateWristHUD();
 	void UpdateHurtHUD();
 	void ResolvePlayerNetvars();
 	int ReadLocalHealth();
+	void ReadWatchStats(WatchStats &out);
+	void RefreshActiveWeapon();
+	int ReadRoundTimeLeft(void *player);
 	bool IsLookingAtOffhandWatch();
-	void SubmitWristOverlay(vr::VROverlayHandle_t handle, vr::TrackedDeviceIndex_t handIndex,
-		const Vector &right, const Vector &up, const Vector &backward,
-		const Vector &offset, float width, const vr::VRTextureBounds_t &bounds);
 	void GetPoses();
 	void UpdatePosesAndActions();
 	void GetViewParameters();
@@ -597,17 +572,19 @@ public:
 	// This sends a given +cmd/-cmd only when its state actually changes.
 	void MoveCmd(const char *cmd);
 		void ProcessInput();
-	bool IsMenuMode();
+	// Decided once per frame at the top of Update, then read by everything
+	// else (AfterPresent, RenderView) so they cannot disagree mid-frame.
+	bool IsMenuMode() const { return m_MenuMode; }
+	bool ComputeMenuMode();
+	bool m_MenuMode = false;
+	int m_VguiCursor = -1;   // VGUI's "a panel needs the mouse": 1/0, -1 unknown
 	// Called after DXVK Present returns. Menu-only compositor tick so we never
 	// WaitGetPoses/Submit on the same callstack as IDirect3DDevice9::Present.
 	void AfterPresent();
 	bool ComputeMenuPointer(int &x, int &y);
+	bool GetPointerPose(vr::HmdMatrix34_t &out);
 	void EffectiveMenuGeometry(float &widthM, float &distM) const;
-	void DetectHeadTap();
 	void ApplyExtraCvars();
-	void UpdateHudElements();
-	void ShowHudElement(vr::VROverlayHandle_t h, const float crop[4],
-	                    float x, float y, float dist, float width);
 	void ShowMenuPanel();
 	void HideMenuPanel();
 	void ShowWorldStereoOverlay();

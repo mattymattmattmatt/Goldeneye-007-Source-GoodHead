@@ -86,6 +86,20 @@
             {
                "inputs": {
                   "click": {
+                     "output": "/actions/main/in/Scope"
+                  }
+               },
+               "mode": "button",
+               "parameters": {
+                  "force_input": "force",
+                  "click_activate_threshold": "0.45",
+                  "click_deactivate_threshold": "0.4"
+               },
+               "path": "/user/hand/left/input/grip"
+            },
+            {
+               "inputs": {
+                  "click": {
                      "output": "/actions/main/in/PrimaryAttack"
                   }
                },

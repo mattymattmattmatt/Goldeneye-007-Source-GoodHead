@@ -69,6 +69,10 @@
          "type": "boolean"
       },
       {
+         "name": "/actions/main/in/Scope",
+         "type": "boolean"
+      },
+      {
          "name": "/actions/main/in/Use",
          "type": "boolean"
       },
@@ -176,7 +180,8 @@
          "/actions/main/in/Scoreboard": "Show Scoreboard",
          "/actions/main/in/ShowHUD": "Show HUD",
          "/actions/main/in/Pause": "Pause",
-         "/actions/main/in/TwoHand": "Two-handed grip (hold)"
+         "/actions/main/in/TwoHand": "Two-handed grip (hold)",
+         "/actions/main/in/Scope": "Scope / aim mode (hold)"
       }
    ]
 }

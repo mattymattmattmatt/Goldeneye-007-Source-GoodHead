@@ -646,6 +646,9 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 
 	g_inStereoPass = true;
 
+	// VGUI is kept out of the eyes by the g_inStereoPass guard in dVGui_Paint.
+	const bool overlayMenu = m_VR && m_VR->IsMenuMode();
+
 	// Separate counter: s_calls above counts every RenderView, menu frames
 	// included, so it is in the hundreds before a map ever loads. Bracketing
 	// each half of the stereo pass means a hang inside the engine's own
@@ -680,9 +683,6 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 			rndrContext = m_Game->m_MaterialSystem->GetRenderContext();
 			leftEyeView.x = 0;  leftEyeView.y = 0;
 			rightEyeView.x = 0; rightEyeView.y = 0;
-			// The viewport MUST equal the eye texture size. Deriving it from the
-			// window instead left the scene rendering into a rectangle that did not
-			// match the target, which is the 'sliver' this path was disabled for.
 			leftEyeView.width  = rightEyeView.width  = (int)m_VR->m_EyeRTWidth;
 			leftEyeView.height = rightEyeView.height = (int)m_VR->m_EyeRTHeight;
 		}
@@ -724,7 +724,10 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	// once per frame, which is why the right eye was the damaged one.
 	//
 	// The viewmodel bit stays: the weapon belongs in the eyes.
-	const int eyeDraw = (rndrContext && m_VR->m_EyeHudPass)
+	// Strip 2D VGUI from the stereo eyes. Character select is painted into
+	// the 3D view AND captured for the floating overlay -- the eye copy is
+	// frustum-cropped into the giant stretched menu behind the good panel.
+	const int eyeDraw = (rndrContext && (m_VR->m_EyeHudPass || overlayMenu))
 		? (whatToDraw & ~RENDERVIEW_DRAWHUD)
 		: whatToDraw;
 
@@ -777,10 +780,10 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	// if this engine ignores that bit the cost is a third scene render, so it is
 	// behind EyeHudPass. The menu overlay captures the backbuffer, so the in-map
 	// menu depends on this drawing somewhere.
-	if (rndrContext && m_VR->m_EyeHudPass && (whatToDraw & RENDERVIEW_DRAWHUD))
+	if (rndrContext && (overlayMenu || (m_VR->m_EyeHudPass && (whatToDraw & RENDERVIEW_DRAWHUD))))
 	{
 		if (traceStereo) Game::logMsg("stereo pass #%d HUD pass to backbuffer", pass);
-		hkRenderView.fOriginal(ecx, setup, VIEW_NO_DRAW, whatToDraw);
+		hkRenderView.fOriginal(ecx, setup, VIEW_NO_DRAW, whatToDraw | RENDERVIEW_DRAWHUD);
 	}
 	g_inStereoPass = false;
 }
@@ -1346,7 +1349,16 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 	if (info.pModel)
 	{
 		std::string modelName = m_Game->m_ModelInfo->GetModelName(info.pModel);
-		if (modelName.find("/weapons/") != std::string::npos || modelName.find("\\weapons\\") != std::string::npos)
+		// Only the first-person model (v_*) is the gun in hand. Any /weapons/
+		// path used to count, so ammo crates and guns lying on the floor
+		// (models/weapons/ammocrate.mdl, w_*) kept overwriting it.
+		const bool inWeapons = modelName.find("/weapons/") != std::string::npos
+		                    || modelName.find("\\weapons\\") != std::string::npos;
+		// Fallback only: once VR::RefreshActiveWeapon reads the weapon's own
+		// viewmodel index this guess is ignored -- GE:S draws the slapper hands
+		// after the gun, so "last v_ model drawn" named the shotgun "slappers".
+		if (inWeapons && !m_VR->m_WeaponFromNetvar &&
+		    (modelName.find("/v_") != std::string::npos || modelName.find("\\v_") != std::string::npos))
 			m_Game->m_ActiveWeaponModel = modelName;
 
 		if (hideArms && !m_Game->m_CachedArmsModel)
@@ -1425,6 +1437,21 @@ void Hooks::dPopRenderTargetAndViewport(void *ecx, void *edx)
 
 void Hooks::dVGui_Paint(void *ecx, void *edx, int mode)
 {
+	// The stereo eye passes never paint VGUI (Grok's guard, restored as it was).
+	//
+	// It was narrowed to "only while a cursor menu is up" on 2026-09-21 so the
+	// in-game HUD would paint again, and both runs of that build broke: the
+	// headset flickered between menu and game mode, then locked in menu mode
+	// for a whole map (just the floating 2D window). Painting in-game VGUI
+	// inside our stereo RenderView evidently keeps the Win32 cursor visible,
+	// and the visible cursor is exactly what IsMenuMode() reads as "an in-map
+	// menu is open". The 19th's runs with this full guard were stable in map.
+	// Cost: the in-game HUD is not in the captured frame, so the head-tap HUD
+	// crops come up empty -- find another way to get the HUD before narrowing
+	// this again.
+	if (g_inStereoPass)
+		return;
+
 	if (!m_VR->m_CreatedVRTextures)
 		return hkVgui_Paint.fOriginal(ecx, mode);
 

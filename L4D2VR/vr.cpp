@@ -20,6 +20,9 @@
 #include <atomic>
 #include <mutex>
 #include <d3d9_vr.h>
+#include <tlhelp32.h>
+#include "vr_settings.h"
+#include "vr_watch.h"
 
 // Frame-stage timing. The mod has twice been diagnosed by guesswork; this
 // makes the cost of each stage visible so a single run localizes a stall.
@@ -43,6 +46,9 @@ static std::atomic<long long> g_lastPresentMs{ 0 };
 static std::atomic<int>  g_watchInMap{ 0 };
 static std::atomic<int>  g_watchStereoPass{ 0 };
 static std::atomic<bool> g_watchdogRun{ false };
+static std::atomic<bool> g_vrQuitting{ false };
+// Time of the last click queued while the pause menu (GameUI in a map) was up.
+static std::atomic<long long> g_lastPauseClickMs{ 0 };
 
 static long long NowMs()
 {
@@ -82,6 +88,40 @@ static bool GESVR_DescribeAddr(DWORD_PTR addr, char *out, size_t outSz)
     _snprintf_s(out, outSz, _TRUNCATE, "%s+0x%X", base,
                 (unsigned)(addr - (DWORD_PTR)mbi.AllocationBase));
     return true;
+}
+
+// Is the stalled Present thread sitting inside steamclient.dll? The pause-menu
+// Quit hang (14:16 log) is an ntdll wait with steamclient on every frame above
+// it. A map load stalls Present too, but in engine/materialsystem, so this is
+// what separates "Quit hung" from "still loading".
+static bool GESVR_StalledInSteamClient()
+{
+    if (!g_presentThread || SuspendThread(g_presentThread) == (DWORD)-1)
+        return false;
+
+    bool found = false;
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    if (GetThreadContext(g_presentThread, &ctx))
+    {
+        char desc[320];
+        int resolved = 0;
+        DWORD_PTR *sp = (DWORD_PTR *)ctx.Esp;
+        for (int i = 0; i < 1024 && resolved < 6 && !found; ++i)
+        {
+            DWORD_PTR val = 0;
+            __try { val = sp[i]; }
+            __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+            if (GESVR_DescribeAddr(val, desc, sizeof(desc)))
+            {
+                ++resolved;
+                found = (_strnicmp(desc, "steamclient.dll+", 16) == 0);
+            }
+        }
+    }
+
+    ResumeThread(g_presentThread);
+    return found;
 }
 
 static void GESVR_CaptureStalledStack()
@@ -135,6 +175,95 @@ static void GESVR_CaptureStalledStack()
     ResumeThread(g_presentThread);
 }
 
+// The 17:17 freeze sat in DXVK's Present waiting on its own submission thread
+// (D3D9SwapChainEx::PresentImage -> DxvkDevice::waitForSubmission), so the
+// Present thread alone cannot say what is stuck: the answer is on DXVK's
+// worker threads. Log every other thread that has our d3d9.dll on its stack.
+//
+// Nothing that can take a lock runs while a thread is suspended -- it may be
+// holding the heap or loader lock. Only registers and a raw copy of its stack
+// are taken; module lookups and logging happen after it is resumed.
+// Suspend, take EIP and a raw copy of the stack, resume. Separate function:
+// __try cannot share a frame with objects that need unwinding.
+static int GESVR_CopyThreadStack(HANDLE th, DWORD_PTR *out, int maxWords, DWORD_PTR &eip)
+{
+    int words = 0;
+    eip = 0;
+    if (SuspendThread(th) == (DWORD)-1)
+        return 0;
+    CONTEXT ctx{};
+    ctx.ContextFlags = CONTEXT_CONTROL | CONTEXT_INTEGER;
+    if (GetThreadContext(th, &ctx))
+    {
+        eip = ctx.Eip;
+        const DWORD_PTR *sp = (const DWORD_PTR *)ctx.Esp;
+        for (; words < maxWords; ++words)
+        {
+            __try { out[words] = sp[words]; }
+            __except (EXCEPTION_EXECUTE_HANDLER) { break; }
+        }
+    }
+    ResumeThread(th);
+    return words;
+}
+
+static void GESVR_CaptureWorkerStacks()
+{
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    if (snap == INVALID_HANDLE_VALUE)
+        return;
+    const DWORD pid = GetCurrentProcessId();
+    const DWORD self = GetCurrentThreadId();
+    const DWORD presentId = g_presentThread ? GetThreadId(g_presentThread) : 0;
+    static DWORD_PTR stackCopy[768];
+    int logged = 0;
+
+    THREADENTRY32 te{};
+    te.dwSize = sizeof(te);
+    for (BOOL ok = Thread32First(snap, &te); ok && logged < 8; ok = Thread32Next(snap, &te))
+    {
+        if (te.th32OwnerProcessID != pid || te.th32ThreadID == self || te.th32ThreadID == presentId)
+            continue;
+        HANDLE th = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION,
+                               FALSE, te.th32ThreadID);
+        if (!th)
+            continue;
+
+        DWORD_PTR eip = 0;
+        const int words = GESVR_CopyThreadStack(th, stackCopy, 768, eip);
+        CloseHandle(th);
+
+        char frames[12][96];
+        int n = 0;
+        bool ours = false;
+        char desc[320];
+        if (GESVR_DescribeAddr(eip, desc, sizeof(desc)))
+        {
+            strncpy_s(frames[n++], desc, _TRUNCATE);
+            ours = ours || (_strnicmp(desc, "d3d9.dll+", 9) == 0);
+        }
+        for (int i = 0; i < words && n < 12; ++i)
+            if (GESVR_DescribeAddr(stackCopy[i], desc, sizeof(desc)))
+            {
+                strncpy_s(frames[n++], desc, _TRUNCATE);
+                ours = ours || (_strnicmp(desc, "d3d9.dll+", 9) == 0);
+            }
+        if (!ours)
+            continue;
+        std::string line;
+        for (int i = 0; i < n; ++i)
+        {
+            line += frames[i];
+            line += (i + 1 < n) ? " < " : "";
+        }
+        Game::logMsg("THREAD %lu: %s", te.th32ThreadID, line.c_str());
+        ++logged;
+    }
+    CloseHandle(snap);
+    if (logged == 0)
+        Game::logMsg("THREAD: no other thread has d3d9.dll on its stack");
+}
+
 static void GESVR_WatchdogThread()
 {
     int reported = 0;
@@ -157,6 +286,26 @@ static void GESVR_WatchdogThread()
             // block, a moving EIP means a spin.
             if (reported == 1 || reported == 5)
                 GESVR_CaptureStalledStack();
+            if (reported == 1)
+                GESVR_CaptureWorkerStacks();
+            // Pause-menu Quit deadlocks inside steamclient.dll (14:16 log:
+            // ntdll wait, entire stack steamclient, inMap still 1). Present
+            // never returns, so the engine cannot finish quitting. The user
+            // already asked to exit, so leave.
+            // Three conditions, so a slow map load is never killed: the last
+            // good frame came right after a PAUSE-menu click (main-menu clicks
+            // do not count), we are still in the map, and the stuck thread is
+            // inside steamclient. The click time is not cleared on healthy
+            // frames -- a Quit click is followed by 1-2 good Presents first.
+            const long long clicked = g_lastPauseClickMs.load();
+            if (stalled > 5000 && clicked != 0 && (last - clicked) < 3000 &&
+                g_watchInMap.load() == 1 && GESVR_StalledInSteamClient())
+            {
+                Game::logMsg("WATCHDOG: pause-menu click then Present stuck in steamclient %lld ms; forcing exit", stalled);
+                g_vrQuitting.store(true);
+                g_watchdogRun.store(false);
+                TerminateProcess(GetCurrentProcess(), 0);
+            }
         }
         else
         {
@@ -219,11 +368,13 @@ namespace MenuInput
     // which is the one that still needed the desktop mouse.
     // GetCursorInfo is USER32, so it is polled on THIS thread and nowhere else.
     static std::atomic<bool> g_gameCursorShowing{ false };
+    // Last second of raw cursor polls, for the CURSOR log line: how many saw
+    // it showing, how many of those had a NULL cursor image, how many sat
+    // within 4 px of the window centre (where Source parks it in play).
+    static std::atomic<int> g_curPolls{ 0 }, g_curVisible{ 0 }, g_curNull{ 0 }, g_curCentred{ 0 };
 
     // HUD toggle key. Polled here because this thread owns USER32; the render
     // thread just watches the sequence number.
-    static std::atomic<int>      g_hudToggleKey{ 0 };
-    static std::atomic<unsigned> g_hudToggleSeq{ 0 };
 
     // Published back for the render thread to read cheaply.
     static std::atomic<void*> g_hwnd{ nullptr };
@@ -264,24 +415,58 @@ namespace MenuInput
 
             // CURSOR_SHOWING is global, so the pointer merely wandering off the
             // window during play would read as 'showing' and wrongly flip us into
-            // menu mode. Require it to be over the game window as well: in play
-            // Source keeps it centred AND hidden, so only a real panel sets both.
-            {
-                const int vk = g_hudToggleKey.load();
-                static bool s_keyWasDown = false;
-                const bool keyDown = (vk != 0) && ((GetAsyncKeyState(vk) & 0x8000) != 0);
-                if (keyDown && !s_keyWasDown)
-                    g_hudToggleSeq.fetch_add(1);
-                s_keyWasDown = keyDown;
-            }
-
+            // menu mode. Require it to be over the game window as well. This is
+            // now only the fallback signal -- see VguiCursorVisible.
             CURSORINFO ci{}; ci.cbSize = sizeof(ci);
             RECT wr{};
             bool curVis = false;
             if (GetCursorInfo(&ci) && (ci.flags & CURSOR_SHOWING) && GetWindowRect(hwnd, &wr))
                 curVis = (ci.ptScreenPos.x >= wr.left && ci.ptScreenPos.x < wr.right &&
                           ci.ptScreenPos.y >= wr.top  && ci.ptScreenPos.y < wr.bottom);
-            g_gameCursorShowing.store(curVis);
+
+            {
+                static int s_polls = 0, s_vis = 0, s_null = 0, s_centred = 0;
+                static ULONGLONG s_statStart = 0;
+                const ULONGLONG t = GetTickCount64();
+                ++s_polls;
+                if (curVis)
+                {
+                    ++s_vis;
+                    if (!ci.hCursor) ++s_null;
+                    const int cx = (wr.left + wr.right) / 2, cy = (wr.top + wr.bottom) / 2;
+                    if (abs(ci.ptScreenPos.x - cx) <= 4 && abs(ci.ptScreenPos.y - cy) <= 4) ++s_centred;
+                }
+                if (t - s_statStart >= 1000)
+                {
+                    g_curPolls.store(s_polls); g_curVisible.store(s_vis);
+                    g_curNull.store(s_null); g_curCentred.store(s_centred);
+                    s_polls = s_vis = s_null = s_centred = 0;
+                    s_statStart = t;
+                }
+            }
+
+            // Hysteresis, light: the cursor read as shown on some polls and
+            // hidden on others while a panel was up. On needs it in 3 of the
+            // last 8 polls (~64 ms), so a stray blip does not pop a menu; off
+            // needs 250 ms unseen. (400 ms plus the narrowed VGUI guard locked
+            // menu mode on for a whole map -- see dVGui_Paint.)
+            {
+                static unsigned s_hist = 0;
+                static bool s_on = false;
+                static ULONGLONG s_lastSeen = 0;
+                const ULONGLONG t = GetTickCount64();
+                s_hist = ((s_hist << 1) | (curVis ? 1u : 0u)) & 0xFFu;
+                if (curVis)
+                    s_lastSeen = t;
+                int seen = 0;
+                for (unsigned b = s_hist; b; b >>= 1)
+                    seen += (int)(b & 1u);
+                if (!s_on && seen >= 3)
+                    s_on = true;
+                else if (s_on && t - s_lastSeen > 250)
+                    s_on = false;
+                g_gameCursorShowing.store(s_on);
+            }
 
             g_foreground.store(GetForegroundWindow() == hwnd ? 1 : 0);
             g_iconic.store(IsIconic(hwnd) ? 1 : 0);
@@ -463,7 +648,8 @@ namespace VRSubmit
 }
 
 namespace dxvk { extern bool g_GESVR_DrawReticle; extern float g_GESVR_ReticleScale;
-                extern int g_GESVR_ReticleStyle; extern bool g_GESVR_ForceMenuOpaque;
+                extern int g_GESVR_ReticleStyle; extern int g_GESVR_ReticleColor;
+                extern bool g_GESVR_ForceMenuOpaque;
                 extern float g_GESVR_ReticleAspect;
                 extern bool g_GESVR_SwapEyeSurfaces; }
 extern long GESVR_ExecMoveCount();
@@ -472,10 +658,15 @@ extern long GESVR_RenderAnglesCalls();
 
 // How many SteamVR laser events arrived last frame. Non-zero means the laser
 // is driving the cursor and our own marker would be redundant.
-static int g_LastOverlayMoves = 0;
 
 static bool g_menuPlaced = false;
 static float g_menuYaw = 0.0f;
+
+// Re-place the game menu panel on its next frame (menu size/distance changed).
+void GESVR_RequestMenuReplace()
+{
+    g_menuPlaced = false;
+}
 
 // A SharedTextureHolder is only safe to hand to OpenVR when our own capture
 // code filled it. Every filler sets handle = &m_VulkanData, so that self-
@@ -751,19 +942,13 @@ VR::VR(Game *game)
     m_Overlay->CreateOverlay("MenuOverlayKey", "MenuOverlay", &m_MainMenuHandle);
     m_Overlay->CreateOverlay("HUDOverlayKey", "HUDOverlay", &m_HUDHandle);
     m_Overlay->CreateOverlay("GESVRWorldKey", "GESVRWorld", &m_WorldHandle);
-    m_Overlay->CreateOverlay("GESVRHudFoesKey",  "GESVRHudFoes",  &m_HudFoesHandle);
-    m_Overlay->CreateOverlay("GESVRHudAmmoKey",  "GESVRHudAmmo",  &m_HudAmmoHandle);
-    // Never interactive: they must not steal the laser from the menu panel.
-    for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle })
-    {
-        m_Overlay->SetOverlayFlag(h, vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
-        m_Overlay->SetOverlaySortOrder(h, 90);
-    }
     m_Overlay->SetOverlayInputMethod(m_MainMenuHandle, vr::VROverlayInputMethod_Mouse);
     m_Overlay->SetOverlayInputMethod(m_HUDHandle, vr::VROverlayInputMethod_Mouse);
     m_Overlay->SetOverlayFlag(m_MainMenuHandle, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
     m_Overlay->SetOverlayFlag(m_HUDHandle, vr::VROverlayFlags_SendVRDiscreteScrollEvents, true);
     CreateWristOverlays();
+    VRSettings::Init(this);
+    VRWatch::Init(this);
 
     int windowWidth = 1280, windowHeight = 720;
     if (m_Game->m_EngineClient)
@@ -806,6 +991,7 @@ int VR::SetActionManifest(const char *fileName)
     m_Input->GetActionHandle("/actions/main/in/PrimaryAttack", &m_ActionPrimaryAttack);
     m_Input->GetActionHandle("/actions/main/in/Reload", &m_ActionReload);
     m_Input->GetActionHandle("/actions/main/in/TwoHand", &m_ActionTwoHand);
+    m_Input->GetActionHandle("/actions/main/in/Scope", &m_ActionScope);
     m_Input->GetActionHandle("/actions/main/in/Use", &m_ActionUse);
     m_Input->GetActionHandle("/actions/main/in/Walk", &m_ActionWalk);
     m_Input->GetActionHandle("/actions/main/in/Turn", &m_ActionTurn);
@@ -848,12 +1034,39 @@ void VR::InstallApplicationManifest(const char *fileName)
 
 void VR::Update()
 {
-    if (!m_IsInitialized)
+    if (!m_IsInitialized || g_vrQuitting.load())
         return;
+
+    // Once per frame; see IsMenuMode. Transitions are logged so a flicker
+    // shows up as a burst of these instead of hiding between 1-in-90 samples.
+    {
+        const bool menu = ComputeMenuMode();
+        if (menu != m_MenuMode)
+        {
+            static ULONGLONG s_windowStart = 0;
+            static int s_flips = 0;
+            const ULONGLONG t = GetTickCount64();
+            if (t - s_windowStart > 1000) { s_windowStart = t; s_flips = 0; }
+            if (++s_flips <= 4)
+                Game::logMsg("Menu mode %d -> %d (gameui=%d inmap=%d vgui=%d cursor=%d stereo=%d)",
+                             (int)m_MenuMode, (int)menu,
+                             (int)(m_Game && m_Game->IsGameUIVisible()),
+                             (int)(m_Game && m_Game->IsInMap()), m_VguiCursor,
+                             (int)MenuInput::g_gameCursorShowing.load(), (int)m_RenderedNewFrame);
+            m_MenuMode = menu;
+        }
+    }
 
     GESVR_HideTheaterOverlays();
 
     static int s_frames = 0;
+    // The engine may install its own spew function after ours; re-chain.
+    if ((s_frames % 120) == 0)
+        VRSettings::InstallMenuHook();
+    if ((s_frames % 90) == 0 && m_Game && m_Game->IsInMap())
+        Game::logMsg("CURSOR vgui=%d | win32 polls=%d visible=%d nullImage=%d centred=%d -> menu=%d",
+                     m_VguiCursor, MenuInput::g_curPolls.load(), MenuInput::g_curVisible.load(),
+                     MenuInput::g_curNull.load(), MenuInput::g_curCentred.load(), (int)m_MenuMode);
     if ((++s_frames % 90) == 1)
     {
         Game::logMsg("VR::Update frame=%d stereoFrame=%d menu=%d gameui=%d inmap=%d left=%p right=%p",
@@ -902,6 +1115,7 @@ void VR::Update()
     if (IsMenuMode())
     {
         const auto tStart = vrclock::now();
+        VRWatch::Hide();
         if (m_Input)
         {
             const vr::EVRInputError uerr = m_Input->UpdateActionState(
@@ -915,27 +1129,38 @@ void VR::Update()
                                : "  <-- FAILING, all digital actions read false");
             }
         }
+        // Non-blocking. WaitGetPoses on the Present thread froze disconnect
+        // and the next launch's menu/load.
+        if (vr::VRCompositor())
+            vr::VRCompositor()->GetLastPoses(m_Poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
         GetPoses();
 
-        int cx = -1, cy = -1;
-        ComputeMenuPointer(cx, cy);
-        // Pass -1 to suppress our own crosshair. The captured frame ALREADY
-        // contains the game's cursor, which we drive with SetCursorPos, so
-        // drawing a second marker on top of it is what produced two cursors.
-        // Only draw our marker where the laser ISN'T doing the job. At the
-        // server-select menu SteamVR's own laser and its dot are visible, so an
-        // extra marker is redundant clutter; in a map the laser is unavailable
-        // and the marker is the only cursor there is.
-        const bool laserDriving = (g_LastOverlayMoves > 0);
-        const bool wantMarker = m_DrawMenuCursor && !laserDriving;
+        // Exactly one cursor: SteamVR's dot while its laser is on the panel,
+        // otherwise our marker at the controller aim from the last
+        // ProcessMenuInput (one frame old, which is invisible). Never while
+        // the VR settings panel is in front, which has its own pointer.
+        const bool wantMarker = m_DrawMenuCursor && !m_MenuLaserOnPanel && m_MenuAimX >= 0
+                             && !VRSettings::IsOpen();
         if (g_D3DVR9)
             g_D3DVR9->CaptureForOverlay(&m_VKHUD,
-                                        wantMarker ? cx : -1,
-                                        wantMarker ? cy : -1);
+                                        wantMarker ? m_MenuAimX : -1,
+                                        wantMarker ? m_MenuAimY : -1);
         const auto tCapture = vrclock::now();
         ShowMenuPanel();
         const auto tPanel = vrclock::now();
-        ProcessMenuInput();
+        // VR settings: opened by our "VR Settings" GameMenu entry, or left X
+        // in any menu. While it is open it owns the pointer and the trigger,
+        // so the game menu behind it gets no input at all.
+        static int s_settingsFrames = 0;
+        ++s_settingsFrames;
+        if (VRSettings::ConsumeOpenRequest())
+            VRSettings::Open();
+        else if (s_settingsFrames > 300 && PressedDigitalAction(m_Scoreboard, true))
+            VRSettings::IsOpen() ? VRSettings::Close() : VRSettings::Open();
+        if (VRSettings::IsOpen())
+            VRSettings::Frame();
+        else
+            ProcessMenuInput();
         const auto tEnd = vrclock::now();
         if (trace)
             Game::logMsg("MENU f=%d cap=%.1f panel=%.1f input=%.1f TOTAL=%.1fms",
@@ -948,42 +1173,35 @@ void VR::Update()
 
     const auto tStart = vrclock::now();
     HideMenuPanel();
+    VRSettings::Close();
 
-    // Refresh the flat-HUD capture while IN GAME. The wrist overlays crop
-    // their watch/ammo faces out of m_VKHUD, but m_VKHUD was only ever
-    // filled by the MENU branch -- so in game it held a stale menu frame
-    // forever. At Present the backbuffer holds the finished frame including
-    // the 2D HUD, which is exactly what we want to crop from.
-    // The HUD panel draws from this same capture, so it must refresh when
-    // either consumer is live -- not just the wrist watch.
-    // Keep refreshing the overlay capture in game even with the HUD off.
+    // Refresh the flat-HUD capture while IN GAME. The HUD elements crop
+    // their faces out of m_VKHUD, but m_VKHUD was only ever filled by the
+    // MENU branch -- so in game it held a stale menu frame forever. At
+    // Present the backbuffer holds the finished frame including the 2D HUD,
+    // which is exactly what we want to crop from. (The wrist watch draws its
+    // own face and does not need this.)
     //
     // This capture is also what runs ForceOpaqueAlpha. While the radar existed
     // the gate was true every frame; turning the HUD off silently stopped it,
     // and the menu went see-through/blurry again at the same time. Decoupled
     // so HUD settings cannot switch the alpha fix off as a side effect.
-    if (g_D3DVR9 && (m_ShowWristHUD || m_HudElementsVisible || m_AlwaysCaptureOverlay))
+    if (g_D3DVR9 && m_AlwaysCaptureOverlay)
         g_D3DVR9->CaptureForOverlay(&m_VKHUD, -1, -1);
 
-    // UpdateWristHUD/UpdateHurtHUD had NO call sites: the whole wrist
-    // watch and damage-flash HUD, and every Wrist*/HurtHUD* config key,
-    // were inert. Only runs in map.
+    // Only runs in map.
     if (m_Game && m_Game->IsInMap())
     {
         ApplyExtraCvars();
-        UpdateWristHUD();
+        RefreshActiveWeapon();
+        VRWatch::Update();
         UpdateHurtHUD();
-        DetectHeadTap();
-        UpdateHudElements();
     }
     else
     {
         m_ExtraCvarsDone = false;
         m_InMapSinceMs = 0;
-        HideWristOverlays();
-        if (m_Overlay)
-            for (vr::VROverlayHandle_t h : { m_HudFoesHandle, m_HudAmmoHandle })
-                if (h) m_Overlay->HideOverlay(h);
+        VRWatch::Hide();
     }
 
     ProcessInput();
@@ -993,7 +1211,50 @@ void VR::Update()
                      s_frames, MsSince(tStart, tEnd), MsSince(tStart, tEnd));
 }
 
-bool VR::IsMenuMode()
+static bool ReadablePtr(const void *p, size_t bytes);
+
+// VGUI's own "a panel needs the mouse" -- ISurface::IsCursorVisible, which is
+// `return _currentCursor != dc_none`. VGUI sets dc_none whenever no visible
+// popup takes mouse input, so this is exactly what the game uses to decide.
+// The Win32 cursor it replaces stayed visible through a whole map on
+// 2026-09-21 (118 of 118 polls a second, never centred) and locked the
+// headset in menu mode.
+//
+// Vtable slot 51 in GE:S's vguimatsurface.dll, found by disassembling
+// CMatSystemSurface's vtable (via RTTI): slot 51 is that one-liner and slot
+// 50, SetCursor, writes the same field. The SDK header's slot 52 would have
+// called the wrong function, so the bytes are checked before it is ever
+// called: -1 means "not trusted", and the caller falls back to Win32.
+static int VguiCursorVisible(void *surface)
+{
+    static int s_state = 0;           // 0 unchecked, 1 verified, -1 unusable
+    static void *s_fn = nullptr;
+    if (!surface)
+        return -1;
+    if (s_state == 0)
+    {
+        s_state = -1;
+        void **vt = ReadablePtr(surface, sizeof(void *)) ? *reinterpret_cast<void ***>(surface) : nullptr;
+        if (vt && ReadablePtr(vt + 51, sizeof(void *)))
+        {
+            // xor eax,eax / cmp dword ptr [ecx+disp32],1 / setne al / ret
+            const unsigned char *p = static_cast<const unsigned char *>(vt[51]);
+            if (ReadablePtr(p, 13) && p[0] == 0x33 && p[1] == 0xC0 && p[2] == 0x83 && p[3] == 0xB9 &&
+                p[8] == 0x01 && p[9] == 0x0F && p[10] == 0x95 && p[11] == 0xC0 && p[12] == 0xC3)
+            {
+                s_fn = vt[51];
+                s_state = 1;
+            }
+        }
+        Game::logMsg("VGUI IsCursorVisible %s", s_state == 1 ? "verified at vtable slot 51"
+                                                             : "NOT recognised -- falling back to the Win32 cursor");
+    }
+    if (s_state != 1)
+        return -1;
+    return reinterpret_cast<bool(__thiscall *)(void *)>(s_fn)(surface) ? 1 : 0;
+}
+
+bool VR::ComputeMenuMode()
 {
     if (m_Game && m_Game->IsGameUIVisible())
         return true;
@@ -1007,9 +1268,14 @@ bool VR::IsMenuMode()
     // Routing it through the same flat panel puts it at MenuDistanceMeters and
     // makes the VR pointer work on it. Gated by InGameMenuPanel in case a map
     // ever shows the cursor with no panel behind it.
-    if (m_InGameMenuPanel && m_Game && m_Game->IsInMap()
-        && MenuInput::g_gameCursorShowing.load())
-        return true;
+    m_VguiCursor = VguiCursorVisible(m_Game ? m_Game->m_VguiSurface : nullptr);
+    if (m_InGameMenuPanel && m_Game && m_Game->IsInMap())
+    {
+        const bool panelWantsMouse = (m_VguiCursor >= 0) ? (m_VguiCursor == 1)
+                                                         : MenuInput::g_gameCursorShowing.load();
+        if (panelWantsMouse)
+            return true;
+    }
 
     return !m_RenderedNewFrame;
 }
@@ -1021,8 +1287,19 @@ static int g_lastCursorX = 0;
 static int g_lastCursorY = 0;
 static bool g_haveCursor = false;
 
+void GESVR_OnProcessDetach()
+{
+    g_vrQuitting.store(true);
+    g_watchdogRun.store(false);
+    MenuInput::g_run.store(false);
+    VRSubmit::g_run.store(false);
+}
+
 void VR::AfterPresent()
 {
+    if (g_vrQuitting.load())
+        return;
+
     const bool inMap = m_Game && m_Game->IsInMap();
     const bool haveEyes = TextureReady(m_VKLeftEye) && TextureReady(m_VKRightEye);
     const bool clicking = g_pendMouseDown || g_pendMouseUp;
@@ -1040,7 +1317,13 @@ void VR::AfterPresent()
     // down+up cycle of its own, so every trigger pull sent TWO clicks and the
     // menu toggled straight back off again.
     if (g_pendMouseDown && g_menuDriveCursor)
+    {
         MenuInput::QueueClick();
+        // Arms the watchdog's Quit force-exit. Pause menu only: character
+        // select is in-map + cursor but not GameUI, and never hangs this way.
+        if (inMap && m_Game && m_Game->IsGameUIVisible())
+            g_lastPauseClickMs.store(NowMs());
+    }
     g_pendMouseDown = false;
     g_pendMouseUp = false;
 
@@ -1055,6 +1338,11 @@ void VR::AfterPresent()
         Game::logMsg("=== inMap %d -> %d (haveEyes=%d) ===", s_wasInMap, (int)inMap, (int)haveEyes);
         s_wasInMap = (int)inMap;
         g_watchInMap.store((int)inMap);
+        // Disconnect/quit returns to a 2D menu. Re-place the panel level
+        // (no leftover in-game tilt) and stop compositor submits -- that is
+        // what deadlocked Present after the 12:09:10 disconnect click.
+        if (!inMap)
+            g_menuPlaced = false;
     }
 
     // NOTE the condition: it is "have eyes", NOT "in map". Previously an in-map
@@ -1074,7 +1362,11 @@ void VR::AfterPresent()
     // before taking the queue, so holding it from a continuous 90Hz loop starves
     // DXVK's own submission thread and Present blocks in waitForSubmission
     // forever. Once per frame the wait is one frame's work and it is fine.
-    if (!VRSubmit::g_useThread.load() && vr::VRCompositor())
+    // Only the GameUI pause/quit overlay skips compositor. Character select
+    // is in-map + cursor, NOT GameUI -- skipping WaitGetPoses there broke
+    // the 3D character screen. Pause is IsGameUIVisible().
+    const bool pauseUi = m_Game && m_Game->IsGameUIVisible();
+    if (!VRSubmit::g_useThread.load() && vr::VRCompositor() && inMap && !pauseUi)
     {
         auto *comp = vr::VRCompositor();
         werr = comp->WaitGetPoses(m_Poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
@@ -1088,7 +1380,18 @@ void VR::AfterPresent()
         if (g_D3DVR9)
             g_D3DVR9->LockSubmission();
 
-        if (haveEyes && inMap)
+        // Character/load-game: the same VGUI is in the stereo eyes and gets
+        // frustum-cropped into a giant stretched copy behind the overlay.
+        // Submit black there. The floating overlay still captures the
+        // backbuffer, so the good panel is unchanged.
+        const bool hideWorldUi = IsMenuMode();
+        if (hideWorldUi && TextureReady(m_SubmitBlack))
+        {
+            el = comp->Submit(vr::Eye_Left,  &m_SubmitBlack.m_VRTexture, &full, vr::Submit_Default);
+            er = comp->Submit(vr::Eye_Right, &m_SubmitBlack.m_VRTexture, &full, vr::Submit_Default);
+            submitted = true;
+        }
+        else if (haveEyes && inMap)
         {
             const bool useBounds = m_UseTextureBounds && m_HaveTextureBounds;
             vr::VRTextureBounds_t lb = useBounds ? m_TextureBounds[0] : full;
@@ -1150,12 +1453,9 @@ void VR::AfterPresent()
             }
             submitted = true;
         }
-        else if (VRSubmit::g_blackReady.load() && TextureReady(m_SubmitBlack))
-        {
-            el = comp->Submit(vr::Eye_Left,  &m_SubmitBlack.m_VRTexture, &full, vr::Submit_Default);
-            er = comp->Submit(vr::Eye_Right, &m_SubmitBlack.m_VRTexture, &full, vr::Submit_Default);
-            submitted = true;
-        }
+        // Do NOT Submit black on the menu. WaitGetPoses+Submit on the Present
+        // thread after disconnect is the 12:09 hang (inMap 1->0, then Present
+        // blocked in ntdll, called from vgui2). Menu is overlay-only.
 
         if (g_D3DVR9)
             g_D3DVR9->UnlockSubmission();
@@ -1170,6 +1470,11 @@ void VR::AfterPresent()
     }
 
     m_PosesThisFrame = false;
+
+    // Overlay texture AFTER the swap, with the queue lock. Doing this in
+    // Update() (before Present) is a vkQueueSubmit vs DXVK Present race.
+    if (IsMenuMode() && m_Overlay && m_MainMenuHandle && TextureReady(m_VKHUD))
+        SetOverlayTextureLocked(m_Overlay, m_MainMenuHandle, &m_VKHUD.m_VRTexture);
 
     const float ms = MsSince(t0, vrclock::now());
     static int s_n = 0;
@@ -1208,7 +1513,8 @@ void VR::ShowMenuPanel()
         Game::logMsg("Menu overlay cosmetics configured %dx%d", windowWidth, windowHeight);
     }
 
-    vr::EVROverlayError err = SetOverlayTextureLocked(m_Overlay, m_MainMenuHandle, &m_VKHUD.m_VRTexture);
+    // Texture upload happens in AfterPresent (after DXVK Present) so OpenVR
+    // does not vkQueueSubmit on the same callstack as the swap.
 
     // Keep the panel still. Re-aiming it every frame made the laser unusable.
     float yaw = 0.0f;
@@ -1233,8 +1539,8 @@ void VR::ShowMenuPanel()
     static int s_logged = 0;
     if (s_logged < 3)
     {
-        Game::logMsg("Floating menu overlay %dx%d SetOverlayTexture=%d visible=%d",
-                     windowWidth, windowHeight, (int)err,
+        Game::logMsg("Floating menu overlay %dx%d visible=%d",
+                     windowWidth, windowHeight,
                      (int)m_Overlay->IsOverlayVisible(m_MainMenuHandle));
         ++s_logged;
     }
@@ -1258,12 +1564,18 @@ void VR::PlaceMenuPanelInFront()
         const vr::HmdMatrix34_t &m = hmd.mDeviceToAbsoluteTracking;
         float panelW = m_MenuWidthMeters, dist = m_MenuDistanceMeters;
         EffectiveMenuGeometry(panelW, dist);
-        float fx = -m.m[0][2], fy = -m.m[1][2], fz = -m.m[2][2];
-        xf.m[0][0] = m.m[0][0]; xf.m[0][1] = m.m[0][1]; xf.m[0][2] = m.m[0][2];
-        xf.m[1][0] = m.m[1][0]; xf.m[1][1] = m.m[1][1]; xf.m[1][2] = m.m[1][2];
-        xf.m[2][0] = m.m[2][0]; xf.m[2][1] = m.m[2][1]; xf.m[2][2] = m.m[2][2];
+        // Yaw only. Copying the full HMD matrix locked the panel to whatever
+        // pitch/roll you had when the menu first appeared.
+        float fx = -m.m[0][2], fz = -m.m[2][2];
+        const float flen = sqrtf(fx * fx + fz * fz);
+        if (flen > 0.001f) { fx /= flen; fz /= flen; }
+        else { fx = 0.0f; fz = -1.0f; }
+        // Columns: right, up, back (OpenVR). Level: up = (0,1,0).
+        xf.m[0][0] = -fz; xf.m[0][1] = 0.0f; xf.m[0][2] = -fx;
+        xf.m[1][0] = 0.0f; xf.m[1][1] = 1.0f; xf.m[1][2] = 0.0f;
+        xf.m[2][0] =  fx; xf.m[2][1] = 0.0f; xf.m[2][2] = -fz;
         xf.m[0][3] = m.m[0][3] + fx * dist;
-        xf.m[1][3] = m.m[1][3] + fy * dist;
+        xf.m[1][3] = m.m[1][3];
         xf.m[2][3] = m.m[2][3] + fz * dist;
     }
 
@@ -1299,6 +1611,13 @@ void VR::EffectiveMenuGeometry(float &widthM, float &distM) const
     // the worst of the lot. GameUI menus are text you read, so they stay near.
     distM  = (inMap && !gameUi) ? m_InGameMenuDistance : m_MenuDistanceMeters;
     widthM = m_MenuWidthMeters;
+    // Pause (GameUI while in a map) was filling too much of the view once
+    // compositor stereo was skipped behind it.
+    if (inMap && gameUi)
+    {
+        widthM = m_MenuWidthMeters * 0.72f;
+        if (distM < 1.8f) distM = 1.8f;
+    }
 
     if (m_MenuScaleWithRes)
     {
@@ -1317,11 +1636,63 @@ void VR::EffectiveMenuGeometry(float &widthM, float &distM) const
     if (widthM < 0.2f) widthM = 0.2f;
 }
 
+// The pointing hand's laser as SteamVR draws it: the controller's "tip"
+// component, not its raw pose. Raw -Z on Touch points well below the SteamVR
+// laser, so a ray from it lands somewhere else on the panel.
+bool VR::GetPointerPose(vr::HmdMatrix34_t &out)
+{
+    if (!m_System)
+        return false;
+    const vr::TrackedDeviceIndex_t hand = m_System->GetTrackedDeviceIndexForControllerRole(
+        m_LeftHanded ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
+    if (hand >= vr::k_unMaxTrackedDeviceCount || !m_Poses[hand].bPoseIsValid)
+        return false;
+
+    // The tip is fixed relative to the controller: look it up once per device.
+    static vr::TrackedDeviceIndex_t s_tipFor = vr::k_unTrackedDeviceIndexInvalid;
+    static vr::HmdMatrix34_t s_tip{};
+    static bool s_haveTip = false;
+    if (s_tipFor != hand)
+    {
+        s_tipFor = hand;
+        s_haveTip = false;
+        char model[256] = {};
+        m_System->GetStringTrackedDeviceProperty(hand, vr::Prop_RenderModelName_String, model, sizeof(model));
+        vr::VRControllerState_t state{};
+        vr::RenderModel_ControllerMode_State_t mode{};
+        vr::RenderModel_ComponentState_t comp{};
+        if (model[0] && vr::VRRenderModels() &&
+            vr::VRRenderModels()->GetComponentState(model, vr::k_pch_Controller_Component_Tip, &state, &mode, &comp))
+        {
+            s_tip = comp.mTrackingToComponentLocal;
+            s_haveTip = true;
+        }
+        Game::logMsg("Pointer: device %u model '%s' tip %s", hand, model,
+                     s_haveTip ? "found" : "not found, using the raw pose");
+    }
+
+    const vr::HmdMatrix34_t &d = m_Poses[hand].mDeviceToAbsoluteTracking;
+    if (!s_haveTip)
+    {
+        out = d;
+        return true;
+    }
+    for (int i = 0; i < 3; ++i)
+    {
+        for (int j = 0; j < 3; ++j)
+            out.m[i][j] = d.m[i][0] * s_tip.m[0][j] + d.m[i][1] * s_tip.m[1][j] + d.m[i][2] * s_tip.m[2][j];
+        out.m[i][3] = d.m[i][0] * s_tip.m[0][3] + d.m[i][1] * s_tip.m[1][3] + d.m[i][2] * s_tip.m[2][3] + d.m[i][3];
+    }
+    return true;
+}
+
+// Where the pointing hand's ray meets the game menu panel, in window pixels.
+// Controller only; false when it points off the panel.
 bool VR::ComputeMenuPointer(int &x, int &y)
 {
     x = -1;
     y = -1;
-    if (!m_Overlay || !m_MainMenuHandle || !m_System || !vr::VRCompositor())
+    if (!m_Overlay || !m_MainMenuHandle || !vr::VRCompositor())
         return false;
 
     int windowWidth = 1280, windowHeight = 720;
@@ -1330,96 +1701,27 @@ bool VR::ComputeMenuPointer(int &x, int &y)
     if (windowWidth < 1) windowWidth = 1280;
     if (windowHeight < 1) windowHeight = 720;
 
-    // Aim the menu with the HEAD, not the controller.
-    //
-    // In a map SteamVR sends almost no laser events to our overlay (measured:
-    // overlayMoves=2 in map versus hundreds at the main menu) because we are
-    // submitting stereo frames, so it routes the controller to the game's action
-    // set instead of to overlay interaction. The controller-ray fallback here
-    // has also never once intersected (tip=0 in every log ever captured). Both
-    // pointer paths were dead in map, which is why the character select screen
-    // could only be used with the desktop mouse.
-    //
-    // Pointing with the head works in both places, needs no laser routing, and
-    // suits head-aim mode: look at the item, pull the trigger.
-    // Auto: controller out of a map, head in one. See m_MenuAimSource.
-    bool useHead;
-    if (m_MenuAimSource == 2)
-        useHead = (m_Game && m_Game->IsInMap());
-    else
-        useHead = (m_MenuAimSource != 1);
     vr::HmdMatrix34_t ray{};
-    if (useHead)
-    {
-        if (!m_Poses[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid)
-            return false;
-        ray = m_Poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
-    }
-    else
-    {
-        vr::TrackedDeviceIndex_t rightIdx = m_System->GetTrackedDeviceIndexForControllerRole(
-            m_LeftHanded ? vr::TrackedControllerRole_LeftHand : vr::TrackedControllerRole_RightHand);
-        if (rightIdx >= vr::k_unMaxTrackedDeviceCount || !m_Poses[rightIdx].bPoseIsValid)
-            return false;
-        ray = m_Poses[rightIdx].mDeviceToAbsoluteTracking;
-    }
-
-    const vr::HmdMatrix34_t &ctrl = ray;
-    vr::VROverlayIntersectionParams_t ip{};
-    ip.eOrigin = vr::VRCompositor()->GetTrackingSpace();
-    ip.vSource.v[0] = ctrl.m[0][3];
-    ip.vSource.v[1] = ctrl.m[1][3];
-    ip.vSource.v[2] = ctrl.m[2][3];
-    ip.vDirection.v[0] = -ctrl.m[0][2];
-    ip.vDirection.v[1] = -ctrl.m[1][2];
-    ip.vDirection.v[2] = -ctrl.m[2][2];
-    vr::VROverlayIntersectionResults_t ir{};
-    if (m_Overlay->ComputeOverlayIntersection(m_MainMenuHandle, &ip, &ir))
-    {
-        float u = ir.vUVs.v[0];
-        float v = 1.0f - ir.vUVs.v[1];
-        if (u < 0.f) u = 0.f; if (u > 1.f) u = 1.f;
-        if (v < 0.f) v = 0.f; if (v > 1.f) v = 1.f;
-        x = (int)(u * (float)(windowWidth - 1));
-        y = (int)(v * (float)(windowHeight - 1));
-        return true;
-    }
-
-    // Intersection failed -- and for the head ray it has failed in every log
-    // ever captured (tip=0), which is why the character-select screen has no
-    // cursor. Fall back to ANGULAR mapping: measure how far the ray has turned
-    // from the panel's own forward direction and map that onto the panel. This
-    // needs no ray/quad hit, so it always produces a cursor, and it degrades
-    // gracefully at the edges instead of vanishing.
-    if (!useHead)
+    if (!GetPointerPose(ray))
         return false;
 
-    const float fwdX = -ctrl.m[0][2];
-    const float fwdY = -ctrl.m[1][2];
-    const float fwdZ = -ctrl.m[2][2];
-
-    // Panel forward, captured when the panel was last placed.
-    const float pYaw = g_menuYaw;
-    const float rayYaw = atan2f(-fwdX, -fwdZ);
-    float dYaw = rayYaw - pYaw;
-    while (dYaw >  3.14159265f) dYaw -= 6.28318531f;
-    while (dYaw < -3.14159265f) dYaw += 6.28318531f;
-    const float pitch = asinf(fwdY < -1.0f ? -1.0f : (fwdY > 1.0f ? 1.0f : fwdY));
-
-    // Half-angle the panel subtends: width/2 over its distance.
-    float fbW = m_MenuWidthMeters, fbD = m_MenuDistanceMeters;
-    EffectiveMenuGeometry(fbW, fbD);
-    const float halfW = atanf((fbW * 0.5f) / fbD);
-    const float aspect = (windowHeight > 0) ? ((float)windowWidth / (float)windowHeight) : 1.777f;
-    const float halfH = (aspect > 0.01f) ? (halfW / aspect) : halfW;
-
-    float nx = (halfW > 0.0001f) ? (dYaw / halfW) : 0.0f;      // -1..1 across
-    float ny = (halfH > 0.0001f) ? (-pitch / halfH) : 0.0f;    // -1..1 down
-    if (nx < -1.f) nx = -1.f; if (nx > 1.f) nx = 1.f;
-    if (ny < -1.f) ny = -1.f; if (ny > 1.f) ny = 1.f;
-
-    x = (int)((nx * 0.5f + 0.5f) * (float)(windowWidth - 1));
-    y = (int)((ny * 0.5f + 0.5f) * (float)(windowHeight - 1));
+    vr::VROverlayIntersectionParams_t ip{};
+    ip.eOrigin = vr::VRCompositor()->GetTrackingSpace();
+    ip.vSource.v[0] = ray.m[0][3];
+    ip.vSource.v[1] = ray.m[1][3];
+    ip.vSource.v[2] = ray.m[2][3];
+    ip.vDirection.v[0] = -ray.m[0][2];
+    ip.vDirection.v[1] = -ray.m[1][2];
+    ip.vDirection.v[2] = -ray.m[2][2];
+    vr::VROverlayIntersectionResults_t ir{};
+    if (!m_Overlay->ComputeOverlayIntersection(m_MainMenuHandle, &ip, &ir))
+        return false;
+    const float u = ir.vUVs.v[0];
+    const float v = 1.0f - ir.vUVs.v[1];
+    if (u < 0.0f || u > 1.0f || v < 0.0f || v > 1.0f)
+        return false;
+    x = (int)(u * (float)(windowWidth - 1));
+    y = (int)(v * (float)(windowHeight - 1));
     return true;
 }
 
@@ -2087,10 +2389,27 @@ void VR::ProcessMenuInput()
     if (s_menuFrames == 300)
         Game::logMsg("ARM: OpenVR action polling ON (frame 300)");
 
-    // Drain overlay events but coalesce to a single aim point per frame.
-    int aimX = -1, aimY = -1;
+    // Aim: SteamVR's laser point while its laser is on the panel, else our
+    // own ray from the same controller tip. SteamVR only sends MouseMove when
+    // the laser MOVES, so the last laser point is kept while it holds still;
+    // FocusLeave (or a second of silence with our ray off the panel) ends it.
+    // Letting a computed ray take over on every still frame is what put a
+    // second cursor on the menu and sent clicks to it.
+    static int s_laserX = -1, s_laserY = -1;
+    static bool s_laserFocus = false;
+    static ULONGLONG s_lastLaserMove = 0;
+    const ULONGLONG nowMs = GetTickCount64();
+    // Any gap (settings panel in front, or back in game) may have eaten the
+    // FocusLeave: start clean rather than trust a stale laser point.
+    static ULONGLONG s_lastRun = 0;
+    if (nowMs - s_lastRun > 250)
+    {
+        s_laserFocus = false;
+        s_laserX = s_laserY = -1;
+    }
+    s_lastRun = nowMs;
     int overlayMoves = 0;
-    bool overlayDown = false, overlayUp = false;
+    bool overlayDown = false;
     vr::VREvent_t ev{};
     while (m_Overlay->PollNextOverlayEvent(m_MainMenuHandle, &ev, sizeof(ev)))
     {
@@ -2104,36 +2423,45 @@ void VR::ProcessMenuInput()
             if (laserY < 0) laserY = 0;
             if (laserX >= windowWidth) laserX = windowWidth - 1;
             if (laserY >= windowHeight) laserY = windowHeight - 1;
-            aimX = laserX;
-            aimY = laserY;
+            s_laserX = laserX;
+            s_laserY = laserY;
+            s_laserFocus = true;
+            s_lastLaserMove = nowMs;
             ++overlayMoves;
             break;
         }
+        case vr::VREvent_FocusEnter:
+            s_laserFocus = true;
+            break;
+        case vr::VREvent_FocusLeave:
+            s_laserFocus = false;
+            break;
         case vr::VREvent_MouseButtonDown:
             overlayDown = true;
-            break;
-        case vr::VREvent_MouseButtonUp:
-            overlayUp = true;
             break;
         default:
             break;
         }
     }
 
-    g_LastOverlayMoves = overlayMoves;
-
     int tipX = -1, tipY = -1;
     const bool tipHit = ComputeMenuPointer(tipX, tipY);
-    // SteamVR's laser WINS whenever it is actually producing events. The
-    // computed ray (head, or controller) is a FALLBACK for where the laser is
-    // unavailable -- in a map, SteamVR routes the controller to the game and
-    // sends the overlay almost nothing. Overriding unconditionally is what
-    // replaced the laser pointer with a head cursor everywhere.
-    if (tipHit && overlayMoves == 0)
+    if (s_laserFocus && !tipHit && nowMs - s_lastLaserMove > 1000)
+        s_laserFocus = false;   // left the panel without telling us
+    int aimX = -1, aimY = -1;
+    if (s_laserFocus && s_laserX >= 0)
+    {
+        aimX = s_laserX;
+        aimY = s_laserY;
+    }
+    else if (tipHit)
     {
         aimX = tipX;
         aimY = tipY;
     }
+    m_MenuAimX = aimX;
+    m_MenuAimY = aimY;
+    m_MenuLaserOnPanel = s_laserFocus;
 
     // Which pointer is actually driving the cursor, and where. "doesn't use the
     // vr pointer" needs separating into: no aim computed at all, aim computed
@@ -2145,11 +2473,9 @@ void VR::ProcessMenuInput()
         {
             s_lastAimLog = an;
             const bool inMapNow = m_Game && m_Game->IsInMap();
-            const char *src = (m_MenuAimSource == 2)
-                                ? (inMapNow ? "auto->head" : "auto->controller")
-                                : (m_MenuAimSource == 1 ? "controller" : "head");
             Game::logMsg("AIMSRC %s inMap=%d overlayMoves=%d tip=%d aim=(%d,%d) cursor=(%d,%d) live=%d",
-                         src, (int)inMapNow, overlayMoves, (int)tipHit,
+                         s_laserFocus ? "laser" : (tipHit ? "controller-ray" : "none"),
+                         (int)inMapNow, overlayMoves, (int)tipHit,
                          aimX, aimY, g_lastCursorX, g_lastCursorY, (int)cursorLive);
         }
     }
@@ -2160,19 +2486,25 @@ void VR::ProcessMenuInput()
     if (armTrace) Game::logMsg("  f=%d <- aim published", s_menuFrames);
 
     g_pendHwnd = hwnd;
-    if (inputLive && overlayDown)
-    {
+
+    // One click path. The laser's trigger arrives as an overlay ButtonDown AND,
+    // often a frame apart, as the trigger action: both used to click, so one
+    // pull could click twice. Now every source shares one 350 ms cooldown, and
+    // nothing clicks unless the pointer is actually on the panel -- a click
+    // with no aim used to land wherever the cursor was last.
+    static ULONGLONG s_lastClickMs = 0;
+    auto click = [&](const char *source) {
+        if (!inputLive || aimX < 0 || nowMs - s_lastClickMs <= 350)
+            return;
+        s_lastClickMs = nowMs;
         g_pendMouseDown = true;
-        if (m_MenuUseVguiInternal)
-            SafeVguiMouse(input, true);
-        Game::logMsg("Overlay MouseButtonDown at (%d,%d)", g_lastCursorX, g_lastCursorY);
-    }
-    if (inputLive && overlayUp)
-    {
         g_pendMouseUp = true;
         if (m_MenuUseVguiInternal)
-            SafeVguiMouse(input, false);
-    }
+            SafeVguiClick(input);
+        Game::logMsg("Menu click (%s) at (%d,%d)", source, aimX, aimY);
+    };
+    if (overlayDown)
+        click("laser");
 
     static int s_aimLog = 0;
     if (s_aimLog < 8 && (overlayMoves > 0 || tipHit))
@@ -2212,10 +2544,9 @@ void VR::ProcessMenuInput()
     // overlay work will make the trigger click.
     {
         static DWORD s_lastHealth = 0;
-        static int s_moveTotal = 0, s_downTotal = 0, s_upTotal = 0;
+        static int s_moveTotal = 0, s_downTotal = 0;
         s_moveTotal += overlayMoves;
         s_downTotal += overlayDown ? 1 : 0;
-        s_upTotal   += overlayUp ? 1 : 0;
         const DWORD hnow = GetTickCount();
         if (s_lastHealth == 0 || (hnow - s_lastHealth) >= 1000)
         {
@@ -2252,8 +2583,8 @@ void VR::ProcessMenuInput()
             if (m_Overlay)
                 m_Overlay->GetOverlayFlag(m_MainMenuHandle,
                     vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, &interactive);
-            Game::logMsg("MenuHealth live=%d moves=%d down=%d up=%d | sel=%d(act=%d err=%d) atk=%d(act=%d err=%d) LEGACY=%d(%.2f) | interactive=%d vis=%d tip=%d ctrlPose=%d aim=(%d,%d)",
-                         (int)inputLive, s_moveTotal, s_downTotal, s_upTotal,
+            Game::logMsg("MenuHealth live=%d moves=%d down=%d | sel=%d(act=%d err=%d) atk=%d(act=%d err=%d) LEGACY=%d(%.2f) | interactive=%d vis=%d tip=%d ctrlPose=%d aim=(%d,%d)",
+                         (int)inputLive, s_moveTotal, s_downTotal,
                          (int)selDown, selActive, selErr,
                          (int)atkDown, atkActive, atkErr,
                          (int)legacyDown, legacyAxis,
@@ -2276,7 +2607,6 @@ void VR::ProcessMenuInput()
     if (!m_Input || !actionsLive)
         return;
 
-    static DWORD s_lastClick = 0;
     if (armTrace) Game::logMsg("  f=%d -> polling OpenVR actions", s_menuFrames);
     // Legacy trigger is included as a click source. The action-system path has
     // never once produced a press in any log, while the overlay laser tracks
@@ -2291,24 +2621,9 @@ void VR::ProcessMenuInput()
         || PressedDigitalAction(m_ActionPrimaryAttack, true)
         || legacyEdge;
     if (armTrace) Game::logMsg("  f=%d <- actions polled", s_menuFrames);
+    if (pressed)
+        click("trigger");
     const DWORD now = GetTickCount();
-    if (pressed && (now - s_lastClick) > 350)
-    {
-        g_pendHwnd = hwnd;
-        g_pendMouseDown = true;
-        g_pendMouseUp = true;
-        if (m_MenuUseVguiInternal)
-            SafeVguiClick(input);
-        s_lastClick = now;
-        static int s_clicks = 0;
-        if (s_clicks < 10)
-        {
-            Game::logMsg("Menu click #%d at (%d,%d) hwnd=%p fg=%d",
-                         s_clicks, g_lastCursorX, g_lastCursorY, hwnd,
-                         MenuInput::g_foreground.load());
-            ++s_clicks;
-        }
-    }
 
     static DWORD s_lastBack = 0;
     if (PressedDigitalAction(m_MenuBack, true) || PressedDigitalAction(m_Pause, true))
@@ -2502,6 +2817,13 @@ void VR::ProcessInput()
     {
         MoveCmd("-attack2");
     }
+
+    // GE:S aim mode is +aimmode (SHIFT on desktop), not +attack2 -- MOUSE2 is
+    // +aimdetonate. Aim mode is what zooms the sniper scope.
+    if (PressedDigitalAction(m_ActionScope))
+        MoveCmd("+aimmode");
+    else
+        MoveCmd("-aimmode");
 
     if (PressedDigitalAction(m_ActionPrevItem, true))
     {
@@ -2922,6 +3244,8 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
             m_SeatHmdPos = m_HmdPose.TrackedDevicePos;
             m_HaveSeatPose = true;
         }
+        // Includes height: sitting captures seat Z, standing increases
+        // TrackedDevicePos.z (Source up) so the camera rises with you.
         m_HmdPosLocalInWorld = (m_HmdPose.TrackedDevicePos - m_SeatHmdPos) * m_VRScale;
         // Same room-frame problem as the hands: leaning/stepping must be
         // rotated into the game's turned frame or roomscale drifts off-axis.
@@ -2944,14 +3268,50 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     if (halfIpd > 2.6f) halfIpd = 2.6f;
 
     Vector eyeOrigin = setup.origin + m_HmdPosLocalInWorld;
+    eyeOrigin.z += m_HeightOffsetMeters * m_VRScale;
 
     left.origin = eyeOrigin + (m_HmdRight * (-halfIpd));
     right.origin = eyeOrigin + (m_HmdRight * (halfIpd));
     left.angles = hmdAng;
     right.angles = hmdAng;
 
-    left.fov = m_Fov;
-    right.fov = m_Fov;
+    // Scope zoom. The engine narrows setup.fov to zoom; the eyes render at the
+    // HMD's FOV and would ignore it. Apply the same tan-ratio to the eye FOV,
+    // which magnifies the whole view by the scope's power. The ratio is immune
+    // to Source widening the FOV for aspect, which scales both tans equally.
+    // Base FOV is only relearned after the grip has been up for a moment, so a
+    // zoom still animating back out is not mistaken for the unzoomed FOV.
+    float eyeFov = m_Fov;
+    const bool scopeHeld = PressedDigitalAction(m_ActionScope);
+    if (!scopeHeld)
+    {
+        if (++m_ScopeReleasedFrames > 30 || m_ScopeBaseFov < 1.0f)
+            m_ScopeBaseFov = setup.fov;
+    }
+    else
+    {
+        m_ScopeReleasedFrames = 0;
+    }
+    float scopeRatio = 1.0f;
+    if (m_ScopeZoom && scopeHeld && setup.fov > 1.0f && m_ScopeBaseFov > setup.fov)
+    {
+        const float d2r = 3.14159265f / 180.0f;
+        scopeRatio = tanf(setup.fov * 0.5f * d2r) / tanf(m_ScopeBaseFov * 0.5f * d2r);
+        if (scopeRatio < 0.95f)
+            eyeFov = 2.0f * atanf(tanf(m_Fov * 0.5f * d2r) * scopeRatio) / d2r;
+    }
+    static bool s_wasScoped = false;
+    static float s_loggedRatio = 1.0f;
+    if (scopeHeld != s_wasScoped || (scopeHeld && fabsf(scopeRatio - s_loggedRatio) > 0.1f))
+    {
+        Game::logMsg("Scope held=%d engineFov=%.1f baseFov=%.1f ratio=%.2f eyeFov=%.1f",
+                     (int)scopeHeld, setup.fov, m_ScopeBaseFov, scopeRatio, eyeFov);
+        s_wasScoped = scopeHeld;
+        s_loggedRatio = scopeRatio;
+    }
+
+    left.fov = eyeFov;
+    right.fov = eyeFov;
     // A 106-degree viewmodel FOV drags the weapon toward the centre of view and
     // makes it disagree with world-space muzzle effects. 0 keeps the world FOV.
     const float vmFov = (m_ViewmodelFov > 1.0f) ? m_ViewmodelFov : m_Fov;
@@ -3161,6 +3521,7 @@ void VR::ResetPosition()
     m_CameraAnchor += m_SetupOrigin - m_HmdPosAbs;
     m_HeightOffset += m_SetupOrigin.z - m_HmdPosAbs.z;
     m_HaveSeatPose = false;
+    Game::logMsg("ResetPosition: seat recapture on next pose (stand/sit recenter)");
 }
 
 void VR::CreateWristOverlays()
@@ -3169,8 +3530,6 @@ void VR::CreateWristOverlays()
         return;
 
     struct { vr::VROverlayHandle_t *handle; const char *key; } overlays[] = {
-        { &m_WristWatchHandle, "GESVRWristWatch" },
-        { &m_WristAmmoHandle,  "GESVRWristAmmo" },
         { &m_HurtHUDHandle,    "GESVRHurtHUD" },
     };
 
@@ -3186,14 +3545,6 @@ void VR::CreateWristOverlays()
         m_Overlay->SetOverlayFlag(*entry.handle, vr::VROverlayFlags_IsPremultiplied, true);
         m_Overlay->HideOverlay(*entry.handle);
     }
-}
-
-void VR::HideWristOverlays()
-{
-    if (!m_Overlay)
-        return;
-    if (m_WristWatchHandle) m_Overlay->HideOverlay(m_WristWatchHandle);
-    if (m_WristAmmoHandle)  m_Overlay->HideOverlay(m_WristAmmoHandle);
 }
 
 static bool ReadablePtr(const void *p, size_t bytes)
@@ -3227,6 +3578,9 @@ static bool ReadableCString(const char *s)
     return false;
 }
 
+// Source 2007 RecvProp is 60 bytes. This stub used to stop at m_Offset (48),
+// so indexing m_pProps[i] walked off into garbage after the first prop and
+// m_iHealth was never found -- every session, since the day it was written.
 struct RecvPropStub
 {
     const char *m_pVarName;
@@ -3241,6 +3595,9 @@ struct RecvPropStub
     void *m_DataTableProxyFn;
     void *m_pDataTable;
     int m_Offset;
+    int m_ElementStride;
+    int m_nElements;
+    const char *m_pParentArrayPropName;
 };
 
 struct RecvTableStub
@@ -3300,17 +3657,67 @@ static int FindNetvarInTable(RecvTableStub *table, const char *wanted, int extra
     return -1;
 }
 
+static bool NameHas(const char *name, const char *part)
+{
+    for (const char *p = name; *p; ++p)
+    {
+        const char *a = p, *b = part;
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) { ++a; ++b; }
+        if (!*b)
+            return true;
+    }
+    return false;
+}
+
+// First of several candidate names that resolves in this table.
+static int FindAnyNetvar(RecvTableStub *table, std::initializer_list<const char *> names)
+{
+    for (const char *n : names)
+    {
+        const int off = FindNetvarInTable(table, n);
+        if (off >= 0)
+            return off;
+    }
+    return -1;
+}
+
+// Every prop name in a table (top level), for discovering what a class
+// networks. Only used on the few classes that might hold a round timer.
+static void LogTableProps(const char *className, RecvTableStub *table)
+{
+    if (!table || !ReadablePtr(table, sizeof(RecvTableStub)) || table->m_nProps <= 0 || table->m_nProps > 512)
+        return;
+    std::string line;
+    for (int i = 0; i < table->m_nProps; ++i)
+    {
+        RecvPropStub *prop = &table->m_pProps[i];
+        if (!ReadablePtr(prop, sizeof(RecvPropStub)) || !ReadableCString(prop->m_pVarName))
+            continue;
+        line += prop->m_pVarName;
+        line += ' ';
+        if (line.size() > 900)
+            break;
+    }
+    Game::logMsg("NETVARS %s: %s", className, line.c_str());
+}
+
+// Round timer, if GE:S networks one. Found by class name and prop name, since
+// neither is known for certain; everything found is logged either way.
+static ClientClassStub *g_timerClass = nullptr;
+static int g_timerEndOff = -1, g_timerRemainOff = -1, g_timerPausedOff = -1, g_timerDisabledOff = -1;
+static int g_timerEnabledOff = -1;
+// The local player's m_flSimulationTime: server time of its last update,
+// which is "now" for comparing against the timer's end time.
+static int g_playerSimTimeOff = -1;
+
 void VR::ResolvePlayerNetvars()
 {
     if (m_HealthNetvar >= 0)
         return;
 
-    // This only cached on SUCCESS. On failure it re-walked every client class
-    // and every recv table on the NEXT frame, and the next, forever -- 598 full
-    // scans in one 80-second session once UpdateHurtHUD started calling it.
-    // GE:S may simply not expose m_iHealth where this looks, so failure has to
-    // be cached too. Retry occasionally in case the class list is not populated
-    // yet at map load, then stop.
+    // Failure is cached too, with a few retries in case the class list is not
+    // populated yet at map load: one early build re-walked every table every
+    // frame, 598 full scans in 80 seconds.
     static DWORD s_lastTry = 0;
     static int s_attempts = 0;
     const DWORD now = GetTickCount();
@@ -3353,30 +3760,273 @@ void VR::ResolvePlayerNetvars()
     if (!head)
         return;
 
+    // One pass over every class: the local player's values, the weapon's clip
+    // (the same offset in every weapon class, all derive from
+    // CBaseCombatWeapon) and any round timer.
+    int player = -1;
     for (ClientClassStub *cc = head; cc && ReadablePtr(cc, sizeof(ClientClassStub)); cc = cc->m_pNext)
     {
         if (!ReadableCString(cc->m_pNetworkName))
             break;
         const char *name = cc->m_pNetworkName;
+        RecvTableStub *table = cc->m_pRecvTable;
+
         const bool isPlayer = strstr(name, "Player") != nullptr && strstr(name, "Resource") == nullptr;
-        if (!isPlayer)
-            continue;
-
-        int health = FindNetvarInTable(cc->m_pRecvTable, "m_iHealth");
-        int armor = FindNetvarInTable(cc->m_pRecvTable, "m_ArmorValue");
-        if (armor < 0)
-            armor = FindNetvarInTable(cc->m_pRecvTable, "m_iArmor");
-        if (armor < 0)
-            armor = FindNetvarInTable(cc->m_pRecvTable, "m_Armor");
-
-        if (health >= 0)
+        if (isPlayer)
         {
-            m_HealthNetvar = health;
-            m_ArmorNetvar = armor;
-            Game::logMsg("Player netvars on %s: m_iHealth=%d armor=%d", name, health, armor);
-            return;
+            const int health = FindNetvarInTable(table, "m_iHealth");
+            const int armor = (health >= 0)
+                ? FindAnyNetvar(table, { "m_ArmorValue", "m_iArmor", "m_Armor", "m_iArmorValue" }) : -1;
+            // The class list is in registration order, so CBasePlayer can come
+            // before GE:S's own player class -- and only the derived class
+            // sends armour. Take the first match, but let a later class that
+            // does network armour replace one that did not.
+            if (health >= 0 && (player < 0 || (m_ArmorNetvar < 0 && armor >= 0)))
+            {
+                player = health;
+                m_ArmorNetvar = armor;
+                m_MaxHealthNetvar = FindAnyNetvar(table, { "m_iMaxHealth" });
+                m_MaxArmorNetvar = FindAnyNetvar(table, { "m_iMaxArmor", "m_iMaxArmorValue" });
+                m_ActiveWeaponNetvar = FindAnyNetvar(table, { "m_hActiveWeapon" });
+                m_AmmoNetvar = FindAnyNetvar(table, { "m_iAmmo" });
+                m_TickBaseNetvar = FindAnyNetvar(table, { "m_nTickBase" });
+                g_playerSimTimeOff = FindAnyNetvar(table, { "m_flSimulationTime" });
+                Game::logMsg("Player netvars on %s: health=%d armor=%d maxHealth=%d maxArmor=%d activeWeapon=%d ammo=%d tickBase=%d simTime=%d",
+                             name, health, m_ArmorNetvar, m_MaxHealthNetvar, m_MaxArmorNetvar,
+                             m_ActiveWeaponNetvar, m_AmmoNetvar, m_TickBaseNetvar, g_playerSimTimeOff);
+            }
+        }
+
+        if (m_Clip1Netvar < 0)
+        {
+            const int clip = FindNetvarInTable(table, "m_iClip1");
+            if (clip >= 0)
+            {
+                m_Clip1Netvar = clip;
+                m_PrimaryAmmoTypeNetvar = FindAnyNetvar(table, { "m_iPrimaryAmmoType" });
+                m_ViewModelIndexNetvar = FindAnyNetvar(table, { "m_iViewModelIndex" });
+                Game::logMsg("Weapon netvars on %s: clip1=%d primaryAmmoType=%d viewModelIndex=%d",
+                             name, clip, m_PrimaryAmmoTypeNetvar, m_ViewModelIndexNetvar);
+            }
+        }
+
+        if (NameHas(name, "timer") || NameHas(name, "gamerules") || NameHas(name, "round"))
+        {
+            LogTableProps(name, table);
+            if (NameHas(name, "timer"))
+            {
+                const int end = FindAnyNetvar(table, { "m_flTimerEndTime", "m_flEndTime", "m_flTimerEnd", "m_flRoundEndTime" });
+                // A round timer beats a match timer; either beats nothing.
+                if (end >= 0 && (!g_timerClass || NameHas(name, "round")))
+                {
+                    g_timerClass = cc;
+                    g_timerEndOff = end;
+                    // CGEGameTimer (GE:S) networks m_bEnabled m_bStarted m_bPaused
+                    // m_flPauseTimeRemaining m_flLength m_flEndTime.
+                    g_timerRemainOff = FindAnyNetvar(table, { "m_flPauseTimeRemaining", "m_flTimeRemaining", "m_flTimerRemaining", "m_flTimeLeft" });
+                    g_timerPausedOff = FindAnyNetvar(table, { "m_bPaused", "m_bTimerPaused", "m_bIsPaused" });
+                    g_timerDisabledOff = FindAnyNetvar(table, { "m_bIsDisabled", "m_bDisabled" });
+                    g_timerEnabledOff = FindAnyNetvar(table, { "m_bEnabled", "m_bIsEnabled" });
+                    Game::logMsg("Round timer candidate %s: end=%d remaining=%d paused=%d disabled=%d enabled=%d",
+                                 name, end, g_timerRemainOff, g_timerPausedOff, g_timerDisabledOff, g_timerEnabledOff);
+                }
+            }
         }
     }
+    if (player >= 0 && !g_timerClass)
+        Game::logMsg("No round timer class found (watch will show NO TIME LIMIT)");
+    m_HealthNetvar = player;
+}
+
+static ClientClassStub *CallGetClientClass(void *networkable)
+{
+    __try
+    {
+        void **vt = *reinterpret_cast<void ***>(networkable);
+        return reinterpret_cast<ClientClassStub *(__thiscall *)(void *)>(vt[2])(networkable);
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        return nullptr;
+    }
+}
+
+static bool ReadI32(const void *base, int off, int &out)
+{
+    if (!base || off < 0 || !ReadablePtr((const char *)base + off, sizeof(int)))
+        return false;
+    out = *reinterpret_cast<const int *>((const char *)base + off);
+    return true;
+}
+
+static bool ReadF32(const void *base, int off, float &out)
+{
+    if (!base || off < 0 || !ReadablePtr((const char *)base + off, sizeof(float)))
+        return false;
+    out = *reinterpret_cast<const float *>((const char *)base + off);
+    return true;
+}
+
+int VR::ReadRoundTimeLeft(void *player)
+{
+    if (!g_timerClass || !m_Game || !m_Game->m_ClientEntityList)
+        return -1;
+    IClientEntityList *list = m_Game->m_ClientEntityList;
+
+    // Find the timer entity: the one whose networkable reports our class.
+    // Rescanned every 2 s until found, and whenever the cached one stops
+    // matching (map change).
+    static int s_index = -1;
+    static ULONGLONG s_lastScan = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (s_index >= 0)
+    {
+        void *net = list->GetClientNetworkable(s_index);
+        if (!net || CallGetClientClass(net) != g_timerClass)
+            s_index = -1;
+    }
+    if (s_index < 0)
+    {
+        if (now - s_lastScan < 2000)
+            return -1;
+        s_lastScan = now;
+        int highest = list->GetHighestEntityIndex();
+        if (highest > 4096) highest = 4096;
+        for (int i = 1; i <= highest && s_index < 0; ++i)
+        {
+            void *net = list->GetClientNetworkable(i);
+            if (net && ReadablePtr(net, sizeof(void *)) && CallGetClientClass(net) == g_timerClass)
+                s_index = i;
+        }
+        if (s_index < 0)
+            return -1;
+        Game::logMsg("Round timer entity at index %d", s_index);
+    }
+    void *timer = list->GetClientEntity(s_index);
+    if (!timer)
+        return -1;
+
+    int flag = 0;
+    if (ReadI32(timer, g_timerDisabledOff, flag) && (flag & 0xFF))
+        return -1;
+    if (ReadI32(timer, g_timerEnabledOff, flag) && !(flag & 0xFF))
+        return -1;   // no time limit in this mode
+
+    // "Now" in server time. The player's simulation time is exact; the tick
+    // base times Source's default 15 ms tick is the fallback. (Measuring the
+    // tick rate instead came out at 1/67 s and drifted a few seconds an hour.)
+    float nowGame = 0.0f;
+    int tick = 0;
+    if (!ReadF32(player, g_playerSimTimeOff, nowGame) || nowGame <= 0.0f)
+    {
+        if (!ReadI32(player, m_TickBaseNetvar, tick) || tick <= 0)
+            return -1;
+        nowGame = tick * 0.015f;
+    }
+
+    float remaining = -1.0f;
+    int paused = 0;
+    if (ReadI32(timer, g_timerPausedOff, paused) && (paused & 0xFF))
+        ReadF32(timer, g_timerRemainOff, remaining);
+    else
+    {
+        float end = 0.0f;
+        if (ReadF32(timer, g_timerEndOff, end) && end > 0.0f)
+            remaining = end - nowGame;
+    }
+
+    static ULONGLONG s_lastLog = 0;
+    if (now - s_lastLog > 10000)
+    {
+        s_lastLog = now;
+        Game::logMsg("Round timer: remaining=%.1f now=%.2f (%s) paused=%d",
+                     remaining, nowGame, tick ? "tickbase" : "simtime", paused & 0xFF);
+    }
+    if (remaining < 0.0f || remaining > 36000.0f)
+        return -1;
+    return (int)ceilf(remaining);
+}
+
+// The held weapon's viewmodel path, from the weapon's own m_iViewModelIndex.
+// The old source -- whichever v_ model DrawModelExecute saw last -- named the
+// shotgun "slappers": GE:S draws the slapper hands after the gun. 10 Hz.
+void VR::RefreshActiveWeapon()
+{
+    static ULONGLONG s_last = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now - s_last < 100)
+        return;
+    s_last = now;
+
+    ResolvePlayerNetvars();
+    if (m_ViewModelIndexNetvar < 0 || m_ActiveWeaponNetvar < 0 || !m_Game || !m_Game->m_EngineClient ||
+        !m_Game->m_ClientEntityList || !m_Game->m_ModelInfo)
+        return;
+    CBaseEntity *ent = m_Game->GetClientEntity(m_Game->m_EngineClient->GetLocalPlayer());
+    int handle = -1, index = 0;
+    if (!ent || !ReadI32(ent, m_ActiveWeaponNetvar, handle) || handle == -1)
+        return;
+    void *weapon = m_Game->m_ClientEntityList->GetClientEntityFromHandle(handle);
+    if (!weapon || !ReadablePtr(weapon, sizeof(void *)) ||
+        !ReadI32(weapon, m_ViewModelIndexNetvar, index) || index <= 0 || index > 16384)
+        return;
+    void *model = m_Game->m_ModelInfo->GetModel(index);
+    if (!model)
+        return;
+    const char *name = m_Game->m_ModelInfo->GetModelName(model);
+    if (!name || !ReadablePtr(name, 1))
+        return;
+    char buf[160];
+    size_t n = 0;
+    for (; n + 1 < sizeof(buf) && ReadablePtr(name + n, 1) && name[n]; ++n)
+        buf[n] = name[n];
+    buf[n] = 0;
+    if (n < 4)
+        return;
+    if (m_Game->m_ActiveWeaponModel != buf)
+    {
+        Game::logMsg("Active weapon %s (viewmodel index %d)", buf, index);
+        m_Game->m_ActiveWeaponModel = buf;
+    }
+    m_WeaponFromNetvar = true;
+}
+
+void VR::ReadWatchStats(WatchStats &s)
+{
+    s = WatchStats{};
+    if (!m_Game)
+        return;
+    RefreshActiveWeapon();
+    s.weaponModel = m_Game->m_ActiveWeaponModel;
+
+    ResolvePlayerNetvars();
+    if (m_HealthNetvar < 0 || !m_Game->m_EngineClient)
+        return;
+    CBaseEntity *ent = m_Game->GetClientEntity(m_Game->m_EngineClient->GetLocalPlayer());
+    if (!ent)
+        return;
+
+    int v = 0;
+    if (ReadI32(ent, m_HealthNetvar, v) && v >= 0 && v <= 1000) s.health = v;
+    if (ReadI32(ent, m_ArmorNetvar, v) && v >= 0 && v <= 1000) s.armor = v;
+    if (ReadI32(ent, m_MaxHealthNetvar, v) && v > 0 && v <= 1000) s.maxHealth = v;
+    if (ReadI32(ent, m_MaxArmorNetvar, v) && v > 0 && v <= 1000) s.maxArmor = v;
+
+    int handle = -1;
+    if (m_Game->m_ClientEntityList && ReadI32(ent, m_ActiveWeaponNetvar, handle) && handle != -1)
+    {
+        void *weapon = m_Game->m_ClientEntityList->GetClientEntityFromHandle(handle);
+        if (weapon && ReadablePtr(weapon, sizeof(void *)))
+        {
+            if (ReadI32(weapon, m_Clip1Netvar, v) && v >= 0 && v < 1000) s.clip = v;
+            int type = -1;
+            if (m_AmmoNetvar >= 0 && ReadI32(weapon, m_PrimaryAmmoTypeNetvar, type) && type >= 0 && type < 32 &&
+                ReadI32(ent, m_AmmoNetvar + type * 4, v) && v >= 0 && v < 10000)
+                s.reserve = v;
+        }
+    }
+
+    s.timeLeft = ReadRoundTimeLeft(ent);
 }
 
 int VR::ReadLocalHealth()
@@ -3429,190 +4079,6 @@ bool VR::IsLookingAtOffhandWatch()
     return m_LookingAtWrist;
 }
 
-void VR::SubmitWristOverlay(vr::VROverlayHandle_t handle, vr::TrackedDeviceIndex_t handIndex,
-    const Vector &right, const Vector &up, const Vector &backward,
-    const Vector &offset, float width, const vr::VRTextureBounds_t &bounds)
-{
-    if (!handle || !m_Overlay)
-        return;
-
-    m_Overlay->SetOverlayWidthInMeters(handle, width);
-
-    // Config offset is (forward, left, up). OpenVR device space is (right, up, back).
-    vr::HmdMatrix34_t xf = {
-        right.x, up.x, backward.x, -offset.y,
-        right.y, up.y, backward.y,  offset.z,
-        right.z, up.z, backward.z, -offset.x
-    };
-    m_Overlay->SetOverlayTransformTrackedDeviceRelative(handle, handIndex, &xf);
-    m_Overlay->SetOverlayTextureBounds(handle, &bounds);
-    SetOverlayTextureLocked(m_Overlay, handle, &m_VKHUD.m_VRTexture);
-    m_Overlay->ShowOverlay(handle);
-}
-
-// Parse a crop key written as four fractions: u0 v0 u1 v1.
-static void CfgCrop(const std::unordered_map<std::string, std::string> &cfg,
-                    const char *key, float out[4])
-{
-    auto it = cfg.find(key);
-    if (it == cfg.end())
-        return;
-    float v[4];
-    if (sscanf(it->second.c_str(), "%f %f %f %f", &v[0], &v[1], &v[2], &v[3]) != 4)
-    {
-        Game::logMsg("config: %s needs four numbers 'u0 v0 u1 v1', ignoring", key);
-        return;
-    }
-    for (int i = 0; i < 4; ++i)
-    {
-        if (v[i] < 0.0f) v[i] = 0.0f;
-        if (v[i] > 1.0f) v[i] = 1.0f;
-    }
-    if (v[2] <= v[0] || v[3] <= v[1])
-    {
-        Game::logMsg("config: %s is empty or inverted, ignoring", key);
-        return;
-    }
-    for (int i = 0; i < 4; ++i)
-        out[i] = v[i];
-}
-
-// Head-tap gesture, in the spirit of HaloCEVR's flashlight tap.
-//
-// A tap on the side of the headset shows up as a sharp step in the HMD's
-// reported linear velocity: the head barely moves, but it moves FAST for one
-// or two frames. Comparing velocity frame to frame gives an acceleration proxy
-// without any extra tracking. Ordinary looking around produces smooth, much
-// smaller steps, so a threshold plus a cooldown separates the two; the cooldown
-// also stops one physical tap toggling several times.
-//
-// The largest jolt seen is logged periodically. If taps are not registering,
-// that line says what your taps actually produce, so HudTapThreshold can be set
-// from the log rather than guessed at.
-void VR::DetectHeadTap()
-{
-    const unsigned now = (unsigned)GetTickCount();
-
-    // Fallback toggle. The key is polled on the MenuInput thread, which owns
-    // all USER32 -- calling GetAsyncKeyState from here would put a USER32 call
-    // on the Present callstack, which is the exact rule whose violation inside
-    // DXVK caused the re-entrant Present freeze.
-    const unsigned toggleSeq = MenuInput::g_hudToggleSeq.load();
-    if (toggleSeq != m_LastHudToggleSeq)
-    {
-        m_LastHudToggleSeq = toggleSeq;
-        m_HudElementsVisible = !m_HudElementsVisible;
-        Game::logMsg("HUD toggle key -> HUD elements %s",
-                     m_HudElementsVisible ? "ON" : "OFF");
-    }
-
-    if (!m_HudTapToggle)
-        return;
-
-    const vr::TrackedDevicePose_t &hmd = m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
-    if (!hmd.bPoseIsValid)
-    {
-        m_HaveHeadVel = false;
-        return;
-    }
-
-    // Derive motion from POSITION, not from the pose's vVelocity field.
-    //
-    // vVelocity read 0.00-0.03 for an entire session including plenty of head
-    // movement -- this runtime simply does not populate it -- so no tap could
-    // ever cross any threshold. Position is tracked properly, so difference it
-    // here: once for velocity, again for the jolt that a tap produces.
-    const vr::HmdMatrix34_t &hm = hmd.mDeviceToAbsoluteTracking;
-    const Vector pos(hm.m[0][3], hm.m[1][3], hm.m[2][3]);
-
-    float dt = (m_LastHeadSampleMs == 0) ? 0.0f : (float)(now - m_LastHeadSampleMs) * 0.001f;
-    m_LastHeadSampleMs = now;
-    if (dt < 0.004f) dt = 0.004f;
-    if (dt > 0.100f) dt = 0.100f;
-
-    if (!m_HaveHeadVel)
-    {
-        m_PrevHeadPos = pos;
-        m_PrevHeadVel = Vector(0.0f, 0.0f, 0.0f);
-        m_HaveHeadVel = true;
-        return;
-    }
-
-    const Vector d(pos.x - m_PrevHeadPos.x, pos.y - m_PrevHeadPos.y, pos.z - m_PrevHeadPos.z);
-    m_PrevHeadPos = pos;
-    const Vector vel(d.x / dt, d.y / dt, d.z / dt);
-    const Vector dv(vel.x - m_PrevHeadVel.x, vel.y - m_PrevHeadVel.y, vel.z - m_PrevHeadVel.z);
-    m_PrevHeadVel = vel;
-
-    // Vector::Length is declared by the SDK header but not linked here.
-    const float jolt = sqrtf(dv.x * dv.x + dv.y * dv.y + dv.z * dv.z);
-    if (jolt > m_MaxJoltSeen)
-        m_MaxJoltSeen = jolt;
-    if (m_LastJoltLogMs == 0 || (now - m_LastJoltLogMs) > 3000)
-    {
-        m_LastJoltLogMs = now;
-        Game::logMsg("HeadTap: max jolt over last 3s = %.2f (threshold %.2f)",
-                     m_MaxJoltSeen, m_HudTapThreshold);
-        m_MaxJoltSeen = 0.0f;
-    }
-
-    if (jolt < m_HudTapThreshold)
-        return;
-    if (m_LastHeadTapMs != 0 && (now - m_LastHeadTapMs) < (unsigned)m_HudTapCooldownMs)
-        return;
-
-    m_LastHeadTapMs = now;
-    m_HudElementsVisible = !m_HudElementsVisible;
-    Game::logMsg("Head tap detected (jolt=%.2f) -> HUD elements %s",
-                 jolt, m_HudElementsVisible ? "ON" : "OFF");
-}
-
-// One head-locked HUD element, cropped out of the captured frame.
-void VR::ShowHudElement(vr::VROverlayHandle_t h, const float crop[4],
-                        float x, float y, float dist, float width)
-{
-    if (!h)
-        return;
-
-    // HMD space is +x right, +y up, -z forward.
-    vr::HmdMatrix34_t xf = {
-        1.0f, 0.0f, 0.0f, x,
-        0.0f, 1.0f, 0.0f, y,
-        0.0f, 0.0f, 1.0f, -dist
-    };
-    m_Overlay->SetOverlayTransformTrackedDeviceRelative(
-        h, vr::k_unTrackedDeviceIndex_Hmd, &xf);
-    m_Overlay->SetOverlayWidthInMeters(h, width);
-
-    vr::VRTextureBounds_t b = { crop[0], crop[1], crop[2], crop[3] };
-    m_Overlay->SetOverlayTextureBounds(h, &b);
-    SetOverlayTextureLocked(m_Overlay, h, &m_VKHUD.m_VRTexture);
-    m_Overlay->ShowOverlay(h);
-}
-
-void VR::UpdateHudElements()
-{
-    if (!m_Overlay)
-        return;
-
-    const bool haveTex = TextureReady(m_VKHUD);
-
-    // Foes counter and ammo: carried in view, toggled by the tap.
-    if (m_HudElementsVisible && haveTex)
-    {
-        ShowHudElement(m_HudFoesHandle, m_HudFoesCrop,
-                       m_HudFoesX, m_HudFoesY, m_HudFoesDistance, m_HudFoesWidth);
-        ShowHudElement(m_HudAmmoHandle, m_HudAmmoCrop,
-                       m_HudAmmoX, m_HudAmmoY, m_HudAmmoDistance, m_HudAmmoWidth);
-    }
-    else
-    {
-        if (m_HudFoesHandle) m_Overlay->HideOverlay(m_HudFoesHandle);
-        if (m_HudAmmoHandle) m_Overlay->HideOverlay(m_HudAmmoHandle);
-    }
-
-}
-
 // Run user-supplied console commands once the map is up.
 //
 // The menu is sharp until the world loads and sharp again on the very last
@@ -3660,45 +4126,6 @@ void VR::ApplyExtraCvars()
         }
         start = end + 1;
     }
-}
-
-void VR::UpdateWristHUD()
-{
-    if (!m_ShowWristHUD || !m_Overlay || !m_RenderedHud)
-    {
-        HideWristOverlays();
-        return;
-    }
-
-    const vr::ETrackedControllerRole offHand = m_LeftHanded
-        ? vr::TrackedControllerRole_RightHand
-        : vr::TrackedControllerRole_LeftHand;
-    vr::TrackedDeviceIndex_t handIndex = m_System->GetTrackedDeviceIndexForControllerRole(offHand);
-
-    if (handIndex == vr::k_unTrackedDeviceIndexInvalid || !m_Poses[handIndex].bPoseIsValid
-        || !IsLookingAtOffhandWatch())
-    {
-        HideWristOverlays();
-        return;
-    }
-
-    Vector right(1, 0, 0);
-    Vector up(0, 1, 0);
-    Vector backward(0, 0, 1);
-
-    // roll, pitch, yaw in degrees — same order as HaloCEVR's watch face
-    right = VectorRotate(right, Vector(0, 0, 1), m_WristRotationDeg.x);
-    up = VectorRotate(up, Vector(0, 0, 1), m_WristRotationDeg.x);
-    right = VectorRotate(right, Vector(1, 0, 0), m_WristRotationDeg.y);
-    up = VectorRotate(up, Vector(1, 0, 0), m_WristRotationDeg.y);
-    backward = VectorRotate(backward, Vector(1, 0, 0), m_WristRotationDeg.y);
-    right = VectorRotate(right, Vector(0, 1, 0), m_WristRotationDeg.z);
-    backward = VectorRotate(backward, Vector(0, 1, 0), m_WristRotationDeg.z);
-
-    SubmitWristOverlay(m_WristWatchHandle, handIndex, right, up, backward,
-        m_WristOffset + m_WristWatchFineOffset, m_WristWatchWidth, m_WristWatchBounds);
-    SubmitWristOverlay(m_WristAmmoHandle, handIndex, right, up, backward,
-        m_WristOffset + m_WristAmmoFineOffset, m_WristAmmoWidth, m_WristAmmoBounds);
 }
 
 void VR::UpdateHurtHUD()
@@ -3908,11 +4335,8 @@ void VR::ParseConfigFile()
     m_PerWeaponOffsets = CfgBool(userConfig, "PerWeaponOffsets", m_PerWeaponOffsets);
     m_TwoHandedGrip = CfgBool(userConfig, "TwoHandedGrip", m_TwoHandedGrip);
     m_TwoHandedNeedsGrip = CfgBool(userConfig, "TwoHandedNeedsGrip", m_TwoHandedNeedsGrip);
-    {
-        auto it = userConfig.find("MenuAimSource");
-        if (it != userConfig.end())
-            m_MenuAimSource = (it->second.find("controller") != std::string::npos) ? 1 : 0;
-    }
+    m_ScopeZoom = CfgBool(userConfig, "ScopeZoom", m_ScopeZoom);
+    m_HeightOffsetMeters = CfgFloat(userConfig, "HeightOffsetMeters", m_HeightOffsetMeters);
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_DrawMenuCursor = CfgBool(userConfig, "DrawMenuCursor", m_DrawMenuCursor);
     dxvk::g_GESVR_DrawReticle = CfgBool(userConfig, "VRReticle", true);
@@ -3923,35 +4347,26 @@ void VR::ParseConfigFile()
         // string helper, only CfgBool/CfgFloat/CfgVec.
         auto it = userConfig.find("VRReticleStyle");
         if (it != userConfig.end())
+        {
+            const std::string &v = it->second;
             dxvk::g_GESVR_ReticleStyle =
-                (it->second.find("cross") != std::string::npos) ? 0 : 1;
+                (v.find("cross") != std::string::npos) ? 0 :
+                (v.find("ringdot") != std::string::npos || v.find("ring+dot") != std::string::npos) ? 3 :
+                (v.find("ring") != std::string::npos) ? 2 : 1;
+        }
+    }
+    {
+        auto it = userConfig.find("VRReticleColor");
+        if (it != userConfig.end())
+        {
+            static const char *names[] = { "yellow", "white", "green", "red", "cyan" };
+            for (int i = 0; i < 5; ++i)
+                if (it->second.find(names[i]) != std::string::npos)
+                    dxvk::g_GESVR_ReticleColor = i;
+        }
     }
     dxvk::g_GESVR_ForceMenuOpaque = CfgBool(userConfig, "ForceMenuOpaque", true);
-    m_HudTapToggle = CfgBool(userConfig, "HudTapToggle", m_HudTapToggle);
-    m_HudTapThreshold = CfgFloat(userConfig, "HudTapThreshold", m_HudTapThreshold);
-    m_HudTapCooldownMs = (int)CfgFloat(userConfig, "HudTapCooldownMs", (float)m_HudTapCooldownMs);
-    m_HudToggleKey = (int)CfgFloat(userConfig, "HudToggleKey", (float)m_HudToggleKey);
-    MenuInput::g_hudToggleKey.store(m_HudToggleKey);
-    m_HudElementsVisible = CfgBool(userConfig, "HudElementsDefaultOn", m_HudElementsVisible);
 
-    m_HudFoesX = CfgFloat(userConfig, "HudFoesX", m_HudFoesX);
-    m_HudFoesY = CfgFloat(userConfig, "HudFoesY", m_HudFoesY);
-    m_HudFoesDistance = CfgFloat(userConfig, "HudFoesDistance", m_HudFoesDistance);
-    m_HudFoesWidth = CfgFloat(userConfig, "HudFoesWidth", m_HudFoesWidth);
-
-    m_HudAmmoX = CfgFloat(userConfig, "HudAmmoX", m_HudAmmoX);
-    m_HudAmmoY = CfgFloat(userConfig, "HudAmmoY", m_HudAmmoY);
-    m_HudAmmoDistance = CfgFloat(userConfig, "HudAmmoDistance", m_HudAmmoDistance);
-    m_HudAmmoWidth = CfgFloat(userConfig, "HudAmmoWidth", m_HudAmmoWidth);
-
-    // Crop rectangles, as fractions of the frame: u0 v0 u1 v1.
-    CfgCrop(userConfig, "HudFoesCrop", m_HudFoesCrop);
-    CfgCrop(userConfig, "HudAmmoCrop", m_HudAmmoCrop);
-    Game::logMsg("HUD: toggleKey=%d tapThreshold=%.2f startVisible=%d "
-                 "foesCrop=%.2f,%.2f-%.2f,%.2f ammoCrop=%.2f,%.2f-%.2f,%.2f",
-                 m_HudToggleKey, m_HudTapThreshold, (int)m_HudElementsVisible,
-                 m_HudFoesCrop[0], m_HudFoesCrop[1], m_HudFoesCrop[2], m_HudFoesCrop[3],
-                 m_HudAmmoCrop[0], m_HudAmmoCrop[1], m_HudAmmoCrop[2], m_HudAmmoCrop[3]);
     m_MenuDriveCursor = CfgBool(userConfig, "MenuDriveCursor", m_MenuDriveCursor);
     m_MenuKeepaliveMs = (int)CfgFloat(userConfig, "MenuKeepaliveMs", (float)m_MenuKeepaliveMs);
     m_ShowMirrorWindow = CfgBool(userConfig, "ShowMirrorWindow", m_ShowMirrorWindow);
@@ -3974,14 +4389,9 @@ void VR::ParseConfigFile()
     m_ShowWristHUD = CfgBool(userConfig, "ShowWristHUD", m_ShowWristHUD);
     m_WristLookMaxDistance = CfgFloat(userConfig, "WristLookMaxDistance", m_WristLookMaxDistance);
     m_WristLookMinDot = CfgFloat(userConfig, "WristLookMinDot", m_WristLookMinDot);
-    m_WristWatchWidth = CfgFloat(userConfig, "WristWatchWidth", m_WristWatchWidth);
-    m_WristAmmoWidth = CfgFloat(userConfig, "WristAmmoWidth", m_WristAmmoWidth);
-    m_WristOffset = CfgVec(userConfig, "WristOffset", m_WristOffset);
-    m_WristRotationDeg = CfgVec(userConfig, "WristRotation", m_WristRotationDeg);
-    m_WristWatchFineOffset = CfgVec(userConfig, "WristWatchOffset", m_WristWatchFineOffset);
-    m_WristAmmoFineOffset = CfgVec(userConfig, "WristAmmoOffset", m_WristAmmoFineOffset);
-    m_WristWatchBounds = CfgBounds(userConfig, "WristWatchUMin", "WristWatchVMin", "WristWatchUMax", "WristWatchVMax", m_WristWatchBounds);
-    m_WristAmmoBounds = CfgBounds(userConfig, "WristAmmoUMin", "WristAmmoVMin", "WristAmmoUMax", "WristAmmoVMax", m_WristAmmoBounds);
+    m_WatchAlwaysVisible = CfgBool(userConfig, "WatchAlwaysVisible", m_WatchAlwaysVisible);
+    m_WatchWidth = CfgFloat(userConfig, "WatchWidth", m_WatchWidth);
+    m_WatchOffset = CfgVec(userConfig, "WatchOffset", m_WatchOffset);
     m_HurtHUDBounds = CfgBounds(userConfig, "HurtHUDUMin", "HurtHUDVMin", "HurtHUDUMax", "HurtHUDVMax", m_HurtHUDBounds);
     m_HurtHUDWidth = CfgFloat(userConfig, "HurtHUDWidth", m_HurtHUDWidth);
     m_HurtHUDDistance = CfgFloat(userConfig, "HurtHUDDistance", m_HurtHUDDistance);

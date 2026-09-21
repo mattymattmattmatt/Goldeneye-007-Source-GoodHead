@@ -118,6 +118,7 @@ public:
 // OpenVR helpers used from DXVK Present/CreateDevice so Theater dies even if Game() is late.
 void GESVR_ClaimSteamVRScene();
 void GESVR_SubmitBackBufferFallback();
+void GESVR_OnProcessDetach();
 
 // === Logging Macros (Debug Only) ===
 #ifdef _DEBUG

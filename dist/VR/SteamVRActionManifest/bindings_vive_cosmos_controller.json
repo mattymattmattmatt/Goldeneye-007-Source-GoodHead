@@ -81,6 +81,15 @@
             {
                "inputs": {
                   "click": {
+                     "output": "/actions/main/in/Scope"
+                  }
+               },
+               "mode": "button",
+               "path": "/user/hand/left/input/grip"
+            },
+            {
+               "inputs": {
+                  "click": {
                      "output": "/actions/main/in/PrimaryAttack"
                   }
                },

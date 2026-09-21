@@ -40,9 +40,9 @@ UseVerticalCrop=true
 # the game and left only a sliver rendering -- that is the landmine recorded in
 # HANDOFF.md, and it also breaks the 2D path, since the menu and HUD still draw
 # to the 1280x720 backbuffer that the overlay capture reads.
-# 1.5 gives 1920x1080 from a 1280x720 window: sharper, nowhere near the cliff.
-# Try EyeRenderTargets=true with this at 1.25 or 1.5 before going higher.
-EyeRenderScale=0.7
+# 1.0 is a safe sharpness bump. 1.25–1.5 if your GPU is happy. Do not use the
+# HMD native size as the window; that is what used to freeze boot.
+EyeRenderScale=1.0
 
 # Floating menu panel size and distance, in metres. The in-game character/level
 # menu was too big and too close; raise the distance and/or drop the width until
@@ -61,8 +61,8 @@ MenuDistanceMeters=1.6
 # This is what the l4d2vr reference does, and its IMatRenderContext vtable is
 # byte-identical to ours, so the call is as safe here as there.
 #
-# Leave false for the first run of this build (so the menu-freeze fix is tested
-# on its own). Once the menu is stable, set true and the double-image should go.
+# Both eyes at window resolution. High-res targets make the left eye
+# sharper but break or crash the right. Leave false.
 EyeRenderTargets=false
 
 # IVModelRender vtable index of DrawModelExecute -- the hook that lets the mod
@@ -133,29 +133,18 @@ SbsDistance=1.0
 # Menu pointer. Win32 posts real mouse messages to the game window and is the
 # reliable path. The VGUI-internal path calls into a vgui2 vtable whose 2007
 # layout is unconfirmed -- leave it off unless you are testing it.
-# Aim menus with your HEAD (default) or the controller.
-# In a map SteamVR sends almost no laser events to our overlay - measured at 2,
-# versus hundreds at the main menu - because we are submitting stereo frames, so
-# it gives the controller to the game instead. Head aiming works in both places:
-# look at the item, pull the trigger. Set 'controller' to use the laser instead.
-# auto (default) = controller pointer OUT of a map, head pointer IN one.
-# That matches how SteamVR actually behaves: at the server-select menu the
-# controller laser works well (hundreds of overlay events), but once we start
-# submitting stereo frames SteamVR routes the controller to the game and sends
-# almost none (measured: 2), so the head ray takes over there.
-# Force with 'head' or 'controller'.
-MenuAimSource=auto
+# Menus are pointed at with the controller only (the right hand, or the left
+# with LeftHanded=true). There is no head pointer any more.
 
 # If the in-game character menu hangs the game again, set this false. It stops
-# the head pointer from touching the OS cursor, so you lose the in-map cursor
+# the pointer from touching the OS cursor, so you lose the in-map cursor
 # but keep a stable game.
 MenuDriveCursor=true
 
-# Draw our own crosshair marker into the menu image. MUST stay on: Source uses a
-# HARDWARE cursor, composited by Windows and never present in the D3D backbuffer
-# that we capture, so without this there is no cursor visible in the headset at
-# all. The 'two cursors' were this marker plus the real Windows cursor on the
-# desktop monitor -- only one of them is ever visible in VR.
+# Draw our own cursor marker into the menu image where SteamVR's laser is not
+# on the panel (in-map menus). Source's cursor is a hardware cursor and never
+# reaches the headset, so without this those menus have no cursor at all.
+# It follows the controller, and is hidden while SteamVR's own dot is showing.
 DrawMenuCursor=true
 
 # Aiming reticle drawn straight into each eye. The game's own crosshair never
@@ -271,6 +260,14 @@ SnapTurning=false
 SnapTurnAngle=45.0
 LeftHanded=false
 VRScale=40.0
+# Lifts the camera, in metres, if standing play feels too short. Camera only:
+# shots still come from the game's eye height and the gun stays where it was,
+# so every shot lands this far BELOW the reticle at any range. Keep it small.
+HeightOffsetMeters=0.0
+# Left grip = GE:S aim mode (+aimmode). With a scoped weapon the game zooms,
+# and this carries the zoom into the headset by magnifying the whole view.
+# false = aim mode still works, but the view never zooms.
+ScopeZoom=true
 IPDScale=1.0
 HideArms=true
 HudDistance=1.3
@@ -283,24 +280,21 @@ HudSize=1.1
 # just the HUD region instead.
 HudAlwaysVisible=false
 
-# Off-hand watch HUD (raise the unused hand to your face, HaloCEVR-style)
-ShowWristHUD=false
+# Q-branch wrist watch on the off hand: GoldenEye 64 health (left) and armour
+# (right) bars round a green screen with weapon, ammo and round time. It turns
+# to face you. Also in the in-game VR Settings panel.
+ShowWristHUD=true
+# false = only while you look at your wrist; true = all the time.
+WatchAlwaysVisible=false
+# "Looking at it" = hand within this many metres and this close to the centre
+# of view (dot product; 1 = dead centre).
 WristLookMaxDistance=0.6
 WristLookMinDot=0.45
-WristWatchWidth=0.11
-WristAmmoWidth=0.12
-WristOffset=-0.15,0.10,0.04
-WristRotation=40,8,0
-WristWatchOffset=0,0,0.02
-WristAmmoOffset=-0.02,0,0.05
-WristWatchUMin=0.00
-WristWatchVMin=0.78
-WristWatchUMax=0.46
-WristWatchVMax=1.00
-WristAmmoUMin=0.54
-WristAmmoVMin=0.78
-WristAmmoUMax=1.00
-WristAmmoVMax=1.00
+# Watch face diameter in metres.
+WatchWidth=0.10
+# Where it sits relative to the off-hand controller, in metres, as
+# forward,left,up. Negative forward is back towards your wrist.
+WatchOffset=-0.13,0,0.04
 
 # Health bars also flash in front of the HMD when you take a hit
 HurtHUDWidth=0.55
@@ -324,64 +318,13 @@ InGameMenuDistance=2.4
 # Keep menu apparent size constant as resolution changes.
 MenuScaleWithRes=true
 
-# Aiming reticle shape: dot or cross.
+# Aiming reticle shape: dot, cross, ring or ringdot.
 VRReticleStyle=dot
+# Aiming reticle colour: yellow, white, green, red or cyan.
+VRReticleColor=yellow
 
 # Force the menu panel opaque. Without this it goes see-through in a map.
 ForceMenuOpaque=true
-
-# Tap the side of the headset to toggle the HUD panel on and off.
-HudTapToggle=false
-
-# Tap sensitivity: velocity step in m/s between frames. Lower = easier to trigger.
-HudTapThreshold=1.2
-
-# Ignore further taps for this long, so one tap toggles once.
-HudTapCooldownMs=700
-
-# HUD panel distance from your eyes, in metres.
-
-# HUD panel width in metres.
-
-# HUD panel vertical offset; negative sits it below eye line.
-
-# Start with the HUD panel showing.
-
-# Fallback toggle key, virtual-key code. 112 = F1. 0 disables.
-HudToggleKey=0
-
-# Start with the Foes/ammo readouts showing.
-HudElementsDefaultOn=false
-
-# Crop of the Foes counter, as fractions: u0 v0 u1 v1.
-HudFoesCrop=0.41 0.02 0.62 0.11
-
-# Foes readout: left/right in metres at its distance.
-HudFoesX=0.0
-
-# Foes readout: up/down in metres.
-HudFoesY=0.24
-
-# Foes readout distance in metres.
-HudFoesDistance=1.2
-
-# Foes readout width in metres.
-HudFoesWidth=0.34
-
-# Crop of the ammo counter: u0 v0 u1 v1.
-HudAmmoCrop=0.85 0.90 0.94 1.00
-
-# Ammo readout: left/right in metres.
-HudAmmoX=0.34
-
-# Ammo readout: up/down in metres.
-HudAmmoY=-0.24
-
-# Ammo readout distance in metres.
-HudAmmoDistance=1.2
-
-# Ammo readout width in metres.
-HudAmmoWidth=0.20
 
 # Reticle horizontal correction. 0 = derive from the eye surface. Raise if it still looks tall.
 VRReticleAspect=0

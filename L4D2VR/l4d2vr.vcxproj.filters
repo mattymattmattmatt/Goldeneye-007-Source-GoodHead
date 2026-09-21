@@ -24,6 +24,15 @@
     <ClInclude Include="vr.h">
       <Filter>Source Files</Filter>
     </ClInclude>
+    <ClInclude Include="vr_settings.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="vr_canvas.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
+    <ClInclude Include="vr_watch.h">
+      <Filter>Source Files</Filter>
+    </ClInclude>
     <ClInclude Include="hooks.h">
       <Filter>Source Files</Filter>
     </ClInclude>
@@ -819,6 +828,15 @@
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="vr.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="vr_settings.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="vr_canvas.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="vr_watch.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="game.cpp">

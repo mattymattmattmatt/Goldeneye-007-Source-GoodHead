@@ -139,7 +139,11 @@ BOOL APIENTRY DllMain(HMODULE hModule,
         break;
     case DLL_THREAD_ATTACH:
     case DLL_THREAD_DETACH:
+        break;
     case DLL_PROCESS_DETACH:
+        // Do not VR_Shutdown here (loader lock). Just stop worker threads and
+        // skip compositor calls so a SteamVR "Quit" cannot WaitGetPoses forever.
+        GESVR_OnProcessDetach();
         break;
     }
     return TRUE;

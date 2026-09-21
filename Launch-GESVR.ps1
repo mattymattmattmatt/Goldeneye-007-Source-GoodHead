@@ -183,6 +183,31 @@ $gameLink = "G:\gesource"
 Ensure-Junction $gameLink $ges
 Ensure-Junction (Join-Path $sdk "gesource") $ges
 
+# Add "VR Settings" to the GE:S main and pause menus. The entry runs
+# "engine echo gesvr_vrsettings", which the mod catches in the console output
+# and opens its settings panel. Idempotent; the untouched original is kept as
+# GameMenu.res.gesvr-orig (a GE:S update that replaces the file is re-patched
+# on the next launch).
+$gameMenu = Join-Path $ges "resource\GameMenu.res"
+if (Test-Path $gameMenu) {
+    $menuText = [IO.File]::ReadAllText($gameMenu)
+    if ($menuText -notmatch "gesvr_vrsettings") {
+        $menuOrig = "$gameMenu.gesvr-orig"
+        if (-not (Test-Path $menuOrig)) { Copy-Item $gameMenu $menuOrig }
+        $entry = "`t`"GESVR`"`r`n`t{`r`n`t`t`"label`" `"VR Settings`"`r`n`t`t`"command`" `"engine echo gesvr_vrsettings`"`r`n`t}`r`n"
+        # Just above Options; if that block is not found, first in the menu.
+        $m = [regex]::Match($menuText, '(?m)^[ \t]*"[^"]*"\s*\{[^{}]*"OpenOptionsDialog"[^{}]*\}')
+        if ($m.Success) {
+            $menuText = $menuText.Insert($m.Index, $entry)
+        } else {
+            $brace = $menuText.IndexOf('{')
+            $menuText = $menuText.Insert($brace + 1, "`r`n" + $entry)
+        }
+        [IO.File]::WriteAllText($gameMenu, $menuText)
+        Write-Host "Added 'VR Settings' to the GE:S main menu"
+    }
+}
+
 # --- Render resolution ------------------------------------------------------
 # EVERYTHING the headset sees is captured from this window, so this is the real
 # resolution control -- not any setting inside the game. At 1280x720 each eye was
