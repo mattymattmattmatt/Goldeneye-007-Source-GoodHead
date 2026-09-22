@@ -1241,6 +1241,8 @@ void VR::Update()
         ApplyExtraCvars();
         RefreshActiveWeapon();
         UpdateGameCrosshair();
+        if (m_GraphicsDirty && m_ExtraCvarsDone)
+            ApplyGraphicsCvars();
         ProcessTuneKeys();
         VRWatch::Update();
         UpdateHurtHUD();
@@ -4626,6 +4628,29 @@ bool VR::IsLookingAtOffhandWatch()
 // in the frame we capture, not in how the overlay displays it. Which effect is
 // responsible is a question about GE:S's renderer that only testing answers, so
 // this makes the list a config key rather than a rebuild.
+// Picture settings the headset benefits from, set on GE:S itself (and so
+// saved in its own settings). Filtering is a sampler state -- no texture
+// reload, safe mid-map. Texture DETAIL is deliberately not touched:
+// mat_picmip -1 hung the NVIDIA driver loading a map in this 32-bit process.
+void VR::ApplyGraphicsCvars()
+{
+    m_GraphicsDirty = false;
+    if (!m_Game)
+        return;
+    if (m_TextureFiltering > 0)
+    {
+        char cmd[48];
+        snprintf(cmd, sizeof(cmd), "mat_forceaniso %d", m_TextureFiltering);
+        m_Game->ClientCmd_Unrestricted(cmd);
+        m_Game->ClientCmd_Unrestricted("mat_trilinear 1");
+    }
+    m_Game->ClientCmd_Unrestricted(m_Bloom ? "mat_disable_bloom 0" : "mat_disable_bloom 1");
+    Game::logMsg("Graphics: texture filtering %s, bloom %s",
+                 m_TextureFiltering > 0 ? (std::to_string(m_TextureFiltering) + "x anisotropic + trilinear").c_str()
+                                        : "left to the game",
+                 m_Bloom ? "on" : "off");
+}
+
 void VR::ApplyExtraCvars()
 {
     if (m_ExtraCvarsDone)
@@ -4656,6 +4681,7 @@ void VR::ApplyExtraCvars()
         m_Game->ClientCmd_Unrestricted("ge_fp_ragdoll 0");
         Game::logMsg("VR cvars: ge_fp_ragdoll 0 (death camera off the ragdoll's head)");
     }
+    ApplyGraphicsCvars();
 
     size_t start = 0;
     while (start < m_ExtraCvars.size())
@@ -4959,6 +4985,10 @@ void VR::ParseConfigFile()
     m_BloodCurtainScale = CfgFloat(userConfig, "BloodCurtainScale", m_BloodCurtainScale);
     m_WeaponFastSwitch = CfgBool(userConfig, "WeaponFastSwitch", m_WeaponFastSwitch);
     m_WeaponTuning = CfgBool(userConfig, "WeaponTuning", m_WeaponTuning);
+    m_TextureFiltering = (int)CfgFloat(userConfig, "TextureFiltering", (float)m_TextureFiltering);
+    if (m_TextureFiltering < 0) m_TextureFiltering = 0;
+    if (m_TextureFiltering > 16) m_TextureFiltering = 16;
+    m_Bloom = CfgBool(userConfig, "Bloom", m_Bloom);
     m_DeathCamFirstPerson = CfgBool(userConfig, "DeathCamFirstPerson", m_DeathCamFirstPerson);
 
     m_ShowWristHUD = CfgBool(userConfig, "ShowWristHUD", m_ShowWristHUD);

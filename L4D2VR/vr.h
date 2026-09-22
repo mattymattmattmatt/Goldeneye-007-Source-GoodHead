@@ -526,6 +526,16 @@ public:
 	// Numpad adjustment of where the held weapon sits in the hand. Off unless
 	// someone wants to re-place a weapon (VR Settings > Weapons).
 	bool m_WeaponTuning = false;
+	// Texture filtering forced on the game (mat_forceaniso N + mat_trilinear 1);
+	// 0 leaves GE:S's own setting alone. GE:S was on bilinear with no
+	// anisotropic filtering, which blurs floors and walls seen at an angle --
+	// in a headset, most of what you look at.
+	int m_TextureFiltering = 16;
+	// GE:S's bloom (mat_disable_bloom).
+	bool m_Bloom = true;
+	// Set when either changes in VR Settings; applied on the next in-map frame.
+	bool m_GraphicsDirty = false;
+	void ApplyGraphicsCvars();
 	// GE:S's first-person death camera rides the ragdoll's head (ge_fp_ragdoll).
 	bool m_DeathCamFirstPerson = false;
 	// The game HUD in the headset: 0 off, 1 flash it when hurt, 2 always.

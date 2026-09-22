@@ -37,6 +37,32 @@ static std::atomic<bool> g_openRequested{ false };
 
 static thread_local int t_spewDepth = 0;
 
+// The game's warnings and errors go to our log too, so a crash that the
+// engine announces (Error() -> SPEW_ERROR, out of memory, a failed device
+// reset) leaves its reason behind -- the 2026-09-23 Very High texture crash
+// died in client.dll's shutdown with nothing logged. Plain messages only when
+// they look like trouble. Capped so a spammy map cannot flood the file.
+static void LogGameSpew(int spewType, const char *msg)
+{
+    // tier0 (2007): 0 message, 1 warning, 2 assert, 3 error, 4 log.
+    static std::atomic<int> s_logged{ 0 };
+    const bool severe = spewType == 2 || spewType == 3;
+    bool wanted = severe || spewType == 1;
+    if (!wanted)
+        wanted = strstr(msg, "rror") || strstr(msg, "emory") || strstr(msg, "ailed") ||
+                 strstr(msg, "atal") || strstr(msg, "Deleteing");
+    if (!wanted || (!severe && s_logged.load() >= 400))
+        return;
+    ++s_logged;
+    char line[512];
+    strncpy_s(line, msg, _TRUNCATE);
+    size_t n = strlen(line);
+    while (n && (line[n - 1] == '\n' || line[n - 1] == '\r'))
+        line[--n] = '\0';
+    static const char *kType[] = { "msg", "warning", "ASSERT", "ERROR", "log" };
+    Game::logMsg("GAME %s: %s", (spewType >= 0 && spewType <= 4) ? kType[spewType] : "?", line);
+}
+
 static int GesvrSpew(int spewType, const char *msg)
 {
     if (msg && strstr(msg, "gesvr_vrsettings"))
@@ -44,6 +70,8 @@ static int GesvrSpew(int spewType, const char *msg)
         g_openRequested.store(true);
         return 1; // SPEW_CONTINUE. 0 would be SPEW_DEBUGGER: a breakpoint.
     }
+    if (msg && t_spewDepth == 0)
+        LogGameSpew(spewType, msg);
     // InstallMenuHook re-chains periodically. If something else has wrapped
     // the spew function after us, it chains back here: pass each message on
     // once, never round the loop again.
@@ -314,6 +342,19 @@ static void BuildModel(VR *vr)
         [vr](int i) { vr->m_GameHudMode = i; },
         "GameHUD", { "off", "hurt", "always" }));
     g_tabs.push_back(display);
+
+    Tab graphics{ L"Graphics" };
+    graphics.items.push_back(Named(L"Texture filtering", L"Sharper floors and walls at an angle. 16x costs very little.",
+        { L"Game setting", L"4x", L"8x", L"16x" },
+        [vr]() { const int f = vr->m_TextureFiltering; return f >= 16 ? 3 : f >= 8 ? 2 : f >= 4 ? 1 : 0; },
+        [vr](int i) { static const int v[] = { 0, 4, 8, 16 }; vr->m_TextureFiltering = v[i]; vr->m_GraphicsDirty = true; },
+        "TextureFiltering", { "0", "4", "8", "16" }));
+    graphics.items.push_back(Named(L"Bloom", L"The glow around bright lights. Off looks crisper.",
+        { L"Off", L"On" },
+        [vr]() { return vr->m_Bloom ? 1 : 0; },
+        [vr](int i) { vr->m_Bloom = (i != 0); vr->m_GraphicsDirty = true; },
+        "Bloom", { "false", "true" }));
+    g_tabs.push_back(graphics);
 }
 
 // ---------------------------------------------------------------------------

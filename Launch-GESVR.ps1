@@ -156,6 +156,14 @@ if (Test-Path $binkProxy) {
     Write-Host "Installed Bink preload proxy (forces our d3d9.dll to load)"
 }
 
+# DXVK's own settings, read from hl2.exe's folder (see dist\dxvk.conf). Installed
+# once; after that the player's copy is kept, like config.txt.
+$dxvkConf = Join-Path $dist "dxvk.conf"
+if ((Test-Path $dxvkConf) -and -not (Test-Path (Join-Path $sdk "dxvk.conf"))) {
+    Copy-Item $dxvkConf (Join-Path $sdk "dxvk.conf") -Force
+    Write-Host "Installed dxvk.conf (DXVK memory setting for this 32-bit game)"
+}
+
 # Install the VR folder, but NEVER clobber config.txt.
 #
 # This used to copy VR\* with -Force on every launch, which overwrote the
@@ -249,8 +257,40 @@ $gesPicmip = 0      # 0 = high, 1 = medium, 2 = low. -1 is beyond High: avoid.
 $gesAA     = 4      # MSAA samples.
 $gesAniso  = 8      # anisotropic filtering.
 
-$gesWidth  = 1920
-$gesHeight = 1080
+# Window size: the largest 16:9 that fits the primary desktop, capped at
+# 2560x1440. On a 1080p desktop that is exactly 1920x1080, as before. It only
+# grows when the desktop does -- the way to more eye pixels on this render
+# path, since each eye is rendered at the window's size and the window must
+# fit the desktop or the game does not boot (see above).
+# Tested 2026-09-23 on a 4K desktop: 2560x1440 looks great and holds the
+# headset's rate; 3840x2160 crashed at character select (no log line, no
+# dump) and made the menus huge. Hence the cap.
+# Set $gesResolution to e.g. "1920x1080" to pin it instead.
+$gesResolution = "auto"
+function Get-DesktopSize {
+    try {
+        if (-not ("GESVR.Dpi" -as [type])) {
+            Add-Type -Namespace GESVR -Name Dpi -ErrorAction Stop -MemberDefinition @'
+[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+[DllImport("user32.dll")] public static extern int GetSystemMetrics(int index);
+'@
+        }
+        [void][GESVR.Dpi]::SetProcessDPIAware()   # real pixels, not scaled ones
+        $w = [GESVR.Dpi]::GetSystemMetrics(0)      # SM_CXSCREEN, primary monitor
+        $h = [GESVR.Dpi]::GetSystemMetrics(1)
+        if ($w -ge 1280 -and $h -ge 720) { return @($w, $h) }
+    } catch { }
+    return @(1920, 1080)
+}
+if ($gesResolution -match '^(\d+)x(\d+)$') {
+    $gesWidth = [int]$Matches[1]; $gesHeight = [int]$Matches[2]
+} else {
+    $desk = Get-DesktopSize
+    $gesHeight = [Math]::Min(1440, [Math]::Min([int]$desk[1], [int][Math]::Floor($desk[0] * 9 / 16)))
+    $gesHeight -= $gesHeight % 9                   # so the width comes out exact
+    $gesWidth = [int]($gesHeight * 16 / 9)
+    Write-Host "Desktop $($desk[0])x$($desk[1]) -> game window ${gesWidth}x${gesHeight}"
+}
 
 # engine_no_focus_sleep: Source sleeps 20ms EVERY frame while its window is not
 #   the active app. In VR the window frequently is not, so this caps the whole

@@ -5,6 +5,90 @@ Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in The
 
 ---
 
+## PICTURE QUALITY INVESTIGATION (2026-09-22, after v0.2-free-aim)
+
+Where the softness comes from, measured:
+* The headset asks for 2688x2880 per eye (log: `recommended RT 2688x2880`).
+  On the working backbuffer path each eye is rendered at the WINDOW size,
+  1920x1080, then stretched: 1.4x across, **2.7x up and down**. That is most
+  of the blur. The window cannot exceed the desktop (1080p here) or the game
+  does not boot (table further down).
+* GE:S's own settings (HKCU\Software\Valve\Source\gesource\Settings):
+  `mat_forceaniso 1` (no anisotropic), `mat_trilinear 0` (bilinear),
+  `mat_antialias 0`, `mat_picmip 0` (High, fine), mat_hdr_level 2,
+  MotionBlur 0, GPU 10DE:1E04 (RTX 2080 Ti). DXLevel_V1 reads 0; HDR and
+  parallax mapping on means the DX9 path is live.
+* In-map frames arrive ~13.9 ms apart = 72 Hz (a Quest's default): the game is
+  keeping up with the headset.
+* Multicore rendering is greyed in GE:S's options because the launcher passes
+  `+mat_queue_mode 0`. Keep it: the eye capture and Present work assume the
+  single render thread.
+
+Done in this pass (all switchable, v0.2-free-aim is the fallback):
+* **Texture filtering** `TextureFiltering=16` (VR Settings > Graphics):
+  `mat_forceaniso 16` + `mat_trilinear 1` at map load and on change
+  (`VR::ApplyGraphicsCvars`). Sampler state only, no texture reload. 0 leaves
+  the game's setting. Texture DETAIL is not touched (picmip -1 hung the driver).
+* **Bloom** `Bloom=true` (Graphics tab) -> `mat_disable_bloom`.
+* **Launcher window = largest 16:9 that fits the primary desktop**, capped at
+  3840x2160, measured DPI-aware (GetSystemMetrics after SetProcessDPIAware).
+  1920x1080 on this desktop, exactly as before; `$gesResolution = "1920x1080"`
+  pins it. This is what lets NVIDIA DSR raise eye resolution with no code
+  risk: a 3840x2160 DSR desktop gives 3840x2160 eyes (0.75x the headset's
+  height instead of 0.375x) at about 4x the pixel cost; 2880x1620 is 2.25x.
+
+RESULT (2026-09-23): Matty's monitor is 4K and had been set to 1080p. With the
+desktop at its native resolution the launcher's auto size took over: the
+00:01 session ran at 2560x1440 (the desktop was 2560x1440 at launch), "looks
+great", and held the headset's 72 Hz (13.6 ms median frame gap). The desktop
+is now 3840x2160. The 3840x2160 run (00:13) CRASHED at character select
+~25 s in -- vrmod_log just stops, the DXVK log is clean, no minidump -- and
+its menus were huge (MenuScaleWithRes widens the menu by screen height / 1080:
+2x at 4K). The launcher's auto size is now capped at 2560x1440. If 4K is ever
+retried, suspect memory in this 32-bit process first (every framebuffer-sized
+target, ours and the engine's, is 2.25x bigger than at 1440p). Note Windows also lists a
+"Meta Virtual Monitor" (Quest Link) at 2560x1440; the launcher reads the
+PRIMARY display (GetSystemMetrics, DPI-aware), which was the right one.
+
+MEMORY (2026-09-23): hl2.exe is 32-bit and NOT large-address-aware (PE
+characteristics 0x0102) -> 2 GB of address space for the whole game. DXVK
+v1.10.1 (this fork) keeps a mapped staging copy of every MANAGED texture for
+the session (D3D9DeviceEx::UnlockImage only flushes and tosses it when
+d3d9.evictManagedOnUnlock is set). That fits both the Very High (picmip -1)
+hang inside the driver during texture upload and the silent 4K crash.
+Try 1: `dist\dxvk.conf` with `d3d9.evictManagedOnUnlock = True`, installed
+once to the SDK folder (hl2.exe's working dir; DXVK logs "Found config file:
+dxvk.conf" in hl2_d3d9.log). Cost: a texture the game re-locks is read back
+from the GPU. Try 2, not done, needs Matty's OK: set LARGE_ADDRESS_AWARE on
+hl2.exe (4 GB; Steam verify undoes it). DXVK 2.x has proper 32-bit memory
+management but the VR interface would need porting.
+
+TRY 1 RESULT: FAILED, now off (the line is commented out in both dxvk.conf
+copies). With it on, applying Very High crashed, loading a map at Very High
+crashed, and even applying High crashed -- Medium was fine. Every crash is the
+same: Application Error, client.dll+0x28AC17, 0xC0000005 = GE:S's "Deleteing
+panel: %s" loop reading a NULL VGUI interface (global 0x10504E10) while the
+client is torn down, right after materialsystem prints "Reference Count for
+Material ... != 0" for every material (CMaterial's destructor, i.e. the
+material system shutting down). So the game begins an orderly shutdown ~5 s
+into a texture reload and then crashes on the way out. Our watchdog is NOT it
+(it uses TerminateProcess: no destructors, no such messages, and it logs
+"forcing exit"). The reason for the shutdown was never printed, not even with
+the new spew logging (vr_settings.cpp LogGameSpew: game warnings/errors now go
+to vrmod_log as `GAME warning/ERROR:`). Unexplained: GE:S's options showed Very
+High while the registry said mat_picmip 0. The 4K crash is different:
+ucrtbase 0xC0000409 = a fail-fast abort, which is how DXVK dies on a failed
+memory allocation. Texture detail stays High, and should not be changed while
+the game is running until this is understood.
+
+Not done yet, the real fix: `EyeRenderTargets=true` renders each eye into its
+own target at the headset's size, free of the desktop. Its open bug (the
+SECOND RenderView of a frame draws at the backbuffer's 1920x1080 viewport) is
+described under PREVIOUS below; the mod's Push/PopRenderTargetAndViewport
+hooks look innocent (their HUD redirect needs L4D2's IsSplitScreen /
+PrePushRenderTarget sequence, which GE:S never produces). Next step there is
+measurement per pass (render target dimensions and viewport), in the headset.
+
 ## v0.2-free-aim: TUNED POSITIONS SHIPPED, NUMPAD TUNING OFF BY DEFAULT (2026-09-22)
 
 * Matty's numpad-tuned positions (his VR/weapons.txt) are now weapons.cpp's

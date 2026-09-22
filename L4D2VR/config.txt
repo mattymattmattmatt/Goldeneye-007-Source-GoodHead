@@ -288,6 +288,12 @@ WeaponFastSwitch=true
 # 8/2 4/6 9/3 move, 5 switches to rotate, +/- step size, 0 saves to
 # VR/weapons.txt, . resets the held weapon. Also in VR Settings > Weapons.
 WeaponTuning=false
+# Texture filtering set on the game when a map loads: 4, 8 or 16 times
+# anisotropic plus trilinear (sharp floors and walls at an angle), or 0 to
+# leave the game's own Filtering mode alone. Also in VR Settings > Graphics.
+TextureFiltering=16
+# GE:S's bloom (the glow around bright lights). false looks crisper.
+Bloom=true
 # false = the normal death camera (sets GE:S's ge_fp_ragdoll 0) instead of the
 # first-person one riding the ragdoll's head.
 DeathCamFirstPerson=false
