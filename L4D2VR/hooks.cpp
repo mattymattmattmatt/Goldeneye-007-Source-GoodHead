@@ -13,6 +13,9 @@
 #include <cstddef>
 #include <cstring>
 
+// Defined with the first-person aspect notes further down.
+static void FindScreenAspectFunction(void *engineClient);
+
 template<typename T>
 static bool EnableIfCreated(Hook<T> &hk)
 {
@@ -40,6 +43,7 @@ Hooks::Hooks(Game *game)
 
 	EnableIfCreated(hkGetRenderTarget);
 	EnableIfCreated(hkCalcViewModelView);
+	EnableIfCreated(hkFormatViewModelAttachment);
 	EnableIfCreated(hkServerFireTerrorBullets);
 	EnableIfCreated(hkClientFireTerrorBullets);
 	EnableIfCreated(hkProcessUsercmds);
@@ -116,6 +120,9 @@ int Hooks::initSourceHooks()
 	if (m_Game->m_Offsets->CalcViewModelView.found)
 		Game::logMsg("Hooking C_BaseViewModel::CalcViewModelView at 0x%X",
 		             m_Game->m_Offsets->CalcViewModelView.offset);
+	CreateIfFound(hkFormatViewModelAttachment, m_Game->m_Offsets->FormatViewModelAttachment, &dFormatViewModelAttachment);
+	Game::logMsg("C_BaseViewModel::FormatViewModelAttachment %s (muzzle flash / tracers from the gun in hand)",
+	             m_Game->m_Offsets->FormatViewModelAttachment.found ? "hooked" : "NOT FOUND -- effects stay at the head");
 	CreateIfFound(hkServerFireTerrorBullets, m_Game->m_Offsets->ServerFireTerrorBullets, &dServerFireTerrorBullets);
 	CreateIfFound(hkClientFireTerrorBullets, m_Game->m_Offsets->ClientFireTerrorBullets, &dClientFireTerrorBullets);
 	CreateIfFound(hkProcessUsercmds, m_Game->m_Offsets->ProcessUsercmds, &dProcessUsercmds);
@@ -177,6 +184,7 @@ int Hooks::initSourceHooks()
 			Game::logMsg("Hooking IVModelRender::DrawModelSetup vtable[%d]=%p", setupSlot, vt[setupSlot]);
 		}
 	}
+	FindScreenAspectFunction(m_Game->m_EngineClient);
 	CreateIfFound(hkPushRenderTargetAndViewport, m_Game->m_Offsets->PushRenderTargetAndViewport, &dPushRenderTargetAndViewport);
 	CreateIfFound(hkPopRenderTargetAndViewport, m_Game->m_Offsets->PopRenderTargetAndViewport, &dPopRenderTargetAndViewport);
 	CreateIfFound(hkVgui_Paint, m_Game->m_Offsets->VGui_Paint, &dVGui_Paint);
@@ -205,6 +213,85 @@ static void CopyViewSetup(CViewSetup &dst, const CViewSetup &src)
 }
 
 static bool g_inStereoPass = false;
+// Counts stereo passes, so per-frame work in per-draw hooks runs once a frame
+// rather than once per eye.
+static unsigned g_stereoFrame = 0;
+
+// --- First-person pass aspect ------------------------------------------------
+//
+// GE:S's CViewRender::DrawViewModels (ges-code viewrender.cpp) builds the
+// viewmodel pass with
+//     viewModelSetup.fov             = view.fovViewmodel;
+//     viewModelSetup.m_flAspectRatio = engine->GetScreenAspectRatio();
+// -- the WINDOW's 1920/1080 = 1.78 -- while the eyes render at the eye
+// frustum's aspect (0.964). Same horizontal FOV, different vertical scale:
+// everything in that pass comes out ~1.84x taller and pushed away from the
+// centre vertically. Head-locked, that was the unexplained "high gun"; on the
+// hand it made the gun stretch and skew as it moved through the view.
+//
+// Swapping GetScreenAspectRatio for the eye aspect during the stereo pass
+// FROZE the game entering a map (22:28 run: stuck in D3D9Initializer::Flush):
+// other client code sizes screen-effect render targets from it and rebuilt
+// them every frame. So nothing is swapped. Instead the tracked gun's bones are
+// pre-squashed along each eye's up axis by eyeAspect / passAspect, and the
+// pass's too-tall projection stretches them back to true shape.
+//
+// The pass aspect comes from the engine's own function, CALLED, never hooked:
+// vtable slot 88 in this engine.dll (NOT the 95 of ges-code's header -- slot
+// 95 here takes an argument). An E9 jmp to a function that returns an
+// override from +0x2C, else width/height; the bytes are verified first.
+typedef float(__thiscall *tGetScreenAspectRatio)(void *);
+static tGetScreenAspectRatio g_screenAspectFn = nullptr;
+static void *g_engineClientForAspect = nullptr;
+
+static void FindScreenAspectFunction(void *engineClient)
+{
+	if (!engineClient)
+		return;
+	void **vt = *reinterpret_cast<void ***>(engineClient);
+	const int kSlot = 88;
+	const unsigned char *fn = static_cast<const unsigned char *>(vt[kSlot]);
+	const unsigned char *body = fn;
+	if (fn[0] == 0xE9)   // jmp rel32 to the real body
+		body = fn + 5 + *reinterpret_cast<const int *>(fn + 1);
+	// sub esp,0Ch / mov eax,[imm32] / movss xmm0,[eax+2Ch]
+	const bool match = body[0] == 0x83 && body[1] == 0xEC && body[2] == 0x0C && body[3] == 0xA1 &&
+	                   body[8] == 0xF3 && body[9] == 0x0F && body[10] == 0x10 && body[11] == 0x40 && body[12] == 0x2C;
+	if (!match)
+	{
+		Game::logMsg("GetScreenAspectRatio NOT recognised at vtable[%d] -- using the window size instead", kSlot);
+		return;
+	}
+	g_screenAspectFn = reinterpret_cast<tGetScreenAspectRatio>(vt[kSlot]);
+	g_engineClientForAspect = engineClient;
+	Game::logMsg("GetScreenAspectRatio verified at vtable[%d] (read only, not hooked)", kSlot);
+}
+
+// The aspect the first-person pass will use this frame.
+static float FirstPersonPassAspect()
+{
+	if (g_screenAspectFn)
+	{
+		const float a = g_screenAspectFn(g_engineClientForAspect);
+		if (a > 0.1f && a < 10.0f)
+			return a;
+	}
+	int w = 0, h = 0;
+	if (Hooks::m_Game && Hooks::m_Game->m_EngineClient)
+		Hooks::m_Game->m_EngineClient->GetScreenSize(w, h);
+	return (w > 0 && h > 0) ? (float)w / (float)h : 16.0f / 9.0f;
+}
+
+// The eye being rendered right now (set around each eye's RenderView), for the
+// per-eye squash: it is centred on that eye and follows its up axis.
+static bool g_eyeValid = false;
+static Vector g_eyeOrigin;
+static QAngle g_eyeAngles;
+static float g_squash = 1.0f;   // eyeAspect / passAspect for this frame
+// The game's own view this frame (the flat-screen camera): its FOV and its
+// viewmodel FOV. GE:S's attachment FOV correction works from these.
+static float g_gameFov = 0.0f, g_gameFovVM = 0.0f;
+
 // Counts how many times the weapon reposition actually executed, so the
 // motion trace can say whether the write is even happening.
 static volatile long g_execMoves = 0;
@@ -645,6 +732,20 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	}
 
 	g_inStereoPass = true;
+	++g_stereoFrame;
+	g_squash = 1.0f;
+	if (m_VR && (m_VR->m_TrackedWeapon || m_VR->m_FixViewmodelAspect) && m_VR->m_Aspect > 0.1f)
+	{
+		const float pass = FirstPersonPassAspect();
+		g_squash = m_VR->m_Aspect / pass;
+		static int s_logged = 0;
+		if (s_logged < 3)
+		{
+			Game::logMsg("FIRST-PERSON PASS: eye aspect %.3f, pass aspect %.3f -> squash %.3f",
+			             m_VR->m_Aspect, pass, g_squash);
+			++s_logged;
+		}
+	}
 
 	// VGUI is kept out of the eyes by the g_inStereoPass guard in dVGui_Paint.
 	const bool overlayMenu = m_VR && m_VR->IsMenuMode();
@@ -665,12 +766,15 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	// WaitGetPoses here is a full compositor period and was the in-game hitch.
 	m_ViewmodelIndexThisFrame = 0;
 	m_VR->m_SetupOrigin = setup.origin;
+	g_gameFov = setup.fov;
+	g_gameFovVM = setup.fovViewmodel;
 
 	CViewSetup leftEyeView;
 	CViewSetup rightEyeView;
 	CopyViewSetup(leftEyeView, setup);
 	CopyViewSetup(rightEyeView, setup);
 	m_VR->ApplyHeadAndIpd(leftEyeView, rightEyeView, setup);
+	m_VR->UpdateGunAim(leftEyeView, rightEyeView);
 
 	IMatRenderContext *rndrContext = nullptr;
 	if (m_VR->m_UseEyeRenderTargets && m_Game && m_Game->m_MaterialSystem)
@@ -734,6 +838,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	if (traceStereo) Game::logMsg("stereo pass #%d L render... view=%dx%d rt=%p clear=0x%X draw=0x%X",
 	                              pass, leftEyeView.width, leftEyeView.height,
 	                              (void*)m_VR->m_LeftEyeTexture, eyeClear, eyeDraw);
+	g_eyeOrigin = leftEyeView.origin; g_eyeAngles = leftEyeView.angles; g_eyeValid = true;
 	hkRenderView.fOriginal(ecx, leftEyeView, eyeClear, eyeDraw);
 	if (traceStereo) Game::logMsg("stereo pass #%d L rendered, capturing", pass);
 	// Force the material system to submit its queued work before we capture.
@@ -755,7 +860,9 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	if (traceStereo) Game::logMsg("stereo pass #%d R render... view=%dx%d rt=%p",
 	                              pass, rightEyeView.width, rightEyeView.height,
 	                              (void*)m_VR->m_RightEyeTexture);
+	g_eyeOrigin = rightEyeView.origin; g_eyeAngles = rightEyeView.angles; g_eyeValid = true;
 	hkRenderView.fOriginal(ecx, rightEyeView, eyeClear, eyeDraw);
+	g_eyeValid = false;
 	if (traceStereo) Game::logMsg("stereo pass #%d R rendered, capturing", pass);
 	if (rndrContext) rndrContext->Flush(true);
 	HRESULT hr = g_D3DVR9->CaptureCurrentRT(1, &m_VR->m_VKRightEye);
@@ -1266,6 +1373,775 @@ bool __fastcall Hooks::dDrawModelSetup(void *ecx, void *edx, ModelRenderInfo_t &
 	return false;
 }
 
+// --- Tracked weapon -----------------------------------------------------------
+//
+// DrawModelExecute's last argument is the bone-to-world matrices that
+// DrawModelSetup just built for this draw: world space, laid out around the
+// viewmodel's own origin at the eye. Moving every one of them by the same rigid
+// transform -- hand pose times inverse(viewmodel pose) -- draws the whole gun,
+// animation and all, in the hand. The weapon entity itself is untouched.
+//
+// That is the difference from the attempts recorded in HANDOFF: writing
+// info.origin comes after the bones are built (no effect), and patching
+// GetRenderOrigin/Angles moved only some of the transform (the gun skewed).
+// Here every bone gets the one transform, so the model stays rigid.
+struct BoneMat { float m[3][4]; };
+static BoneMat g_handBones[256];
+
+// Source's AngleMatrix: columns are forward, left, up; column 3 the origin.
+static BoneMat PoseMatrix(const QAngle &ang, const Vector &pos)
+{
+	Vector f, r, u;
+	QAngle::AngleVectors(ang, &f, &r, &u);
+	BoneMat b;
+	b.m[0][0] = f.x; b.m[0][1] = -r.x; b.m[0][2] = u.x; b.m[0][3] = pos.x;
+	b.m[1][0] = f.y; b.m[1][1] = -r.y; b.m[1][2] = u.y; b.m[1][3] = pos.y;
+	b.m[2][0] = f.z; b.m[2][1] = -r.z; b.m[2][2] = u.z; b.m[2][3] = pos.z;
+	return b;
+}
+
+static BoneMat InvertRigid(const BoneMat &a)
+{
+	BoneMat b;
+	for (int i = 0; i < 3; ++i)
+		for (int j = 0; j < 3; ++j)
+			b.m[i][j] = a.m[j][i];
+	for (int i = 0; i < 3; ++i)
+		b.m[i][3] = -(b.m[i][0] * a.m[0][3] + b.m[i][1] * a.m[1][3] + b.m[i][2] * a.m[2][3]);
+	return b;
+}
+
+static BoneMat Concat(const BoneMat &a, const BoneMat &b)
+{
+	BoneMat c;
+	for (int i = 0; i < 3; ++i)
+	{
+		for (int j = 0; j < 3; ++j)
+			c.m[i][j] = a.m[i][0] * b.m[0][j] + a.m[i][1] * b.m[1][j] + a.m[i][2] * b.m[2][j];
+		c.m[i][3] = a.m[i][0] * b.m[0][3] + a.m[i][1] * b.m[1][3] + a.m[i][2] * b.m[2][3] + a.m[i][3];
+	}
+	return c;
+}
+
+// studiohdr_t, read through DrawModelState_t (whose first member it is):
+// id "IDST", version 44..49, numbones at +156. Guarded: state is the engine's.
+static int ReadStudioBoneCount(void *state)
+{
+	__try
+	{
+		const unsigned char *hdr = *reinterpret_cast<const unsigned char *const *>(state);
+		if (!hdr)
+			return -1;
+		const int id = *reinterpret_cast<const int *>(hdr);
+		const int version = *reinterpret_cast<const int *>(hdr + 4);
+		const int bones = *reinterpret_cast<const int *>(hdr + 156);
+		if (id != 0x54534449 || version < 44 || version > 49 || bones < 1 || bones > 256)
+			return -1;
+		return bones;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		return -1;
+	}
+}
+
+// Index of a bone by name in the studio header behind DrawModelState_t
+// (boneindex at +160, mstudiobone_t is 216 bytes, name offset first). -1 if
+// absent or unreadable.
+static int FindStudioBone(void *state, const char *wanted)
+{
+	__try
+	{
+		const unsigned char *hdr = *reinterpret_cast<const unsigned char *const *>(state);
+		const int count = *reinterpret_cast<const int *>(hdr + 156);
+		const int boneIndex = *reinterpret_cast<const int *>(hdr + 160);
+		for (int i = 0; i < count && i < 256; ++i)
+		{
+			const unsigned char *bone = hdr + boneIndex + i * 216;
+			const char *name = reinterpret_cast<const char *>(bone + *reinterpret_cast<const int *>(bone));
+			if (strcmp(name, wanted) == 0)
+				return i;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+	}
+	return -1;
+}
+
+// Arm-rig models, cached by model: the hand bone and the arm bones to fold.
+struct ArmRig
+{
+	const void *model;
+	int hand;
+	int arm[4];          // collar, arm null, shoulder, elbow (-1 if absent)
+	float local[3];      // hand position in model space, slowly averaged
+	bool haveLocal;
+};
+
+static ArmRig *ArmRigFor(void *state, const void *model, const char *modelName)
+{
+	static ArmRig s_rigs[16];
+	static int s_count = 0;
+	for (int i = 0; i < s_count; ++i)
+		if (s_rigs[i].model == model)
+			return s_rigs[i].hand >= 0 ? &s_rigs[i] : nullptr;
+	ArmRig r{};
+	r.model = model;
+	r.hand = FindStudioBone(state, "R_FK_Hand_jnt");
+	const char *armBones[4] = { "R_FK_Collar_jnt", "R_FK_Arm_null", "R_FK_Shoulder_jnt", "R_FK_Elbow_jnt" };
+	for (int i = 0; i < 4; ++i)
+		r.arm[i] = (r.hand >= 0) ? FindStudioBone(state, armBones[i]) : -1;
+	if (r.hand >= 0)
+		Game::logMsg("TRACKED GUN: %s is an arm rig -- hand bone %d, arm bones %d %d %d %d",
+		             modelName, r.hand, r.arm[0], r.arm[1], r.arm[2], r.arm[3]);
+	if (s_count < 16)
+		s_rigs[s_count++] = r;
+	else
+		return nullptr;
+	return r.hand >= 0 ? &s_rigs[s_count - 1] : nullptr;
+}
+
+// Where the held gun's barrel is in its model: the "muzzle" attachment's
+// origin and the axis it fires along, from the live bones of the last gun
+// drawn. VR::UpdateGunAim traces from there, along there.
+//
+// The axis used to be assumed: the model's +X, i.e. the hand's forward. But
+// GE:S guns are built lying along -Y (every v_*.mdl's muzzle attachment points
+// down -Y in the bind pose) and only turned to face forward by their
+// sequences, so wherever an animation holds the gun at an angle -- the end of
+// the draw, idle sway -- the dot left the drawn barrel. Reading the axis off
+// the live attachment keeps the dot on the barrel you can see, whatever the
+// pose. Model space, re-placed with the current hand pose every frame so it
+// does not lag the hand; eased over a few frames so a firing kick nudges the
+// dot rather than throwing it.
+//
+// NOT from the muzzle bone's own matrix, though. The engine sets up only the
+// bones the mesh uses when it draws (BONE_USED_BY_VERTEX); muzzle.bone1 is
+// flagged attachment-only (0x200), so its entry in the draw's bone array is
+// whatever was last computed -- which is when the muzzle flash asked for the
+// attachment, i.e. your last shot. Every frame in between, that stale world
+// pose was read against the current viewmodel pose: the dot swung opposite to
+// your head, drifted as you walked, started thousands of units away after a
+// respawn, and snapped back onto the gun each time you fired (00:08 log).
+// So the muzzle is carried by the nearest ancestor the mesh does use (base,
+// for every GE:S gun), with the muzzle's bind-pose offset from it.
+static float g_muzzleLocal[3] = { 0.0f, 0.0f, 0.0f };
+static float g_muzzleAxisLocal[3] = { 1.0f, 0.0f, 0.0f };
+static ULONGLONG g_muzzleSeenUntil = 0;
+static const void *g_muzzleModel = nullptr;
+static unsigned g_muzzleFrame = 0;
+
+struct MuzzleInfo
+{
+	const void *model;
+	int bone;              // muzzle.bone1 / muzzle.bone01, -1 if none
+	int anchor;            // nearest ancestor the mesh uses (kept current), -1 if none
+	bool haveAttachment;
+	float axis[3];         // barrel direction in the anchor's frame
+	float offset[3];       // muzzle origin in the anchor's frame
+};
+
+// The bone the muzzle can ride on, and the muzzle's rest transform in that
+// bone's frame: poseToBone(anchor) * inverse(poseToBone(muzzle)). mstudiobone_t
+// (216 bytes): parent +4, poseToBone matrix3x4 +96, flags +160; any
+// BONE_USED_BY_VERTEX_LODn bit (0x3FC00) means draws keep it current.
+static int MuzzleAnchor(void *state, int bone, BoneMat &rel)
+{
+	__try
+	{
+		const unsigned char *hdr = *reinterpret_cast<const unsigned char *const *>(state);
+		const int count = *reinterpret_cast<const int *>(hdr + 156);
+		const int boneIndex = *reinterpret_cast<const int *>(hdr + 160);
+		auto boneAt = [&](int i) { return hdr + boneIndex + i * 216; };
+		auto poseToBone = [&](int i) {
+			BoneMat m;
+			memcpy(m.m, boneAt(i) + 96, sizeof(m.m));
+			return m;
+		};
+		int anchor = bone;
+		for (int guard = 0; anchor >= 0 && anchor < count && guard < 256; ++guard)
+		{
+			if (*reinterpret_cast<const int *>(boneAt(anchor) + 160) & 0x0003FC00)
+				break;
+			anchor = *reinterpret_cast<const int *>(boneAt(anchor) + 4);
+		}
+		if (anchor < 0 || anchor >= count)
+			return -1;
+		rel = Concat(poseToBone(anchor), InvertRigid(poseToBone(bone)));
+		return anchor;
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+	}
+	return -1;
+}
+
+// The attachment on 'bone': studiohdr_t numlocalattachments at +240, index at
+// +244; mstudioattachment_t is 92 bytes -- name offset, flags, localbone, then
+// its matrix3x4_t relative to that bone. The X column is the direction a
+// muzzle flash fires, i.e. down the barrel.
+static bool FindAttachmentOnBone(void *state, int bone, float axis[3], float offset[3])
+{
+	__try
+	{
+		const unsigned char *hdr = *reinterpret_cast<const unsigned char *const *>(state);
+		const int count = *reinterpret_cast<const int *>(hdr + 240);
+		const int index = *reinterpret_cast<const int *>(hdr + 244);
+		for (int i = 0; i < count && i < 64; ++i)
+		{
+			const unsigned char *att = hdr + index + i * 92;
+			if (*reinterpret_cast<const int *>(att + 8) != bone)
+				continue;
+			const float *m = reinterpret_cast<const float *>(att + 12);   // rows of 4
+			axis[0] = m[0]; axis[1] = m[4]; axis[2] = m[8];
+			offset[0] = m[3]; offset[1] = m[7]; offset[2] = m[11];
+			const float len = sqrtf(axis[0] * axis[0] + axis[1] * axis[1] + axis[2] * axis[2]);
+			if (len < 0.5f || len > 2.0f)
+				return false;
+			for (int k = 0; k < 3; ++k)
+				axis[k] /= len;
+			return true;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+	}
+	return false;
+}
+
+static const MuzzleInfo &MuzzleFor(void *state, const void *model, const char *modelName)
+{
+	static MuzzleInfo s_info[32];
+	static int s_count = 0;
+	for (int i = 0; i < s_count; ++i)
+		if (s_info[i].model == model)
+			return s_info[i];
+	MuzzleInfo m{};
+	m.model = model;
+	m.bone = FindStudioBone(state, "muzzle.bone1");
+	if (m.bone < 0)
+		m.bone = FindStudioBone(state, "muzzle.bone01");
+	m.anchor = -1;
+	m.haveAttachment = m.bone >= 0 && FindAttachmentOnBone(state, m.bone, m.axis, m.offset);
+	if (!m.haveAttachment)
+	{
+		m.axis[0] = 1.0f; m.axis[1] = 0.0f; m.axis[2] = 0.0f;
+		m.offset[0] = m.offset[1] = m.offset[2] = 0.0f;
+	}
+	BoneMat rel;
+	if (m.bone >= 0)
+		m.anchor = MuzzleAnchor(state, m.bone, rel);
+	if (m.anchor >= 0)
+	{
+		// Attachment (in the muzzle bone's frame) -> the anchor's frame.
+		float a[3], o[3];
+		for (int k = 0; k < 3; ++k)
+		{
+			a[k] = rel.m[k][0] * m.axis[0] + rel.m[k][1] * m.axis[1] + rel.m[k][2] * m.axis[2];
+			o[k] = rel.m[k][0] * m.offset[0] + rel.m[k][1] * m.offset[1] + rel.m[k][2] * m.offset[2] + rel.m[k][3];
+		}
+		for (int k = 0; k < 3; ++k)
+		{
+			m.axis[k] = a[k];
+			m.offset[k] = o[k];
+		}
+	}
+	if (m.bone >= 0)
+		Game::logMsg("TRACKED GUN: %s muzzle bone %d on bone %d, attachment %s, axis=(%.2f,%.2f,%.2f) offset=(%.1f,%.1f,%.1f)",
+		             modelName, m.bone, m.anchor, m.haveAttachment ? "found" : "MISSING (using the model's forward)",
+		             m.axis[0], m.axis[1], m.axis[2], m.offset[0], m.offset[1], m.offset[2]);
+	if (s_count < 32)
+	{
+		s_info[s_count] = m;
+		return s_info[s_count++];
+	}
+	static MuzzleInfo s_spare;
+	s_spare = m;
+	return s_spare;
+}
+
+// The muzzle and the barrel direction in the world with the current hand
+// pose, if a gun was drawn in the last 150 ms. Melee weapons and throwables
+// have no muzzle bone.
+bool GESVR_MuzzleWorld(Vector &out, Vector &dir)
+{
+	VR *vr = Hooks::m_VR;
+	if (!vr || GetTickCount64() > g_muzzleSeenUntil)
+		return false;
+	const BoneMat hand = PoseMatrix(vr->GetRecommendedViewmodelAbsAngle(), vr->GetRecommendedViewmodelAbsPos());
+	const float *p = g_muzzleLocal, *a = g_muzzleAxisLocal;
+	out.x = hand.m[0][0] * p[0] + hand.m[0][1] * p[1] + hand.m[0][2] * p[2] + hand.m[0][3];
+	out.y = hand.m[1][0] * p[0] + hand.m[1][1] * p[1] + hand.m[1][2] * p[2] + hand.m[1][3];
+	out.z = hand.m[2][0] * p[0] + hand.m[2][1] * p[1] + hand.m[2][2] * p[2] + hand.m[2][3];
+	dir.x = hand.m[0][0] * a[0] + hand.m[0][1] * a[1] + hand.m[0][2] * a[2];
+	dir.y = hand.m[1][0] * a[0] + hand.m[1][1] * a[1] + hand.m[1][2] * a[2];
+	dir.z = hand.m[2][0] * a[0] + hand.m[2][1] * a[1] + hand.m[2][2] * a[2];
+	const float len = sqrtf(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+	if (len < 0.001f)
+		return false;
+	dir.x /= len; dir.y /= len; dir.z /= len;
+	return true;
+}
+
+// --- Tracked weapon, step 4: effects from the gun in the hand -----------------
+//
+// The muzzle flash (GE:S muzzle_* particles following the "muzzle"
+// attachment), its light, the muzzle smoke, ejected shells and the start of
+// your own tracers (GetTracerOrigin uses the local player's viewmodel
+// attachment) all ask the VIEWMODEL where its attachments are -- and the
+// viewmodel entity is still at your head; only its drawing was moved. Every
+// one of those positions is made in C_BaseAnimating's attachment setup, which
+// passes each through C_BaseViewModel::FormatViewModelAttachment (normally a
+// correction for the viewmodel FOV). With the gun in hand the attachment gets
+// the same rigid move the drawn bones do instead: hand * inverse(viewmodel
+// pose). No FOV correction: the tracked gun is drawn at the eye's own FOV.
+// GE:S's muzzle particles are world effects (none but the sniper rifle's empty
+// parent is a "view model effect" in ge_muzzle_fx.pcf), so they render in the
+// normal pass, right where they now are.
+//
+// The viewmodel pose is read at that moment through its own GetRenderOrigin /
+// GetRenderAngles -- the pair SetupBones builds the bones from -- because on
+// the frame you fire the view angles have just swung to the barrel, and a pose
+// remembered from the last draw would put the flash off by that swing. The
+// hand is the one the last tracked draw of that viewmodel used (placed by the
+// hand bone for the slappers and knives).
+struct TrackedHand
+{
+	const void *entity;
+	BoneMat hand;
+	ULONGLONG until;
+};
+static TrackedHand g_trackedHands[4];
+
+static void NoteTrackedHand(const void *entity, const BoneMat &hand)
+{
+	int slot = -1, oldest = 0;
+	for (int i = 0; i < 4; ++i)
+	{
+		if (g_trackedHands[i].entity == entity)
+		{
+			slot = i;
+			break;
+		}
+		if (g_trackedHands[i].until < g_trackedHands[oldest].until)
+			oldest = i;
+	}
+	if (slot < 0)
+		slot = oldest;
+	g_trackedHands[slot].entity = entity;
+	g_trackedHands[slot].hand = hand;
+	g_trackedHands[slot].until = GetTickCount64() + 250;
+}
+
+// IClientRenderable (entity + 4) slots 1 and 2, GetRenderOrigin and
+// GetRenderAngles: in this client.dll both start
+// "cmp [ecx+4A4h],0 / j.. / cmp byte [ecx+50h],17h" (return the followed
+// entity's pose, else the abs pose), shared by C_BaseViewModel and
+// C_PredictedViewModel. Checked per vtable before the first call.
+typedef const float *(__thiscall *tRenderPoseGetter)(void *renderable);
+
+static bool ViewmodelRenderPose(void *entity, Vector &origin, QAngle &angles)
+{
+	static void **s_goodVt = nullptr, **s_badVt = nullptr;
+	void *renderable = static_cast<char *>(entity) + 4;
+	void **vt = *reinterpret_cast<void ***>(renderable);
+	if (!vt || vt == s_badVt)
+		return false;
+	if (vt != s_goodVt)
+	{
+		bool ok = false;
+		__try
+		{
+			static const unsigned char kHead[] = { 0x83, 0xB9, 0xA4, 0x04, 0x00, 0x00, 0x00 };
+			static const unsigned char kFollow[] = { 0x80, 0x79, 0x50, 0x17 };
+			const unsigned char *o = static_cast<const unsigned char *>(vt[1]);
+			const unsigned char *a = static_cast<const unsigned char *>(vt[2]);
+			ok = memcmp(o, kHead, 7) == 0 && memcmp(o + 9, kFollow, 4) == 0 &&
+			     memcmp(a, kHead, 7) == 0 && memcmp(a + 9, kFollow, 4) == 0;
+		}
+		__except (EXCEPTION_EXECUTE_HANDLER)
+		{
+			ok = false;
+		}
+		Game::logMsg("Viewmodel GetRenderOrigin/GetRenderAngles %s (vtable %p)",
+		             ok ? "verified" : "NOT recognised -- effects stay at the head", vt);
+		if (!ok)
+		{
+			s_badVt = vt;
+			return false;
+		}
+		s_goodVt = vt;
+	}
+	const float *o = reinterpret_cast<tRenderPoseGetter>(vt[1])(renderable);
+	const float *a = reinterpret_cast<tRenderPoseGetter>(vt[2])(renderable);
+	if (!o || !a)
+		return false;
+	origin = Vector(o[0], o[1], o[2]);
+	angles = QAngle(a[0], a[1], a[2]);
+	return true;
+}
+
+static bool FaceAimMoveAttachment(void *entity, BoneMat &m);   // below, with FaceAimBones
+
+void __fastcall Hooks::dFormatViewModelAttachment(void *ecx, void *edx, int nAttachment, void *attachmentToWorld)
+{
+	if (m_VR && m_VR->m_TrackedWeapon && ecx && attachmentToWorld)
+	{
+		const ULONGLONG now = GetTickCount64();
+		for (const TrackedHand &t : g_trackedHands)
+		{
+			if (t.entity != ecx || now > t.until)
+				continue;
+			Vector origin;
+			QAngle angles;
+			if (!ViewmodelRenderPose(ecx, origin, angles))
+				break;
+			BoneMat &m = *static_cast<BoneMat *>(attachmentToWorld);
+			const Vector before(m.m[0][3], m.m[1][3], m.m[2][3]);
+			m = Concat(Concat(t.hand, InvertRigid(PoseMatrix(angles, origin))), m);
+			static int s_logged = 0;
+			if (s_logged < 8)
+			{
+				Game::logMsg("TRACKED GUN: attachment %d (%.1f,%.1f,%.1f) -> (%.1f,%.1f,%.1f) hand=(%.1f,%.1f,%.1f)",
+				             nAttachment, before.x, before.y, before.z, m.m[0][3], m.m[1][3], m.m[2][3],
+				             t.hand.m[0][3], t.hand.m[1][3], t.hand.m[2][3]);
+				++s_logged;
+			}
+			return;
+		}
+	}
+	// Face aim: move with the gun (FaceAimBones), not GE:S's FOV correction --
+	// the gun was moved to where that correction puts the muzzle, so the
+	// flash stays put and the rest (shells) now leave the gun as drawn.
+	if (m_VR && !m_VR->m_TrackedWeapon && ecx && attachmentToWorld &&
+	    FaceAimMoveAttachment(ecx, *static_cast<BoneMat *>(attachmentToWorld)))
+		return;
+	hkFormatViewModelAttachment.fOriginal(ecx, nAttachment, attachmentToWorld);
+}
+
+// Pre-squash along this eye's up axis, centred on the eye: D = I + (s-1)uu^T
+// plus the matching translation. The first-person pass's window aspect
+// stretches it back, so first-person models land in true shape where the world
+// does. The same for both eyes (they share the up axis and differ only along
+// right). False when there is nothing to undo.
+static bool EyeSquash(BoneMat &squash)
+{
+	if (!g_eyeValid || fabsf(g_squash - 1.0f) <= 0.001f || g_squash <= 0.2f || g_squash >= 5.0f)
+		return false;
+	Vector f, r, u;
+	QAngle::AngleVectors(g_eyeAngles, &f, &r, &u);
+	const float k = g_squash - 1.0f;
+	const float uv[3] = { u.x, u.y, u.z };
+	const float e[3] = { g_eyeOrigin.x, g_eyeOrigin.y, g_eyeOrigin.z };
+	const float ue = uv[0] * e[0] + uv[1] * e[1] + uv[2] * e[2];
+	for (int i = 0; i < 3; ++i)
+	{
+		for (int j = 0; j < 3; ++j)
+			squash.m[i][j] = (i == j ? 1.0f : 0.0f) + k * uv[i] * uv[j];
+		squash.m[i][3] = -k * uv[i] * ue;
+	}
+	return true;
+}
+
+// Face aim (gun not in hand): the head-locked viewmodel.
+//
+// Squash: pre-squashed like the gun in hand. GE:S's DrawViewModels draws at
+// the window's aspect, so without it the gun came out ~1.8x too tall and
+// pulled away from the centre vertically ("a little squished and skewed").
+//
+// Shift: drawn at the eye's FOV, in its true place, the gun sits right in
+// front of your face -- viewmodels are built for a narrow viewmodel FOV that
+// spreads them out to the lower right. GE:S's own attachment FOV correction
+// (C_BaseViewModel::FormatViewModelAttachment) still put the muzzle flash and
+// tracers out there: it scales an attachment's offset across the view by
+// tan(fov/2) / tan(fovViewmodel/2) of the game's view. So the whole gun is
+// moved, rigidly, by that same amount measured at its muzzle (at the hand
+// for the slappers and knives): gun, flash and tracers meet where GE:S puts
+// its effects, and the gun keeps its true size and shape. FaceAimGunSpread
+// scales it (1 = there, 0 = straight in front). The attachment hook moves
+// every attachment by the same shift, so shells come out of the moved gun.
+struct FaceAimShift
+{
+	const void *entity;
+	const void *model;
+	float ref[3];          // reference point (muzzle / hand) in the viewmodel frame, eased
+	float shift[3];        // the move, in the viewmodel frame (forward, left, up)
+	unsigned frame;
+	ULONGLONG until;
+};
+static FaceAimShift g_faceAim[4];
+
+static FaceAimShift &FaceAimSlot(const void *entity)
+{
+	int oldest = 0;
+	for (int i = 0; i < 4; ++i)
+	{
+		if (g_faceAim[i].entity == entity)
+			return g_faceAim[i];
+		if (g_faceAim[i].until < g_faceAim[oldest].until)
+			oldest = i;
+	}
+	g_faceAim[oldest] = FaceAimShift{};
+	g_faceAim[oldest].entity = entity;
+	return g_faceAim[oldest];
+}
+
+static void *FaceAimBones(void *state, const ModelRenderInfo_t &info, void *bones, const char *modelName, VR *vr)
+{
+	const int count = ReadStudioBoneCount(state);
+	if (count < 0)
+		return bones;
+	const BoneMat vm = PoseMatrix(info.angles, info.origin);
+	const BoneMat inv = InvertRigid(vm);
+	const BoneMat *src = static_cast<const BoneMat *>(bones);
+	const ULONGLONG now = GetTickCount64();
+	FaceAimShift &s = FaceAimSlot(static_cast<const char *>(info.pRenderable) - 4);
+
+	float k = 0.0f;
+	if (g_gameFov > 1.0f && g_gameFovVM > 1.0f && g_gameFov < 179.0f && g_gameFovVM < 179.0f)
+	{
+		const float d2r = 3.14159265f / 180.0f;
+		const float f = tanf(g_gameFov * 0.5f * d2r) / tanf(g_gameFovVM * 0.5f * d2r);
+		if (f > 0.2f && f < 8.0f)
+			k = (f - 1.0f) * vr->m_FaceAimGunSpread;
+		static bool s_logged = false;
+		if (!s_logged)
+		{
+			s_logged = true;
+			Game::logMsg("FACE AIM: game fov %.1f, viewmodel fov %.1f -> spread x%.2f (FaceAimGunSpread %.2f)",
+			             g_gameFov, g_gameFovVM, f, vr->m_FaceAimGunSpread);
+		}
+	}
+	if (s.frame != g_stereoFrame)
+	{
+		s.frame = g_stereoFrame;
+		float p[3];
+		bool haveRef = false;
+		const MuzzleInfo &mz = MuzzleFor(state, info.pModel, modelName);
+		if (mz.anchor >= 0 && mz.anchor < count)
+		{
+			const BoneMat local = Concat(inv, src[mz.anchor]);
+			for (int r = 0; r < 3; ++r)
+				p[r] = local.m[r][0] * mz.offset[0] + local.m[r][1] * mz.offset[1] + local.m[r][2] * mz.offset[2] + local.m[r][3];
+			haveRef = true;
+		}
+		else if (ArmRig *rig = ArmRigFor(state, info.pModel, modelName))
+		{
+			if (rig->hand < count)
+			{
+				const BoneMat local = Concat(inv, src[rig->hand]);
+				for (int r = 0; r < 3; ++r)
+					p[r] = local.m[r][3];
+				haveRef = true;
+			}
+		}
+		if (haveRef)
+		{
+			// Slow, so a firing kick is not multiplied into the whole gun.
+			const float t = (s.model != info.pModel || now > s.until) ? 1.0f : 0.05f;
+			for (int r = 0; r < 3; ++r)
+				s.ref[r] += (p[r] - s.ref[r]) * t;
+		}
+		else
+			s.ref[0] = s.ref[1] = s.ref[2] = 0.0f;
+		s.model = info.pModel;
+	}
+	s.shift[0] = 0.0f;
+	s.shift[1] = k * s.ref[1];
+	s.shift[2] = k * s.ref[2];
+	s.until = now + 250;
+
+	// The shift in the world: PoseMatrix's columns are forward, left, up.
+	float w[3];
+	for (int r = 0; r < 3; ++r)
+		w[r] = vm.m[r][1] * s.shift[1] + vm.m[r][2] * s.shift[2];
+	BoneMat squash;
+	const bool squashed = EyeSquash(squash);
+	if (!squashed && fabsf(w[0]) + fabsf(w[1]) + fabsf(w[2]) < 0.001f)
+		return bones;
+	for (int i = 0; i < count; ++i)
+	{
+		BoneMat b = src[i];
+		for (int r = 0; r < 3; ++r)
+			b.m[r][3] += w[r];
+		g_handBones[i] = squashed ? Concat(squash, b) : b;
+	}
+	return g_handBones;
+}
+
+// An attachment of a face-aim viewmodel, moved by that viewmodel's shift at
+// its current pose. False if FaceAimBones has not drawn it lately.
+static bool FaceAimMoveAttachment(void *entity, BoneMat &m)
+{
+	const ULONGLONG now = GetTickCount64();
+	for (const FaceAimShift &s : g_faceAim)
+	{
+		if (s.entity != entity || now > s.until)
+			continue;
+		Vector origin;
+		QAngle angles;
+		if (!ViewmodelRenderPose(entity, origin, angles))
+			return false;
+		const BoneMat vm = PoseMatrix(angles, origin);
+		for (int r = 0; r < 3; ++r)
+			m.m[r][3] += vm.m[r][1] * s.shift[1] + vm.m[r][2] * s.shift[2];
+		return true;
+	}
+	return false;
+}
+
+// GE:S's death curtain: models/VGUI/bloodanimation.mdl, the viewmodel of the
+// gebloodscreen entity -- an 80 x 62.5 unit sheet of blood about 50 units in
+// front of the game camera, whose drips slide down on death. In VR it hung off
+// the game camera, which on death rides the ragdoll's head, and at the eye's
+// FOV it covered only the middle of the view: "a red square bouncing around".
+// Now each eye wears it: placed on that eye, stretched across the view
+// (BloodCurtainScale, 2.6 by default, overfills the headset's FOV) and
+// pre-squashed for the pass aspect like everything else in that pass.
+static void *BloodCurtainBones(void *state, const ModelRenderInfo_t &info, void *bones, VR *vr)
+{
+	const int count = ReadStudioBoneCount(state);
+	if (count < 0 || !g_eyeValid)
+		return bones;
+	BoneMat stretch = PoseMatrix(QAngle(0.0f, 0.0f, 0.0f), Vector(0.0f, 0.0f, 0.0f));
+	const float k = (vr->m_BloodCurtainScale > 0.5f && vr->m_BloodCurtainScale < 10.0f) ? vr->m_BloodCurtainScale : 2.6f;
+	stretch.m[1][1] = k;   // across
+	stretch.m[2][2] = k;   // up and down
+	BoneMat total = Concat(PoseMatrix(g_eyeAngles, g_eyeOrigin),
+	                       Concat(stretch, InvertRigid(PoseMatrix(info.angles, info.origin))));
+	BoneMat squash;
+	if (EyeSquash(squash))
+		total = Concat(squash, total);
+	const BoneMat *src = static_cast<const BoneMat *>(bones);
+	for (int i = 0; i < count; ++i)
+		g_handBones[i] = Concat(total, src[i]);
+	static bool s_logged = false;
+	if (!s_logged)
+	{
+		s_logged = true;
+		Game::logMsg("Death curtain: placed on each eye, stretched %.1fx", k);
+	}
+	return g_handBones;
+}
+
+// Returns the bones to draw with: ours, moved to the hand, or the originals.
+static void *TrackedWeaponBones(void *state, const ModelRenderInfo_t &info, void *bones,
+                                const char *modelName, VR *vr)
+{
+	const int count = ReadStudioBoneCount(state);
+	if (count < 0)
+	{
+		static bool s_warned = false;
+		if (!s_warned)
+		{
+			s_warned = true;
+			Game::logMsg("TRACKED GUN: could not read the studio header for %s; drawing it where it was", modelName);
+		}
+		return bones;
+	}
+	const BoneMat vm = PoseMatrix(info.angles, info.origin);
+	BoneMat hand = PoseMatrix(vr->GetRecommendedViewmodelAbsAngle(), vr->GetRecommendedViewmodelAbsPos());
+	const BoneMat *src = static_cast<const BoneMat *>(bones);
+
+	// Arm rigs (slappers, knives: any first-person model with R_FK_Hand_jnt)
+	// are an arm, not a gun. Placed by origin, the shoulder end sat on the
+	// controller; anchored by the hand, the arm then ran back into your face
+	// and chest -- a flat-screen arm reaching from beside the camera. So the
+	// hand bone goes on the controller and (MeleeHideArm) the arm bones are
+	// folded into the wrist, leaving a floating hand. Where the hand sits in
+	// the model comes from the live bones, averaged slowly so the attack
+	// animation still reads as a swing instead of being pinned flat.
+	ArmRig *rig = ArmRigFor(state, info.pModel, modelName);
+	if (rig)
+	{
+		const QAngle off(vr->m_MeleeAngleOffset.x, vr->m_MeleeAngleOffset.y, vr->m_MeleeAngleOffset.z);
+		hand = Concat(hand, PoseMatrix(off, Vector(0.0f, 0.0f, 0.0f)));   // tilt the hand about itself
+		const BoneMat local = Concat(InvertRigid(vm), src[rig->hand]);   // hand in model space
+		const float a = rig->haveLocal ? 0.02f : 1.0f;
+		for (int k = 0; k < 3; ++k)
+			rig->local[k] += (local.m[k][3] - rig->local[k]) * a;
+		rig->haveLocal = true;
+		// The controller, shifted by the weapon's tuned offset (numpad /
+		// weapons.txt) in the gun frame -- exactly where a gun's anchor goes.
+		const Vector c = vr->GetRecommendedViewmodelAbsPos();
+		const float cv[3] = { c.x, c.y, c.z };
+		for (int i = 0; i < 3; ++i)
+			hand.m[i][3] = cv[i] - (hand.m[i][0] * rig->local[0] + hand.m[i][1] * rig->local[1] + hand.m[i][2] * rig->local[2]);
+	}
+	NoteTrackedHand(static_cast<const char *>(info.pRenderable) - 4, hand);   // for its attachments
+	const BoneMat move = Concat(hand, InvertRigid(vm));
+
+	// Guns (not arm rigs): note the barrel for the trace. Once a frame, not
+	// per eye, so the easing runs at frame rate.
+	if (!rig)
+	{
+		const MuzzleInfo &mz = MuzzleFor(state, info.pModel, modelName);
+		if (mz.anchor >= 0 && mz.anchor < count && g_muzzleFrame != g_stereoFrame)
+		{
+			g_muzzleFrame = g_stereoFrame;
+			const BoneMat local = Concat(InvertRigid(vm), src[mz.anchor]);   // anchor bone in model space
+			float p[3], a[3];
+			for (int k = 0; k < 3; ++k)
+			{
+				p[k] = local.m[k][0] * mz.offset[0] + local.m[k][1] * mz.offset[1] + local.m[k][2] * mz.offset[2] + local.m[k][3];
+				a[k] = local.m[k][0] * mz.axis[0] + local.m[k][1] * mz.axis[1] + local.m[k][2] * mz.axis[2];
+			}
+			// A new gun, or the first sighting after a gap: take it as is.
+			const ULONGLONG now = GetTickCount64();
+			const float t = (g_muzzleModel != info.pModel || now > g_muzzleSeenUntil) ? 1.0f : 0.25f;
+			float len = 0.0f;
+			for (int k = 0; k < 3; ++k)
+			{
+				g_muzzleLocal[k] += (p[k] - g_muzzleLocal[k]) * t;
+				g_muzzleAxisLocal[k] += (a[k] - g_muzzleAxisLocal[k]) * t;
+				len += g_muzzleAxisLocal[k] * g_muzzleAxisLocal[k];
+			}
+			len = sqrtf(len);
+			if (len > 0.001f)
+				for (int k = 0; k < 3; ++k)
+					g_muzzleAxisLocal[k] /= len;
+			g_muzzleModel = info.pModel;
+			g_muzzleSeenUntil = now + 150;
+		}
+	}
+	// Pre-squash for the first-person pass's aspect (see EyeSquash).
+	BoneMat squash = PoseMatrix(QAngle(0.0f, 0.0f, 0.0f), Vector(0.0f, 0.0f, 0.0f));
+	EyeSquash(squash);
+	const BoneMat total = Concat(squash, move);
+	for (int i = 0; i < count; ++i)
+		g_handBones[i] = Concat(total, src[i]);
+
+	// Floating hand: fold every arm bone to a point at the hand, so the upper
+	// arm and forearm shrink into the wrist and only the hand and cuff remain.
+	// Bone matrices are absolute here, so the hand and fingers are unaffected.
+	if (rig && vr->m_MeleeHideArm)
+	{
+		const BoneMat &h = g_handBones[rig->hand];
+		for (int b : rig->arm)
+		{
+			if (b < 0 || b >= count)
+				continue;
+			for (int i = 0; i < 3; ++i)
+			{
+				for (int j = 0; j < 3; ++j)
+					g_handBones[b].m[i][j] = 0.0f;
+				g_handBones[b].m[i][3] = h.m[i][3];
+			}
+		}
+	}
+
+	static int s_logged = 0;
+	if (s_logged < 6)
+	{
+		const Vector h = vr->GetRecommendedViewmodelAbsPos();
+		Game::logMsg("TRACKED GUN %s bones=%d viewmodel=(%.1f,%.1f,%.1f) -> hand=(%.1f,%.1f,%.1f)",
+		             modelName, count, info.origin.x, info.origin.y, info.origin.z, h.x, h.y, h.z);
+		++s_logged;
+	}
+	return g_handBones;
+}
+
 void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRenderInfo_t &info, void *pCustomBoneToWorld)
 {
 	if (m_Game->m_SwitchedWeapons)
@@ -1283,7 +2159,7 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 		// first-person model specifically instead.
 		const char *mn = (info.pModel && m_Game->m_ModelInfo)
 		                   ? m_Game->m_ModelInfo->GetModelName(info.pModel) : nullptr;
-		if (mn && (strstr(mn, "/v_") || strstr(mn, "_") || strstr(mn, "/vm_") ||
+		if (mn && (strstr(mn, "/v_") || strstr(mn, "\\v_") || strstr(mn, "/vm_") ||
 		           strstr(mn, "arms") || strstr(mn, "hand")))
 		{
 			static int s_vm = 0;
@@ -1317,7 +2193,47 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 		}
 	}
 
-	if (g_inStereoPass && m_VR && m_VR->m_IsVREnabled && info.pModel && m_Game->m_ModelInfo)
+	// Tracked weapon: first-person models (the gun, and separate arms if the
+	// game draws them) near the eye get drawn at the hand. Computed before the
+	// block below rewrites info.origin, which is the viewmodel pose we need.
+	void *bones = pCustomBoneToWorld;
+	bool trackedDraw = false;
+	if (g_inStereoPass && m_VR && m_VR->m_IsVREnabled && m_VR->m_TrackedWeapon && pCustomBoneToWorld &&
+	    state && info.pModel && m_Game->m_ModelInfo)
+	{
+		const char *mn = m_Game->m_ModelInfo->GetModelName(info.pModel);
+		const bool firstPerson = mn && (strstr(mn, "/v_") || strstr(mn, "\\v_") || strstr(mn, "/vm_") ||
+		                                strstr(mn, "/arms/") || strstr(mn, "v_hands"));
+		if (firstPerson && VectorLength(info.origin - m_VR->m_SetupOrigin) < 80.0f)
+		{
+			bones = TrackedWeaponBones(state, info, pCustomBoneToWorld, mn, m_VR);
+			trackedDraw = (bones != pCustomBoneToWorld);
+		}
+	}
+
+	// Face aim: the same models, left at the head: true shape, and out where
+	// GE:S puts their muzzle flash (see FaceAimBones).
+	if (!trackedDraw && g_inStereoPass && m_VR && m_VR->m_IsVREnabled &&
+	    (m_VR->m_FixViewmodelAspect || fabsf(m_VR->m_FaceAimGunSpread) > 0.001f) &&
+	    pCustomBoneToWorld && state && info.pModel && m_Game->m_ModelInfo)
+	{
+		const char *mn = m_Game->m_ModelInfo->GetModelName(info.pModel);
+		const bool firstPerson = mn && (strstr(mn, "/v_") || strstr(mn, "\\v_") || strstr(mn, "/vm_") ||
+		                                strstr(mn, "/arms/") || strstr(mn, "v_hands"));
+		if (firstPerson && VectorLength(info.origin - m_VR->m_SetupOrigin) < 80.0f)
+			bones = FaceAimBones(state, info, pCustomBoneToWorld, mn, m_VR);
+	}
+
+	// The death curtain, worn by each eye (see BloodCurtainBones).
+	if (g_inStereoPass && g_eyeValid && m_VR && m_VR->m_IsVREnabled && pCustomBoneToWorld && state &&
+	    info.pModel && m_Game->m_ModelInfo)
+	{
+		const char *mn = m_Game->m_ModelInfo->GetModelName(info.pModel);
+		if (mn && strstr(mn, "bloodanimation"))
+			bones = BloodCurtainBones(state, info, pCustomBoneToWorld, m_VR);
+	}
+
+	if (!trackedDraw && g_inStereoPass && m_VR && m_VR->m_IsVREnabled && info.pModel && m_Game->m_ModelInfo)
 	{
 		const char *modelName = m_Game->m_ModelInfo->GetModelName(info.pModel);
 		if (modelName && (strstr(modelName, "/v_") || strstr(modelName, "\\v_") || strstr(modelName, "/vm_")))
@@ -1376,12 +2292,12 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 	{
 		m_Game->m_ArmsMaterial->SetMaterialVarFlag(MATERIAL_VAR_NO_DRAW, true);
 		m_Game->m_ModelRender->ForcedMaterialOverride(m_Game->m_ArmsMaterial);
-		hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
+		hkDrawModelExecute.fOriginal(ecx, state, info, bones);
 		m_Game->m_ModelRender->ForcedMaterialOverride(NULL);
 		return;
 	}
 
-	hkDrawModelExecute.fOriginal(ecx, state, info, pCustomBoneToWorld);
+	hkDrawModelExecute.fOriginal(ecx, state, info, bones);
 }
 
 void Hooks::dPushRenderTargetAndViewport(void *ecx, void *edx, ITexture *pTexture, ITexture *pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH)

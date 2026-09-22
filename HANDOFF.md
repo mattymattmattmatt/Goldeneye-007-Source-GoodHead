@@ -5,6 +5,323 @@ Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in The
 
 ---
 
+## v0.2-free-aim: TUNED POSITIONS SHIPPED, NUMPAD TUNING OFF BY DEFAULT (2026-09-22)
+
+* Matty's numpad-tuned positions (his VR/weapons.txt) are now weapons.cpp's
+  built-in table: tknife, knife, slappers, the three mines by name, grenade,
+  zmg. First substring match wins, so `tknife` sits above `knife` and the
+  named mines above `mine`. A player's own weapons.txt still overrides.
+* `WeaponTuning=false` by default: ProcessTuneKeys still counts presses (so
+  turning it on does not replay them) but ignores them. New settings tab
+  **Weapons**: "Swing to attack" (SwingMelee) and "Adjust position"
+  (WeaponTuning).
+* This is the second line in the sand (tag `v0.2-free-aim`): free aim with
+  barrel-true shots and dot, effects from the hand, face aim in true shape,
+  classic reticle, Game HUD option, round time on the watch.
+
+## FACE-AIM RETICLE DEPTH; WATCH SHOWS ROUND TIME (2026-09-22 late)
+
+* **Face-aim reticle on surfaces.** It was drawn at the centre of each eye:
+  identical in both, i.e. at infinity, so it read as passing through anything
+  nearer. UpdateGunAim now runs in face aim too: trace from m_SetupOrigin (the
+  game's eye, where shots leave) along the eye angles, and draw the dot at the
+  hit point's projection in each eye, like free aim. No view-angle override
+  and no "no gun" hiding in face aim.
+* **Watch time = round time when there are rounds.** It took the first
+  CGEGameTimer entity, which is the match timer (CGEMPRules creates
+  m_hMatchTimer then m_hRoundTimer back to back, so the match timer has the
+  lower index). Now both are found and it follows GE:S's CGEHudRoundTimer:
+  round remaining while the round timer is started, else match remaining if
+  round time is enabled, else none. Reads m_bStarted too. Log:
+  `Game timers: match at N, round at M` and every 10 s `Game timers: showing ...`.
+
+## FEEDBACK ROUND: FACE-AIM GUN, HUD, WEAPON SWITCH, DEATH CURTAIN (2026-09-22)
+
+* **Face-aim gun moved out to the lower right** (`FaceAimBones`, replaces
+  SquashedViewmodelBones). At the eye FOV the head-locked gun sat in front of
+  your face, while GE:S's FormatViewModelAttachment still put flash/tracers
+  where a narrow viewmodel FOV would: it scales an attachment's offset across
+  the view by f = tan(fov/2)/tan(fovViewmodel/2) of the GAME's view (captured
+  from RenderView's setup: g_gameFov/g_gameFovVM). The gun now moves rigidly
+  by (f-1) x its muzzle's across/up offset (hand bone for arm rigs), eased 5%
+  per frame so recoil is not amplified, times `FaceAimGunSpread` (1 default).
+  In face aim the attachment hook applies the same shift instead of the FOV
+  correction (`FaceAimMoveAttachment`), so the flash stays where it was and
+  shells leave the moved gun. Log: `FACE AIM: game fov .. viewmodel fov ..`.
+* **Reticle while zoomed** even with VRReticle off: dxvk `g_GESVR_ReticleForce`
+  = scope held and the engine FOV below the learned base FOV.
+* **Classic reticle** radius 6x the dot size (min 6 px); 16x was far too big.
+* **Settings**: "Gun in hand (test)" is now "Aim mode": Face aim / Free aim
+  (still TrackedWeapon=false/true). New Display row "Game HUD": Off / When hurt
+  / Always (`GameHUD=off|hurt|always`; default from HudAlwaysVisible). The
+  hurt pop-up only runs in When hurt and never at 0 health; the Show HUD button
+  works in every mode.
+* **Weapon switch**: `WeaponFastSwitch=true` sets `hud_fastswitch 1` (GE:S's
+  default 0 highlights in a 2D list and switches on fire -- invisible in VR).
+  The watch pops up for 2.5 s when the held weapon changes.
+* **Death**: the red curtain is the viewmodel of GE:S's `gebloodscreen` entity,
+  `models/VGUI/bloodanimation.mdl` (20 bones: a root and 17 drip columns; an
+  80 x 62.5 u sheet ~50 u ahead). It hung off the game camera -- which rides
+  the ragdoll's head on death -- and at the eye FOV covered only the middle.
+  `BloodCurtainBones` places it on each eye, stretches it `BloodCurtainScale`
+  (2.6) across and up, and pre-squashes it. The HUD's HudBloodScreen is only a
+  fade to black + respawn text. `DeathCamFirstPerson=false` sets
+  `ge_fp_ragdoll 0` (standard death camera). Both cvars are archived by GE:S.
+
+## FACE AIM: HEAD-LOCKED GUN IN TRUE SHAPE (2026-09-22)
+
+The per-eye pre-squash (`EyeSquash`, the fix for the tracked gun's stretch:
+GE:S's DrawViewModels uses the window's 16:9 aspect, the eyes 0.964) now also
+applies to first-person models left at the head when the gun is not in hand
+(`SquashedViewmodelBones`). Squash only, no move. `FixViewmodelAspect=true`
+(default) turns it on; g_squash is computed when either mode needs it. The
+squash is identical for both eyes (shared up axis), and it corrects shape
+whatever fovViewmodel is. Also fixed a leftover VT byte (0x0B: an old heredoc turned
+the `\v` of `"\\v_"` into one) in the VIEWMODEL-seen log filter.
+
+## TRACKED WEAPON, STEP 4: EFFECTS FROM THE HAND; KNIFE THROW GESTURE (2026-09-22)
+
+* **Muzzle flash, its light, muzzle smoke, ejected shells, tracer start** all
+  come from the viewmodel's attachments, and the viewmodel entity is still at
+  the head (only its drawing is moved). C_BaseAnimating's attachment setup
+  passes every attachment through `C_BaseViewModel::FormatViewModelAttachment`
+  (client.dll vtable[183], RVA 0x14DF20; found as the only C_BaseViewModel
+  override of an empty `ret 8` C_BaseAnimating virtual; code matches the SDK:
+  MatrixGetColumn / ::FormatViewModelAttachment / MatrixSetColumn). Hooked by
+  signature (`Offsets::FormatViewModelAttachment`). With TrackedWeapon on it
+  replaces the FOV correction with the drawn bones' rigid move:
+  hand * inverse(viewmodel pose). The hand is noted per viewmodel entity by
+  TrackedWeaponBones (`NoteTrackedHand`, entity = info.pRenderable - 4). The
+  viewmodel pose is read at that moment from IClientRenderable (entity+4)
+  slots 1/2, GetRenderOrigin/GetRenderAngles, prefix-checked per vtable
+  (`83 B9 A4 04 00 00 00 .. .. 80 79 50 17`), because the first shot swings
+  the view angles to the barrel that same frame.
+* GE:S tracers: `CGEWeapon::MakeTracer` -> `UTIL_ParticleTracer("tracer_standard",
+  ..., weapon entindex, GetTracerAttachment())`; the client's GetTracerOrigin
+  swaps a local player's weapon for its viewmodel and asks its attachment, so
+  tracers follow the same hook.
+* Particle render pass: parsed ge_muzzle_fx.pcf (binary DMX v2: short string
+  count and short indices; scratchpad `pcf_vm.py`). No muzzle or tracer system
+  sets "view model effect" except `muzzle_sniper_rifle` (an empty parent;
+  its flash child is 0), so they draw in the world pass at the true position
+  and need none of the gun's aspect squash.
+* `Weapon_ShootPosition` (server and client) signatures do NOT match GE:S, so
+  bullets and thrown knives leave from the eye; the aim code relies on that.
+* **Throwing knife flick**: `/v_tknife.` joins the swing weapons. On a swing
+  the OpenVR velocity (-z, -x, y, turned by m_RotationOffset) becomes
+  `m_ThrowDir`; UpdateGunAim aims along it and holds the view angles on it
+  for 700 ms (`m_ThrowAimUntil`) -- GE:S throws after its fire delay along
+  the eye angles of that moment (CWeaponKnifeThrowing::ItemPreFrame ->
+  ThrowKnife). `m_AttackAimUntil` now only ever extends. Log: `Throw ... dir=`.
+Log: `C_BaseViewModel::FormatViewModelAttachment hooked`,
+`Viewmodel GetRenderOrigin/GetRenderAngles verified`,
+`TRACKED GUN: attachment N (...) -> (...)`.
+
+## STEP 2, ROUND 3: BARREL AXIS, GE:S CROSSHAIR, CLASSIC RETICLE (2026-09-21 late)
+
+Report (23:30 run): movement fixed, but the dot "goes wonky and disappears
+until I shoot, then it lines up with the gun"; scoped weapons show a second
+reticle that follows the head.
+
+* **The barrel is not the model's +X.** Every GE:S v_*.mdl is built lying
+  along -Y: the `muzzle` attachment on muzzle.bone1 points (0,-1,0) in the
+  bind pose, and the sequences turn base.bone1 so it faces forward. So the
+  barrel's direction depends on the animation pose (the end of the draw,
+  idle sway, the fire anim's held last frame), while the dot went along the
+  hand's +X. The dot now uses the live `muzzle` attachment: origin and X axis
+  (studiohdr numlocalattachments +240 / index +244, mstudioattachment_t is 92
+  bytes: name, flags, localbone, matrix3x4 relative to the bone), taken from
+  the drawn bones once per frame (`g_stereoFrame`) and eased 25% per frame
+  so a firing kick nudges it. `GESVR_MuzzleWorld(out, dir)`. Log:
+  `TRACKED GUN: <model> muzzle bone N, attachment found axis=(...)`.
+  scratchpad `mdlatt.py` prints any model's attachments.
+* **Never read an attachment-only bone from the draw's bone array.** Draws set
+  up only BONE_USED_BY_VERTEX bones; muzzle.bone1 is 0x200 (attachment only),
+  so its matrix there is stale -- last computed when the muzzle flash asked for
+  the attachment, i.e. the last shot. The 00:08 log showed it: start points
+  2000 u away, the dot turning opposite to the head, snapping back on each
+  shot. (That was also the original "wonky until I shoot".) The muzzle now
+  rides on the nearest vertex-used ancestor (`MuzzleAnchor`: base.bone1 on
+  every gun) with its bind offset, poseToBone(anchor) * inv(poseToBone(muzzle)).
+  Log: `muzzle bone 1 on bone 0`.
+* Throwing knife (`tknife` key) borrows the `knife` tuning until it has its own.
+* **Diagnostics** in UpdateGunAim: `Gun aim CHANGE: ... why=L/R` on every
+  change in whether each eye's dot shows (0 shown, 1 no gun drawn in 150 ms,
+  2 hit behind the eye, 3 outside the view), plus a sample every 2 s:
+  trace fraction, distance, start, direction, gun and head angles, per-eye
+  NDC, fov, attack. If the dot still misbehaves, read these first.
+* **The second reticle is GE:S's own crosshair**: CGEViewEffects::DrawCrosshair
+  (ges-code game/client/ges/ge_vieweffects.cpp) draws `sprites/crosshair` as a
+  3D sprite 1200 u down CurrentViewForward, only in aim mode (the aim button,
+  our left grip). HudCrosshair is disabled in GE:S's HudLayout.res; that
+  sprite is the only crosshair. In VR it is head-locked. VR::UpdateGameCrosshair
+  sets MATERIAL_VAR_NO_DRAW on it while TrackedWeapon is on (1 Hz check,
+  restores it when off). **IMaterialSystem::FindMaterial is vtable slot 70 in
+  this engine** (sdk/material.h's L4D2 order puts it elsewhere), verified by
+  disassembly (the function printing `material "%s" not found.`, ret 0x10) and
+  by prologue `55 8B EC 83 EC 24 8B 45 08 53 56 8B D9 57 89 5D` at runtime.
+  IMaterial slots 0 GetName, 29 SetMaterialVarFlag, 30 GetMaterialVarFlag,
+  42 IsErrorMaterial match sdk.h (checked against CMaterial and
+  CMaterial_QueueFriendly). sdk.h declared GetMaterialVarFlag with no argument;
+  the real one takes the flag (ret 4) -- fixed. Log:
+  `IMaterialSystem::FindMaterial verified at vtable[70]`,
+  `GE:S crosshair (sprites/crosshair) hidden`.
+* **Viewmodel FOV = the eye FOV with the gun in hand**, zoom included. It was
+  the unzoomed FOV, so when the scope zoomed the gun was drawn at the wrong
+  scale and position, off its own dot.
+* **Classic reticle** (`VRReticleStyle=classic`, style 4, last in the Reticle
+  style list): GE's crosshair from the decoded sprite -- a ring with four
+  spikes tapering in to a clear centre, poking just past the ring. Radius 16x
+  the dot's size setting (minimum 10 px, at most a quarter of the image
+  height), in the chosen colour.
+
+## TRACKED WEAPON, STEP 2: SHOTS DOWN THE BARREL + AIM DOT (2026-09-21)
+
+`AimWithGun=true` (with TrackedWeapon). `VR::UpdateGunAim`, called from
+dRenderView right after ApplyHeadAndIpd:
+
+* Start = the muzzle bone (every GE:S gun has `muzzle.bone1`, the Moonraker
+  `muzzle.bone01`; melee/throwables have none), noted in model space by
+  TrackedWeaponBones and re-placed with the current hand pose
+  (`GESVR_MuzzleWorld`). Direction = the gun frame's forward
+  (GetRecommendedViewmodelAbsAngle), so numpad rotation tuning moves the aim
+  with the visible barrel.
+* Trace 8192 u with MASK_SHOT, skipping only the local player. **Source 2007
+  TraceRay is IEngineTrace vtable slot 4** (sdk/trace.h says 5) and its Ray_t
+  has NO m_pWorldAxisTransform (slot 5 reads m_IsSwept at +0x41). sdk/trace.h's
+  Ray_t and CTraceFilterSkipNPCsAndPlayers (calls L4D2 C_BasePlayer slots) are
+  L4D2 shapes -- do not use them. Ours: TraceRay2007 (static_assert isRay at
+  0x40), SkipOneEntityFilter, prologue-verified function pointer
+  (`55 8B EC 83 E4 F0 B8 D4 10 00 00`). Result read from a 256-byte buffer
+  (fraction at +44).
+* View angles = eye (m_SetupOrigin, where shots leave) -> hit point, via
+  SetViewAngles after ApplyHeadAndIpd's head-aim call -- **only while
+  attacking** (m_AttackAimUntil, 150 ms past release). Doing it every frame
+  (first build) made the stick walk along the gun: Source moves along the
+  view angles. On the first press ProcessInput holds +attack back one frame
+  until m_AttackAimApplied says the barrel angles are in: a command queued in
+  Present runs in the next frame's usercmd with the angles the last
+  RenderView set, which is why the first shot used to go where you looked.
+* Aim dot: dxvk `g_GESVR_ReticleUseAim` + per-eye U/V, projected with each
+  eye's own fov/aspect (so it is right when scoped); FillEyeFromSurface draws
+  the reticle there instead of the centre, hidden for melee/throwables.
+Log: `IEngineTrace::TraceRay verified at vtable[4]`, `Gun aim: muzzle=1 ...`.
+
+## NUMPAD WEAPON TUNING -> VR/weapons.txt (2026-09-21)
+
+With Gun in hand on and in play, the numpad (Num Lock on) moves the HELD
+weapon live: Move mode 8/2 fwd/back, 4/6 left/right, 9/3 up/down; 5 toggles
+Rotate mode (same keys = pitch/yaw/roll); +/- step (0.1..2 u, 0.5..10 deg);
+0 saves; . resets the held weapon. A head-locked toast (vr_toast.cpp, same
+canvas/flip-overlay plumbing as the watch) shows mode, step and values.
+
+* Keys are polled with GetAsyncKeyState on the MenuInput thread (USER32 stays
+  off the render thread) into `MenuInput::g_tunePress[13]` counters;
+  `VR::ProcessTuneKeys` applies them in the in-map branch of Update.
+* Storage: Weapons::SetOverride/ClearOverride keyed by `Weapons::Key(model)`
+  ("autosg", "slappers"...); GetOffset returns an override before the table.
+  Saved as `key = fwd right up pitch yaw roll` in bin\VR\weapons.txt, loaded
+  ONCE at startup (not on config reload, so unsaved tuning survives settings
+  changes). The launcher never overwrites weapons.txt, like config.txt.
+* Arm rigs now anchor at GetRecommendedViewmodelAbsPos() (controller minus the
+  weapon's offset in the gun frame) so the same keys move the floating hand.
+* Note: "autosg" matches no table key, so the auto shotgun used the generic
+  default until tuned.
+
+## FLOATING HAND FOR ARM RIGS; KNIFE SWING (2026-09-21)
+
+Tested: swing-to-slap works (2.0-2.4 m/s chops logged). Alignment did not: the
+flat-screen arm, pinned by its hand, ran back into the chest/face, and the knife
+(still origin-placed) sat close to the body.
+
+* Any first-person model with `R_FK_Hand_jnt` is an arm rig (slappers, knife,
+  throwing knife; cached per model in ArmRigFor). All are hand-anchored.
+* `MeleeHideArm` (default true): R_FK_Collar/Arm_null/Shoulder/Elbow are
+  folded to a zero-scale matrix at the hand point after the move, leaving a
+  floating hand + cuff. Checked against the VVD weights (scratchpad
+  vvd_weights.py): no vertex mixes hand and arm bones in any of the three,
+  81 vertices are arm-only, the forearm mostly rides wrist/sleeve bones.
+* `MeleeAngleOffset` pitch,yaw,roll: extra hand tilt about the controller.
+* Swing to attack now covers the hunting knife (`/v_knife.`), not v_tknife.
+* weapons.cpp knife/throwing entries zeroed (hand anchoring replaces them).
+
+## TRACKED GUN: SLAPPERS BY THE HAND, SWING TO SLAP (2026-09-21)
+
+Tested after the squash: guns look right in the hand. The slappers did not --
+v_slappers.mdl is a full arm rig (Root, Collar, Shoulder, Elbow,
+**R_FK_Hand_jnt = bone 5**, fingers), so placing it by its origin put the
+shoulder on the controller, and its weapons.cpp entry added odd rotations.
+
+* Slappers are now anchored by the hand bone: in TrackedWeaponBones the live
+  hand-bone position in model space (inverse(viewmodel) * bone) is averaged
+  slowly (0.02 per call) and the model origin set so that point lands on
+  GetRightControllerAbsPos(). The slow average keeps the slap animation
+  visible as a swing. Bone found by name (FindStudioBone: boneindex +160,
+  216-byte mstudiobone_t). weapons.cpp slapper/fist entries zeroed.
+* Swing to slap (SwingMelee, SwingSpeed m/s, default 2.0): with the tracked
+  gun on and a slapper model active, right-controller vVelocity above
+  SwingSpeed holds +attack for 150 ms, 450 ms cooldown. Log: `Swing N m/s -> slap`.
+* Bone lists for any GE:S model: scratchpad mdl_bones.py. The knife uses the
+  same arm rig plus a `knife` bone (1), if it needs the same treatment.
+
+## TRACKED GUN STRETCH = THE VIEWMODEL PASS ASPECT (2026-09-21)
+
+First test of step 1: "very close to aligned" but the gun skewed/stretched as
+it moved and rotated. The bone transform is rigid (verified), so the
+distortion came later: GE:S's CViewRender::DrawViewModels (ges-code
+viewrender.cpp) sets `viewModelSetup.m_flAspectRatio =
+engine->GetScreenAspectRatio()` -- the window's 1.78 -- while the eyes use the
+eye frustum's 0.964 (log: "Eye frusta: superset fov=108.00 aspect=0.964").
+Same horizontal FOV, so the first-person pass is ~1.84x too tall and
+displaced vertically. This is also the "high gun" noted in vr.h.
+
+**Do not swap GetScreenAspectRatio.** The first fix returned the eye aspect
+from it during the stereo pass and froze the game entering a map (22:28 run:
+main thread stuck in D3D9Initializer::Flush -> DxvkSubmissionQueue::submit):
+other client code sizes screen-effect render targets from that call and
+rebuilt them every frame.
+
+Fix now: nothing is hooked. The tracked gun's bones get one more transform,
+a squash along the CURRENT eye's up axis centred on that eye,
+`D = I + (s-1)uu^T` (+ translation), `s = eyeAspect / passAspect` (0.964/1.78 =
+0.542). The pass's window-aspect projection stretches it back: tested offline
+(scratchpad squash_test.cpp) to 1e-6 NDC across orientations and points.
+passAspect comes from CALLING IVEngineClient::GetScreenAspectRatio -- **slot
+88 in this engine.dll**, not ges-code's 95 (slot 95 here takes an argument);
+E9 jmp to `sub esp,0Ch; mov eax,[imm]; movss xmm0,[eax+2Ch]...divss`, bytes
+verified; window size is the fallback. The eye origin/angles are set around
+each eye's RenderView in dRenderView. Log: `GetScreenAspectRatio verified at
+vtable[88] (read only, not hooked)`, `TRACKED GUN: eye aspect .. pass aspect
+.. -> squash ..`. Head-aim mode is unchanged; the same squash would fix its
+"high gun" if wanted.
+
+## TRACKED WEAPON, STEP 1: GUN DRAWN AT THE HAND (2026-09-21, after v0.1-playable)
+
+`TrackedWeapon=true` (VR Settings > Aiming > "Gun in hand (test)"). Model only:
+aim is still the head until step 2.
+
+How: the client calls DrawModelSetup then DrawModelExecute through the
+IVModelRender vtable, and DrawModelExecute's last argument is the bone-to-world
+array DrawModelSetup built (world space, around the viewmodel origin at the
+eye). `dDrawModelExecute` copies it, multiplies every bone by
+`hand * inverse(viewmodel)` -- hand = GetRecommendedViewmodelAbsPos/Angle, the
+controller pose with grip tilt and the per-weapon offset from weapons.cpp;
+viewmodel = info.origin/angles as the engine passed them -- and draws with the
+copy. Bone count from studiohdr (DrawModelState_t's first member; "IDST",
+version 44..49, numbones at +156), read under SEH. The weapon entity, its
+attachments and effects are untouched, so muzzle flash etc. still come from
+the head-locked position (step 4).
+
+Why this can work where HANDOFF's earlier attempts could not: writing
+info.origin happens after the bones exist (no effect), and patching
+GetRenderOrigin/Angles moved only part of the transform (skew). One rigid
+transform applied to every bone keeps the model solid. The maths was checked
+offline (scratchpad bone_test.cpp): moved bone == hand * local to 1e-5.
+
+Log: `TRACKED GUN <model> bones=N viewmodel=(..) -> hand=(..)` (first 6).
+Per-weapon grip offsets (weapons.cpp) are used automatically in tracked mode;
+they were written for this and never tested -- step 3 tunes them.
+
 ## HEIGHT, SCOPE, QUIT-FROM-MAIN-MENU (2026-09-21 21:11 run)
 
 * **World scale did nothing; standing felt short.** halfIpd was clamped to

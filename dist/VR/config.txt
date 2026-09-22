@@ -270,6 +270,48 @@ HeightOffsetMeters=0.0
 # and this carries the zoom into the headset by magnifying the whole view.
 # false = aim mode still works, but the view never zooms.
 ScopeZoom=true
+# GE:S draws the first-person gun at the desktop window's shape, which in the
+# headset stretched it tall and skewed it. true corrects that for the gun at
+# your head (face aim) too; the gun in hand is always corrected.
+FixViewmodelAspect=true
+# Face aim: how far the gun at your head sits out to the lower right. 1 puts
+# it where GE:S fires its muzzle flash and tracers from; 0 is straight in
+# front of your face.
+FaceAimGunSpread=1.0
+# The game HUD in the headset: off, hurt (flash it when you take damage or are
+# low) or always. The Show HUD button works in every mode. Also in VR Settings.
+GameHUD=hurt
+# Switch weapons the moment you press (sets GE:S's hud_fastswitch 1): its
+# pick-then-fire weapon list is a 2D panel you cannot see in the headset.
+WeaponFastSwitch=true
+# Numpad adjustment of where the held weapon sits in your hand (free aim).
+# 8/2 4/6 9/3 move, 5 switches to rotate, +/- step size, 0 saves to
+# VR/weapons.txt, . resets the held weapon. Also in VR Settings > Weapons.
+WeaponTuning=false
+# false = the normal death camera (sets GE:S's ge_fp_ragdoll 0) instead of the
+# first-person one riding the ragdoll's head.
+DeathCamFirstPerson=false
+# How far the death curtain is stretched across your view.
+BloodCurtainScale=2.6
+# Aim mode (also in VR Settings): false = face aim, shoot where you look;
+# true = free aim, the gun is in your right hand and fires where it points.
+# Free aim also hides GE:S's own aim-mode crosshair, which is pinned to the
+# centre of your view and would disagree with the gun.
+TrackedWeapon=false
+# With the gun in hand, shots go where the barrel points and the reticle sits
+# on the spot it will hit. false = shots follow your head as before.
+AimWithGun=true
+# With the gun in hand and the slappers or hunting knife out, a fast chop
+# of the right controller attacks; with the throwing knife, a flick throws it
+# the way you flicked. SwingSpeed is how fast, in metres per second: raise it
+# if ordinary movement sets it off, lower it if chops are missed.
+SwingMelee=true
+SwingSpeed=2.0
+# Slappers and knives are placed by their hand. MeleeHideArm shows only the
+# hand (the flat-screen arm otherwise runs back into your chest); set false
+# for the full arm. MeleeAngleOffset tilts the hand as pitch,yaw,roll degrees.
+MeleeHideArm=true
+MeleeAngleOffset=0,0,0
 # Multiplies your real eye separation. Above 1 exaggerates depth but makes
 # the world feel smaller (you taller); leave at 1 for true scale.
 IPDScale=1.0
@@ -322,7 +364,8 @@ InGameMenuDistance=2.4
 # Keep menu apparent size constant as resolution changes.
 MenuScaleWithRes=true
 
-# Aiming reticle shape: dot, cross, ring or ringdot.
+# Aiming reticle shape: dot, cross, ring, ringdot or classic (GoldenEye's own
+# crosshair: a ring with four spikes; drawn larger than the others).
 VRReticleStyle=dot
 # Aiming reticle colour: yellow, white, green, red or cyan.
 VRReticleColor=yellow

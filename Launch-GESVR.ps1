@@ -167,10 +167,11 @@ foreach ($vrDest in @((Join-Path $sdk "VR"), (Join-Path $sdk "bin\VR"))) {
     New-Item -ItemType Directory -Force -Path $vrDest | Out-Null
     Get-ChildItem (Join-Path $dist "VR") -Force | ForEach-Object {
         $target = Join-Path $vrDest $_.Name
-        if ($_.Name -ieq "config.txt") {
+        # weapons.txt holds the player's numpad-tuned weapon positions.
+        if ($_.Name -ieq "config.txt" -or $_.Name -ieq "weapons.txt") {
             if (-not (Test-Path $target)) {
                 Copy-Item $_.FullName $target -Force
-                Write-Host "Installed default config.txt (yours will be kept from now on)"
+                Write-Host "Installed default $($_.Name) (yours will be kept from now on)"
             }
         } else {
             Copy-Item $_.FullName $target -Recurse -Force

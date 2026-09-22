@@ -255,13 +255,13 @@ static void BuildModel(VR *vr)
     g_tabs.push_back(comfort);
 
     Tab aim{ L"Aiming" };
-    aim.items.push_back(Toggle(L"Reticle", L"Aiming dot drawn in the centre of your view.",
+    aim.items.push_back(Toggle(L"Reticle", L"Marks where your shots will go.",
         &dxvk::g_GESVR_DrawReticle, "VRReticle"));
-    aim.items.push_back(Named(L"Reticle style", L"",
-        { L"Dot", L"Cross", L"Ring", L"Ring + dot" },
-        []() { const int s = dxvk::g_GESVR_ReticleStyle; return s == 1 ? 0 : s == 0 ? 1 : s == 2 ? 2 : 3; },
-        [](int i) { static const int map[] = { 1, 0, 2, 3 }; dxvk::g_GESVR_ReticleStyle = map[i]; },
-        "VRReticleStyle", { "dot", "cross", "ring", "ringdot" }));
+    aim.items.push_back(Named(L"Reticle style", L"Classic is GoldenEye's own crosshair.",
+        { L"Dot", L"Cross", L"Ring", L"Ring + dot", L"Classic" },
+        []() { const int s = dxvk::g_GESVR_ReticleStyle; return s == 1 ? 0 : s == 0 ? 1 : s == 2 ? 2 : s == 4 ? 4 : 3; },
+        [](int i) { static const int map[] = { 1, 0, 2, 3, 4 }; dxvk::g_GESVR_ReticleStyle = map[i]; },
+        "VRReticleStyle", { "dot", "cross", "ring", "ringdot", "classic" }));
     {
         static const std::vector<float> sizes = { 0.001f, 0.0015f, 0.002f, 0.003f, 0.004f, 0.005f, 0.0065f, 0.008f };
         Item size = Numeric(L"Reticle size", L"",
@@ -277,7 +277,19 @@ static void BuildModel(VR *vr)
         "VRReticleColor", { "yellow", "white", "green", "red", "cyan" }));
     aim.items.push_back(Toggle(L"Scope zoom", L"Hold left grip to aim. Scoped weapons zoom the whole view.",
         &vr->m_ScopeZoom, "ScopeZoom"));
+    aim.items.push_back(Named(L"Aim mode", L"Face aim: shoot where you look. Free aim: the gun is in your hand.",
+        { L"Face aim", L"Free aim" },
+        [vr]() { return vr->m_TrackedWeapon ? 1 : 0; },
+        [vr](int i) { vr->m_TrackedWeapon = (i != 0); },
+        "TrackedWeapon", { "false", "true" }));
     g_tabs.push_back(aim);
+
+    Tab weapons{ L"Weapons" };
+    weapons.items.push_back(Toggle(L"Swing to attack", L"Free aim: chop with the slappers or knife, flick to throw.",
+        &vr->m_SwingMelee, "SwingMelee"));
+    weapons.items.push_back(Toggle(L"Adjust position", L"Free aim, numpad: 8 2 4 6 9 3 move, 5 rotate, 0 save.",
+        &vr->m_WeaponTuning, "WeaponTuning"));
+    g_tabs.push_back(weapons);
 
     Tab display{ L"Display" };
     display.items.push_back(Toggle(L"Wrist watch", L"Health, armour, ammo and round time on your off hand.",
@@ -296,6 +308,11 @@ static void BuildModel(VR *vr)
     display.items.push_back(Numeric(L"World scale", L"Lower: you feel taller, the world smaller. 40 is life size.",
         &vr->m_VRScale, "VRScale", Range(34.0f, 48.0f, 1.0f),
         [](float v) { return Fmt(L"%.0f", v); }));
+    display.items.push_back(Named(L"Game HUD", L"The game's own HUD in front of you. The watch has the same.",
+        { L"Off", L"When hurt", L"Always" },
+        [vr]() { return vr->m_GameHudMode; },
+        [vr](int i) { vr->m_GameHudMode = i; },
+        "GameHUD", { "off", "hurt", "always" }));
     g_tabs.push_back(display);
 }
 

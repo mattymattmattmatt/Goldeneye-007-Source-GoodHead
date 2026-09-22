@@ -508,6 +508,53 @@ public:
 	float m_ScopeBaseFov = 0.0f;
 	int m_ScopeReleasedFrames = 0;
 
+	// Tracked weapon: the first-person gun is drawn at the right controller
+	// (see dDrawModelExecute). Step 1 is the model only; aim is still the head.
+	bool m_TrackedWeapon = false;
+	// Undo the stretch GE:S's viewmodel pass gets from drawing at the window's
+	// aspect, for the head-locked gun too (the gun in hand always gets it).
+	bool m_FixViewmodelAspect = true;
+	// Face aim: how far the head-locked gun sits out towards the lower right,
+	// as a share of where GE:S's FOV correction puts its muzzle flash (1 =
+	// there, 0 = straight in front of your face).
+	float m_FaceAimGunSpread = 1.0f;
+	// How far the death curtain is stretched across the view.
+	float m_BloodCurtainScale = 2.6f;
+	// Switch weapons as you press (hud_fastswitch 1): GE:S's pick-then-fire
+	// list is a 2D HUD panel the headset never shows.
+	bool m_WeaponFastSwitch = true;
+	// Numpad adjustment of where the held weapon sits in the hand. Off unless
+	// someone wants to re-place a weapon (VR Settings > Weapons).
+	bool m_WeaponTuning = false;
+	// GE:S's first-person death camera rides the ragdoll's head (ge_fp_ragdoll).
+	bool m_DeathCamFirstPerson = false;
+	// The game HUD in the headset: 0 off, 1 flash it when hurt, 2 always.
+	// The Show HUD button works in every mode.
+	int m_GameHudMode = 1;
+	// Tracked gun aim: shots go where the barrel points (a trace down the
+	// barrel, then view angles from the eye to its hit point).
+	bool m_AimWithGun = true;
+	Vector m_GunAimPoint = { 0.0f, 0.0f, 0.0f };
+	// The view angles swing to the barrel only while attacking (the game also
+	// walks along them). m_AttackAimUntil: keep the barrel angles until then.
+	// m_AttackAimApplied: the last RenderView set them, so a shot sent now
+	// goes down the barrel.
+	unsigned long long m_AttackAimUntil = 0;
+	bool m_AttackAimApplied = false;
+	// Throwing knife, thrown with a flick of the right controller: the flick's
+	// direction in the game world, and until when the view angles hold it --
+	// GE:S lets the knife go a moment after the press, along the eye angles
+	// of that moment.
+	Vector m_ThrowDir = { 1.0f, 0.0f, 0.0f };
+	unsigned long long m_ThrowAimUntil = 0;
+	// Slappers with the tracked weapon: a fast swing of the gun hand slaps.
+	bool m_SwingMelee = true;
+	float m_SwingSpeed = 2.0f;   // metres per second of hand speed
+	// Arm-rig weapons (slappers, knives): show only the hand, not the arm, and
+	// an extra pitch,yaw,roll for the hand around the controller.
+	bool m_MeleeHideArm = true;
+	Vector m_MeleeAngleOffset = { 0.0f, 0.0f, 0.0f };
+
 	// Lifts the camera, in metres, for playing standing. Only the camera: the
 	// engine's eye (where shots come from) and the weapon stay put.
 	float m_HeightOffsetMeters = 0.0f;
@@ -560,6 +607,9 @@ public:
 	void ReadWatchStats(WatchStats &out);
 	bool ScopeHeld();
 	void RefreshActiveWeapon();
+	void UpdateGameCrosshair();
+	void ProcessTuneKeys();
+	void UpdateGunAim(const CViewSetup &left, const CViewSetup &right);
 	int ReadRoundTimeLeft(void *player);
 	bool IsLookingAtOffhandWatch();
 	void GetPoses();

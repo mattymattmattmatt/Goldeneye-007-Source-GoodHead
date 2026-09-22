@@ -440,12 +440,21 @@ void Update()
     static WatchStats s_last;
     static bool s_haveLast = false;
     static int s_maxHealthSeen = 100, s_maxArmorSeen = 100;
+    // A new weapon brings the watch up for a moment, look or not.
+    static std::string s_lastWeapon;
+    static ULONGLONG s_popUntil = 0;
     const ULONGLONG now = GetTickCount64();
     if (now - s_lastRead >= 100)
     {
         s_lastRead = now;
         WatchStats s;
         v->ReadWatchStats(s);
+        if (!s.weaponModel.empty() && s.weaponModel != s_lastWeapon)
+        {
+            if (!s_lastWeapon.empty())
+                s_popUntil = now + 2500;
+            s_lastWeapon = s.weaponModel;
+        }
         // GE:S may not network the maximums; the largest value seen stands in.
         if (s.health > s_maxHealthSeen) s_maxHealthSeen = s.health;
         if (s.armor > s_maxArmorSeen) s_maxArmorSeen = s.armor;
@@ -473,7 +482,7 @@ void Update()
         Hide();
         return;
     }
-    if (!v->m_WatchAlwaysVisible && !v->IsLookingAtOffhandWatch())
+    if (!v->m_WatchAlwaysVisible && now >= s_popUntil && !v->IsLookingAtOffhandWatch())
     {
         Hide();
         return;

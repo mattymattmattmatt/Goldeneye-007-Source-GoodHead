@@ -14,6 +14,7 @@
 #include <thread>
 #include <algorithm>
 #include <cstring>
+#include <cstddef>
 #include <cstdio>
 #include <cmath>
 #include <cctype>
@@ -23,6 +24,7 @@
 #include <tlhelp32.h>
 #include "vr_settings.h"
 #include "vr_watch.h"
+#include "vr_toast.h"
 
 // Frame-stage timing. The mod has twice been diagnosed by guesswork; this
 // makes the cost of each stage visible so a single run localizes a stall.
@@ -374,6 +376,10 @@ namespace MenuInput
     // it showing, how many of those had a NULL cursor image, how many sat
     // within 4 px of the window centre (where Source parks it in play).
     static std::atomic<int> g_curPolls{ 0 }, g_curVisible{ 0 }, g_curNull{ 0 }, g_curCentred{ 0 };
+    // Numpad presses for the weapon tuning (VR::ProcessTuneKeys): counted
+    // here, on the thread that owns USER32, applied on the render thread.
+    // 0-9 are the digits, 10 is +, 11 is -, 12 is the decimal point.
+    static std::atomic<unsigned> g_tunePress[13];
 
     // HUD toggle key. Polled here because this thread owns USER32; the render
     // thread just watches the sequence number.
@@ -414,6 +420,32 @@ namespace MenuInput
             }
             if (!hwnd)
                 continue;
+
+            // Numpad (Num Lock on). Direction keys repeat while held.
+            {
+                static const int kKeys[13] = { VK_NUMPAD0, VK_NUMPAD1, VK_NUMPAD2, VK_NUMPAD3, VK_NUMPAD4,
+                                               VK_NUMPAD5, VK_NUMPAD6, VK_NUMPAD7, VK_NUMPAD8, VK_NUMPAD9,
+                                               VK_ADD, VK_SUBTRACT, VK_DECIMAL };
+                static bool s_down[13] = {};
+                static ULONGLONG s_since[13] = {}, s_repeat[13] = {};
+                const ULONGLONG t = GetTickCount64();
+                for (int k = 0; k < 13; ++k)
+                {
+                    const bool down = (GetAsyncKeyState(kKeys[k]) & 0x8000) != 0;
+                    const bool repeats = (k == 2 || k == 3 || k == 4 || k == 6 || k == 8 || k == 9);
+                    if (down && !s_down[k])
+                    {
+                        g_tunePress[k].fetch_add(1);
+                        s_since[k] = s_repeat[k] = t;
+                    }
+                    else if (down && repeats && t - s_since[k] > 350 && t - s_repeat[k] > 90)
+                    {
+                        g_tunePress[k].fetch_add(1);
+                        s_repeat[k] = t;
+                    }
+                    s_down[k] = down;
+                }
+            }
 
             // CURSOR_SHOWING is global, so the pointer merely wandering off the
             // window during play would read as 'showing' and wrongly flip us into
@@ -649,11 +681,15 @@ namespace VRSubmit
     static std::atomic<bool> g_useThread{ false };
 }
 
+namespace dxvk { extern bool g_GESVR_ReticleUseAim; extern bool g_GESVR_ReticleAimValid[2];
+                extern float g_GESVR_ReticleAimU[2]; extern float g_GESVR_ReticleAimV[2]; }
+extern bool GESVR_MuzzleWorld(Vector &out, Vector &dir);
 namespace dxvk { extern bool g_GESVR_DrawReticle; extern float g_GESVR_ReticleScale;
                 extern int g_GESVR_ReticleStyle; extern int g_GESVR_ReticleColor;
                 extern bool g_GESVR_ForceMenuOpaque;
                 extern float g_GESVR_ReticleAspect;
-                extern bool g_GESVR_SwapEyeSurfaces; }
+                extern bool g_GESVR_SwapEyeSurfaces;
+                extern bool g_GESVR_ReticleForce; }
 extern long GESVR_ExecMoveCount();
 extern long GESVR_RenderOriginCalls();
 extern long GESVR_RenderAnglesCalls();
@@ -951,6 +987,13 @@ VR::VR(Game *game)
     CreateWristOverlays();
     VRSettings::Init(this);
     VRWatch::Init(this);
+    VRToast::Init(this);
+    {
+        char weapons[MAX_STR_LEN];
+        MakeVRPath(weapons, sizeof(weapons), "weapons.txt");
+        Game::logMsg("Weapon positions: %s %s", weapons,
+                     Weapons::LoadOverrides(weapons) ? "loaded" : "not found (built-in table)");
+    }
 
     int windowWidth = 1280, windowHeight = 720;
     if (m_Game->m_EngineClient)
@@ -1060,6 +1103,7 @@ void VR::Update()
     }
 
     GESVR_HideTheaterOverlays();
+    VRToast::Update();
 
     static int s_frames = 0;
     // The engine may install its own spew function after ours; re-chain.
@@ -1196,6 +1240,8 @@ void VR::Update()
     {
         ApplyExtraCvars();
         RefreshActiveWeapon();
+        UpdateGameCrosshair();
+        ProcessTuneKeys();
         VRWatch::Update();
         UpdateHurtHUD();
     }
@@ -2760,7 +2806,73 @@ void VR::ProcessInput()
         MoveCmd("-moveright");
     }
 
-    if (PressedDigitalAction(m_ActionPrimaryAttack))
+    // Swing to attack: with the slappers or the hunting knife out and the gun
+    // in hand, chopping the right controller faster than SwingSpeed presses
+    // attack for a moment. The cooldown makes one chop one hit; the trigger
+    // still works too. The throwing knife (v_tknife) is thrown the same way,
+    // in the direction of the flick.
+    bool swingAttack = false;
+    const std::string &held = m_Game ? m_Game->m_ActiveWeaponModel : std::string();
+    const bool throwWeapon = held.find("/v_tknife.") != std::string::npos;
+    const bool swingWeapon = held.find("slapper") != std::string::npos ||
+                             held.find("/v_knife.") != std::string::npos || throwWeapon;
+    if (m_TrackedWeapon && m_SwingMelee && m_System && swingWeapon)
+    {
+        static ULONGLONG s_swingUntil = 0, s_lastSwing = 0;
+        const ULONGLONG now = GetTickCount64();
+        const vr::TrackedDeviceIndex_t hand =
+            m_System->GetTrackedDeviceIndexForControllerRole(vr::TrackedControllerRole_RightHand);
+        if (hand < vr::k_unMaxTrackedDeviceCount && m_Poses[hand].bPoseIsValid)
+        {
+            const vr::HmdVector3_t &v = m_Poses[hand].vVelocity;
+            const float speed = sqrtf(v.v[0] * v.v[0] + v.v[1] * v.v[1] + v.v[2] * v.v[2]);
+            if (speed > m_SwingSpeed && now - s_lastSwing > 450)
+            {
+                s_lastSwing = now;
+                s_swingUntil = now + 150;
+                if (throwWeapon && speed > 0.01f)
+                {
+                    // OpenVR velocity -> Source axes (as GetPoseData), then
+                    // into the turned game frame like the hand positions.
+                    Vector d(-v.v[2] / speed, -v.v[0] / speed, v.v[1] / speed);
+                    if (fabsf(m_RotationOffset) > 0.01f)
+                        d = VectorRotate(d, Vector(0.0f, 0.0f, 1.0f), m_RotationOffset);
+                    m_ThrowDir = d;
+                    // Past GE:S's release delay, and short of its refire.
+                    m_ThrowAimUntil = now + 700;
+                    static int s_thrown = 0;
+                    if (s_thrown < 10)
+                    {
+                        Game::logMsg("Throw %.1f m/s dir=(%.2f,%.2f,%.2f) head=(%.2f,%.2f,%.2f)", speed,
+                                     d.x, d.y, d.z, m_HmdForward.x, m_HmdForward.y, m_HmdForward.z);
+                        ++s_thrown;
+                    }
+                }
+                static int s_logged = 0;
+                if (s_logged < 10)
+                {
+                    Game::logMsg("Swing %.1f m/s -> attack", speed);
+                    ++s_logged;
+                }
+            }
+        }
+        swingAttack = now < s_swingUntil;
+    }
+
+    // With the gun in hand the view angles only swing to the barrel while
+    // attacking, and a command queued here runs in the NEXT frame's usercmd
+    // with whatever angles the last RenderView set. So on the first press the
+    // attack waits one frame: this frame arms the barrel angles, the next
+    // RenderView applies them, then +attack goes out and the first shot lands
+    // on the dot. Held 150 ms after release so a burst's last shots do too.
+    bool wantAttack = PressedDigitalAction(m_ActionPrimaryAttack) || swingAttack;
+    if (m_TrackedWeapon && m_AimWithGun)
+    {
+        if (wantAttack)
+            m_AttackAimUntil = (std::max)(m_AttackAimUntil, GetTickCount64() + 150);
+        wantAttack = wantAttack && m_AttackAimApplied;
+    }
+    if (wantAttack)
     {
         MoveCmd("+attack");
     }
@@ -2861,7 +2973,7 @@ void VR::ProcessInput()
     // Full floating HUD is opt-in (ShowHUD / scoreboard / always-on).
     // Everyday HUD lives on the off-hand watch; health also flashes in front
     // of the HMD when you take a hit (see UpdateHurtHUD).
-    const bool wantFullHud = PressedDigitalAction(m_ShowHUD) || PressedDigitalAction(m_Scoreboard) || m_HudAlwaysVisible;
+    const bool wantFullHud = PressedDigitalAction(m_ShowHUD) || PressedDigitalAction(m_Scoreboard) || m_GameHudMode == 2;
     if (wantFullHud && m_RenderedHud)
     {
         RepositionOverlays();
@@ -3292,6 +3404,8 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     // zoom still animating back out is not mistaken for the unzoomed FOV.
     float eyeFov = m_Fov;
     const bool scopeHeld = ScopeHeld();
+    // Zoomed in: the reticle shows even with Reticle off.
+    dxvk::g_GESVR_ReticleForce = scopeHeld && m_ScopeBaseFov > 1.0f && setup.fov < m_ScopeBaseFov - 1.0f;
     if (!scopeHeld)
     {
         if (++m_ScopeReleasedFrames > 30 || m_ScopeBaseFov < 1.0f)
@@ -3323,7 +3437,11 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     right.fov = eyeFov;
     // A 106-degree viewmodel FOV drags the weapon toward the centre of view and
     // makes it disagree with world-space muzzle effects. 0 keeps the world FOV.
-    const float vmFov = (m_ViewmodelFov > 1.0f) ? m_ViewmodelFov : m_Fov;
+    //
+    // With the gun in hand it must be the eye's own FOV, zoom included: the
+    // gun is placed in the world, and a pass drawn at a wider FOV than the eye
+    // put it somewhere else -- off its own aim dot as soon as the scope zoomed.
+    const float vmFov = m_TrackedWeapon ? eyeFov : (m_ViewmodelFov > 1.0f) ? m_ViewmodelFov : m_Fov;
     left.fovViewmodel = vmFov;
     right.fovViewmodel = vmFov;
     left.m_flAspectRatio = m_Aspect;
@@ -3403,7 +3521,10 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
         const std::string &wpn = m_Game->m_ActiveWeaponModel;
         m_Game->m_IsMeleeWeaponActive = Weapons::IsMelee(wpn);
 
-        PositionAngle pose = m_PerWeaponOffsets
+        // The tracked gun needs the per-weapon table: it says where each
+        // model's grip sits relative to its origin, which is what puts the
+        // grip in your hand rather than the model's origin.
+        PositionAngle pose = (m_PerWeaponOffsets || m_TrackedWeapon)
             ? Weapons::GetOffset(wpn)
             : PositionAngle{ { 0, 0, 0 }, { 0, 0, 0 } };
         m_ViewmodelPosOffset = pose.position + m_ViewmodelUserOffset;
@@ -3739,7 +3860,7 @@ static void LogTableProps(const char *className, RecvTableStub *table)
 // neither is known for certain; everything found is logged either way.
 static ClientClassStub *g_timerClass = nullptr;
 static int g_timerEndOff = -1, g_timerRemainOff = -1, g_timerPausedOff = -1, g_timerDisabledOff = -1;
-static int g_timerEnabledOff = -1;
+static int g_timerEnabledOff = -1, g_timerStartedOff = -1;
 // The local player's m_flSimulationTime: server time of its last update,
 // which is "now" for comparing against the timer's end time.
 static int g_playerSimTimeOff = -1;
@@ -3861,6 +3982,7 @@ void VR::ResolvePlayerNetvars()
                     g_timerPausedOff = FindAnyNetvar(table, { "m_bPaused", "m_bTimerPaused", "m_bIsPaused" });
                     g_timerDisabledOff = FindAnyNetvar(table, { "m_bIsDisabled", "m_bDisabled" });
                     g_timerEnabledOff = FindAnyNetvar(table, { "m_bEnabled", "m_bIsEnabled" });
+                    g_timerStartedOff = FindAnyNetvar(table, { "m_bStarted", "m_bIsStarted" });
                     Game::logMsg("Round timer candidate %s: end=%d remaining=%d paused=%d disabled=%d enabled=%d",
                                  name, end, g_timerRemainOff, g_timerPausedOff, g_timerDisabledOff, g_timerEnabledOff);
                 }
@@ -3907,44 +4029,48 @@ int VR::ReadRoundTimeLeft(void *player)
         return -1;
     IClientEntityList *list = m_Game->m_ClientEntityList;
 
-    // Find the timer entity: the one whose networkable reports our class.
-    // Rescanned every 2 s until found, and whenever the cached one stops
+    // GE:S has two ge_game_timer entities: the match timer and the round timer
+    // (CGEMPRules creates them in that order, back to back, so the match timer
+    // has the lower index). Its own HUD shows the round time while a round
+    // timer runs, else the match time -- and only if round time is enabled
+    // ("rounds are controlled some other way" otherwise). The watch does the
+    // same. Rescanned every 2 s until found, and whenever a cached index stops
     // matching (map change).
-    static int s_index = -1;
+    static int s_index[2] = { -1, -1 };   // match, round
     static ULONGLONG s_lastScan = 0;
     const ULONGLONG now = GetTickCount64();
-    if (s_index >= 0)
+    for (int t = 0; t < 2; ++t)
     {
-        void *net = list->GetClientNetworkable(s_index);
+        if (s_index[t] < 0)
+            continue;
+        void *net = list->GetClientNetworkable(s_index[t]);
         if (!net || CallGetClientClass(net) != g_timerClass)
-            s_index = -1;
+            s_index[0] = s_index[1] = -1;
     }
-    if (s_index < 0)
+    if (s_index[0] < 0 || s_index[1] < 0)
     {
-        if (now - s_lastScan < 2000)
+        if (now - s_lastScan < 2000 && s_index[0] < 0)
             return -1;
-        s_lastScan = now;
-        int highest = list->GetHighestEntityIndex();
-        if (highest > 4096) highest = 4096;
-        for (int i = 1; i <= highest && s_index < 0; ++i)
+        if (now - s_lastScan >= 2000)
         {
-            void *net = list->GetClientNetworkable(i);
-            if (net && ReadablePtr(net, sizeof(void *)) && CallGetClientClass(net) == g_timerClass)
-                s_index = i;
+            s_lastScan = now;
+            int found[2] = { -1, -1 }, n = 0;
+            int highest = list->GetHighestEntityIndex();
+            if (highest > 4096) highest = 4096;
+            for (int i = 1; i <= highest && n < 2; ++i)
+            {
+                void *net = list->GetClientNetworkable(i);
+                if (net && ReadablePtr(net, sizeof(void *)) && CallGetClientClass(net) == g_timerClass)
+                    found[n++] = i;
+            }
+            if (found[0] != s_index[0] || found[1] != s_index[1])
+                Game::logMsg("Game timers: match at %d, round at %d", found[0], found[1]);
+            s_index[0] = found[0];
+            s_index[1] = found[1];
         }
-        if (s_index < 0)
+        if (s_index[0] < 0)
             return -1;
-        Game::logMsg("Round timer entity at index %d", s_index);
     }
-    void *timer = list->GetClientEntity(s_index);
-    if (!timer)
-        return -1;
-
-    int flag = 0;
-    if (ReadI32(timer, g_timerDisabledOff, flag) && (flag & 0xFF))
-        return -1;
-    if (ReadI32(timer, g_timerEnabledOff, flag) && !(flag & 0xFF))
-        return -1;   // no time limit in this mode
 
     // "Now" in server time. The player's simulation time is exact; the tick
     // base times Source's default 15 ms tick is the fallback. (Measuring the
@@ -3958,25 +4084,67 @@ int VR::ReadRoundTimeLeft(void *player)
         nowGame = tick * 0.015f;
     }
 
-    float remaining = -1.0f;
-    int paused = 0;
-    if (ReadI32(timer, g_timerPausedOff, paused) && (paused & 0xFF))
-        ReadF32(timer, g_timerRemainOff, remaining);
-    else
-    {
+    // One timer's state, as CGEGameTimer::GetTimeRemaining works it out.
+    struct TimerState { bool present, enabled, started, paused; float remaining; };
+    auto readTimer = [&](int index) {
+        TimerState st{ false, false, false, false, 0.0f };
+        void *timer = index >= 0 ? list->GetClientEntity(index) : nullptr;
+        if (!timer)
+            return st;
+        st.present = true;
+        int flag = 0;
+        st.enabled = !(g_timerEnabledOff >= 0 && ReadI32(timer, g_timerEnabledOff, flag) && !(flag & 0xFF));
+        if (g_timerDisabledOff >= 0 && ReadI32(timer, g_timerDisabledOff, flag) && (flag & 0xFF))
+            st.enabled = false;
+        st.paused = g_timerPausedOff >= 0 && ReadI32(timer, g_timerPausedOff, flag) && (flag & 0xFF);
         float end = 0.0f;
-        if (ReadF32(timer, g_timerEndOff, end) && end > 0.0f)
-            remaining = end - nowGame;
+        const bool haveEnd = ReadF32(timer, g_timerEndOff, end) && end > 0.0f;
+        st.started = (g_timerStartedOff >= 0) ? (ReadI32(timer, g_timerStartedOff, flag) && (flag & 0xFF))
+                                              : (haveEnd || st.paused);
+        if (!st.started)
+            return st;
+        if (st.paused)
+            ReadF32(timer, g_timerRemainOff, st.remaining);
+        else if (haveEnd)
+            st.remaining = end - nowGame;
+        if (st.remaining < 0.0f)
+            st.remaining = 0.0f;
+        return st;
+    };
+    const TimerState match = readTimer(s_index[0]);
+    const TimerState round = readTimer(s_index[1]);
+
+    float remaining = -1.0f;
+    const char *which = "none";
+    if (!round.present)
+    {
+        // Only one timer: treat it as the match timer, as before.
+        if (match.enabled && match.started)
+        {
+            remaining = match.remaining;
+            which = "only";
+        }
+    }
+    else if (round.started && round.enabled)
+    {
+        remaining = round.remaining;   // rounds always finish, even after match time runs out
+        which = "round";
+    }
+    else if (match.started && !match.paused && round.enabled)
+    {
+        remaining = match.remaining;
+        which = "match";
     }
 
     static ULONGLONG s_lastLog = 0;
     if (now - s_lastLog > 10000)
     {
         s_lastLog = now;
-        Game::logMsg("Round timer: remaining=%.1f now=%.2f (%s) paused=%d",
-                     remaining, nowGame, tick ? "tickbase" : "simtime", paused & 0xFF);
+        Game::logMsg("Game timers: showing %s %.1f s (match %d/%d/%.1f, round %d/%d/%.1f enabled/started/left) now=%.2f (%s)",
+                     which, remaining, (int)match.enabled, (int)match.started, match.remaining,
+                     (int)round.enabled, (int)round.started, round.remaining, nowGame, tick ? "tickbase" : "simtime");
     }
-    if (remaining < 0.0f || remaining > 36000.0f)
+    if (remaining <= 0.0f || remaining > 36000.0f)
         return -1;
     return (int)ceilf(remaining);
 }
@@ -4023,6 +4191,343 @@ void VR::RefreshActiveWeapon()
         m_Game->m_ActiveWeaponModel = buf;
     }
     m_WeaponFromNetvar = true;
+}
+
+// --- Tracked gun aim -----------------------------------------------------
+//
+// IEngineTrace::TraceRay in Source 2007, checked against this engine.dll: it
+// is vtable slot 4 (the SDK header here says 5, from a later engine), and its
+// Ray_t has no m_pWorldAxisTransform -- slot 5, SetupLeafAndEntityListRay,
+// reads m_IsSwept at +0x41. The header's Ray_t would put it at +0x45 and its
+// filter calls C_BasePlayer methods by L4D2 slot numbers. So all three are
+// our own here, in the 2007 shape.
+struct alignas(16) TraceVec4 { float x, y, z, w; };
+struct TraceRay2007
+{
+    TraceVec4 start, delta, startOffset, extents;
+    bool isRay, isSwept;
+};
+static_assert(offsetof(TraceRay2007, isRay) == 0x40, "Source 2007 Ray_t layout");
+
+// ITraceFilter: ShouldHitEntity then GetTraceType, no destructor.
+class SkipOneEntityFilter
+{
+public:
+    explicit SkipOneEntityFilter(const void *skip) : m_skip(skip) {}
+    virtual bool ShouldHitEntity(void *entity, int /*contentsMask*/) { return entity != m_skip; }
+    virtual int GetTraceType() const { return 0; }   // TRACE_EVERYTHING
+private:
+    const void *m_skip;
+};
+
+typedef void(__thiscall *tTraceRay2007)(void *self, const TraceRay2007 *ray, unsigned int mask, void *filter, void *trace);
+
+static tTraceRay2007 TraceRayFunction(void *engineTrace)
+{
+    static int s_state = 0;   // 0 unchecked, 1 verified, -1 unusable
+    static tTraceRay2007 s_fn = nullptr;
+    if (s_state == 0 && engineTrace)
+    {
+        s_state = -1;
+        void **vt = *reinterpret_cast<void ***>(engineTrace);
+        const unsigned char *p = static_cast<const unsigned char *>(vt[4]);
+        // push ebp / mov ebp,esp / and esp,-16 / mov eax,10D4h (its big stack frame)
+        static const unsigned char kPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xE4, 0xF0, 0xB8, 0xD4, 0x10, 0x00, 0x00 };
+        if (memcmp(p, kPrologue, sizeof(kPrologue)) == 0)
+        {
+            s_fn = reinterpret_cast<tTraceRay2007>(vt[4]);
+            s_state = 1;
+        }
+        Game::logMsg("IEngineTrace::TraceRay %s", s_state == 1 ? "verified at vtable[4]"
+                                                               : "NOT recognised -- gun aim uses the barrel direction only");
+    }
+    return s_state == 1 ? s_fn : nullptr;
+}
+
+// Where the barrel points, and the aim that sends a shot there. Shots leave
+// from the player's eye, not the gun, so aiming the VIEW down the barrel would
+// miss by the head-to-hand distance: instead trace from the muzzle along the
+// barrel and aim the eye at what it hits. Then each eye gets the aim dot.
+//
+// Face aim traces too: from the game's eye along the view, which is where its
+// shots go. The reticle used to sit at the plain centre of each eye -- the same
+// spot in both, which reads as infinitely far away -- so it seemed to pass
+// through anything nearer. Drawn at the hit point in each eye it sits on the
+// surface, as in free aim.
+void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
+{
+    dxvk::g_GESVR_ReticleUseAim = false;
+    if (!m_Game || !m_Game->m_EngineClient)
+        return;
+    const bool freeAim = m_TrackedWeapon;
+
+    Vector start, f;
+    const bool gun = freeAim && GESVR_MuzzleWorld(start, f);
+    // A knife flick: aim along the flick until the knife has left.
+    const bool throwing = freeAim && !gun && GetTickCount64() < m_ThrowAimUntil;
+    if (!freeAim)
+    {
+        start = m_SetupOrigin;
+        Vector r, u;
+        QAngle::AngleVectors(left.angles, &f, &r, &u);
+    }
+    else if (!gun)
+    {
+        start = GetRightControllerAbsPos();
+        Vector r, u;
+        QAngle::AngleVectors(GetRecommendedViewmodelAbsAngle(), &f, &r, &u);
+        if (throwing)
+            f = m_ThrowDir;
+    }
+    const float kRange = 8192.0f;
+    float traceFraction = -1.0f;
+    Vector hit(start.x + f.x * kRange, start.y + f.y * kRange, start.z + f.z * kRange);
+
+    tTraceRay2007 trace = TraceRayFunction(m_Game->m_EngineTrace);
+    if (trace)
+    {
+        TraceRay2007 ray{};
+        ray.start = { start.x, start.y, start.z, 0.0f };
+        ray.delta = { hit.x - start.x, hit.y - start.y, hit.z - start.z, 0.0f };
+        ray.isRay = true;
+        ray.isSwept = true;
+        alignas(16) unsigned char result[256] = {};   // CGameTrace is 84 bytes in 2007
+        SkipOneEntityFilter filter(m_Game->GetClientEntity(m_Game->m_EngineClient->GetLocalPlayer()));
+        trace(m_Game->m_EngineTrace, &ray, MASK_SHOT, &filter, result);
+        const float fraction = *reinterpret_cast<const float *>(result + 44);
+        traceFraction = fraction;
+        if (fraction >= 0.0f && fraction <= 1.0f)
+            hit = Vector(start.x + ray.delta.x * fraction, start.y + ray.delta.y * fraction, start.z + ray.delta.z * fraction);
+    }
+    m_GunAimPoint = hit;
+
+    // Only while attacking. The game walks along the view angles too, so
+    // holding them on the barrel every frame made the stick walk you wherever
+    // the gun pointed (the 23:12 run). Otherwise they stay on the head, as
+    // ApplyHeadAndIpd just set them, and walking, use and the flashlight
+    // follow your head.
+    m_AttackAimApplied = false;
+    if (freeAim && m_AimWithGun && (GetTickCount64() < m_AttackAimUntil || throwing))
+    {
+        const Vector d(hit.x - m_SetupOrigin.x, hit.y - m_SetupOrigin.y, hit.z - m_SetupOrigin.z);
+        const float flat = sqrtf(d.x * d.x + d.y * d.y);
+        QAngle aim(-atan2f(d.z, flat) * 57.2957795f, atan2f(d.y, d.x) * 57.2957795f, 0.0f);
+        if (aim.x > 89.0f) aim.x = 89.0f;
+        if (aim.x < -89.0f) aim.x = -89.0f;
+        m_Game->m_EngineClient->SetViewAngles(aim);
+        m_AttackAimApplied = true;
+    }
+
+    // The dot, in each eye, using that eye's own projection (fov is horizontal,
+    // aspect sets the vertical) so it stays right when the scope zooms.
+    dxvk::g_GESVR_ReticleUseAim = true;
+    const CViewSetup *eyes[2] = { &left, &right };
+    // Why each eye's dot is hidden: 0 shown, 1 no gun drawn lately (melee,
+    // throwables, or the gun missed the tracked draw), 2 hit behind the eye,
+    // 3 outside the view.
+    int why[2] = { 0, 0 };
+    float nxs[2] = { 0.0f, 0.0f }, nys[2] = { 0.0f, 0.0f };
+    for (int e = 0; e < 2; ++e)
+    {
+        dxvk::g_GESVR_ReticleAimValid[e] = false;
+        if (freeAim && !gun)
+        {
+            why[e] = 1;
+            continue;   // free aim with melee and throwables: no dot
+        }
+        Vector ef, er, eu;
+        QAngle::AngleVectors(eyes[e]->angles, &ef, &er, &eu);
+        const Vector v(hit.x - eyes[e]->origin.x, hit.y - eyes[e]->origin.y, hit.z - eyes[e]->origin.z);
+        const float zc = v.x * ef.x + v.y * ef.y + v.z * ef.z;
+        if (zc < 1.0f)
+        {
+            why[e] = 2;
+            continue;
+        }
+        const float t = tanf(eyes[e]->fov * 0.5f * 3.14159265f / 180.0f);
+        const float aspect = eyes[e]->m_flAspectRatio > 0.1f ? eyes[e]->m_flAspectRatio : m_Aspect;
+        const float nx = (v.x * er.x + v.y * er.y + v.z * er.z) / (zc * t);
+        const float ny = (v.x * eu.x + v.y * eu.y + v.z * eu.z) * aspect / (zc * t);
+        nxs[e] = nx;
+        nys[e] = ny;
+        if (fabsf(nx) > 1.2f || fabsf(ny) > 1.2f)
+        {
+            why[e] = 3;
+            continue;
+        }
+        dxvk::g_GESVR_ReticleAimU[e] = 0.5f + 0.5f * nx;
+        dxvk::g_GESVR_ReticleAimV[e] = 0.5f - 0.5f * ny;
+        dxvk::g_GESVR_ReticleAimValid[e] = true;
+    }
+
+    // Diagnostics for "the dot goes wonky and disappears until I shoot":
+    // every change in whether the dot shows (and why not), plus a sample every
+    // two seconds. Capped so a long session cannot flood the log.
+    {
+        const float dist = sqrtf((hit.x - start.x) * (hit.x - start.x) + (hit.y - start.y) * (hit.y - start.y) +
+                                 (hit.z - start.z) * (hit.z - start.z));
+        const QAngle gunAng = GetRecommendedViewmodelAbsAngle();
+        const ULONGLONG now = GetTickCount64();
+        static int s_lastWhy[2] = { -1, -1 };
+        static int s_edges = 0, s_samples = 0;
+        static ULONGLONG s_nextSample = 0;
+        const bool edge = why[0] != s_lastWhy[0] || why[1] != s_lastWhy[1];
+        const bool sample = now >= s_nextSample;
+        if ((edge && s_edges < 150) || (sample && s_samples < 90))
+        {
+            if (edge) ++s_edges; else ++s_samples;
+            if (sample) s_nextSample = now + 2000;
+            Game::logMsg("Gun aim%s: gun=%d why=%d/%d frac=%.3f dist=%.0f start=(%.1f,%.1f,%.1f) dir=(%.2f,%.2f,%.2f) "
+                         "gunAng=(%.0f,%.0f,%.0f) head=(%.0f,%.0f) L=(%.2f,%.2f) R=(%.2f,%.2f) fov=%.0f attack=%d",
+                         edge ? " CHANGE" : "", (int)gun, why[0], why[1], traceFraction, dist,
+                         start.x, start.y, start.z, f.x, f.y, f.z, gunAng.x, gunAng.y, gunAng.z,
+                         left.angles.x, left.angles.y, nxs[0], nys[0], nxs[1], nys[1], left.fov,
+                         (int)m_AttackAimApplied);
+        }
+        s_lastWhy[0] = why[0];
+        s_lastWhy[1] = why[1];
+    }
+}
+
+// GE:S's own crosshair (CGEViewEffects::DrawCrosshair) is the classic red
+// sprite, drawn 1200 units down the centre of the CURRENT VIEW while in aim
+// mode (holding the aim button -- the left grip here). In VR that pins it to
+// your head, so with the gun in hand it is a second reticle pointing the wrong
+// way (the scoped-weapon report). Hide its material while free aim is on:
+// CMaterial::DrawMesh skips any material with MATERIAL_VAR_NO_DRAW set, and
+// the flag lives on the material, so this costs nothing per frame.
+//
+// IMaterialSystem::FindMaterial is called by raw slot: this engine's (2007)
+// is slot 70, verified by disassembly of materialsystem.dll -- the function
+// that prints 'material "%s" not found.' and returns 16 bytes of arguments --
+// and by its prologue here before the first call. The header in sdk/ is
+// L4D2's and puts it elsewhere. The IMaterial slots the header gives
+// (GetName 0, SetMaterialVarFlag 29, GetMaterialVarFlag 30, IsErrorMaterial
+// 42) match this engine's CMaterial and CMaterial_QueueFriendly vtables.
+void VR::UpdateGameCrosshair()
+{
+    static ULONGLONG s_next = 0;
+    const ULONGLONG now = GetTickCount64();
+    if (now < s_next || !m_Game || !m_Game->m_MaterialSystem)
+        return;
+    s_next = now + 1000;
+
+    typedef IMaterial *(__thiscall *tFindMaterial)(void *self, const char *name, const char *group,
+                                                    bool complain, const char *complainPrefix);
+    static int s_state = 0;   // 0 unchecked, 1 verified, -1 not this engine's FindMaterial
+    static tFindMaterial s_find = nullptr;
+    if (s_state == 0)
+    {
+        s_state = -1;
+        void **vt = *reinterpret_cast<void ***>(m_Game->m_MaterialSystem);
+        static const unsigned char kPrologue[] = { 0x55, 0x8B, 0xEC, 0x83, 0xEC, 0x24, 0x8B, 0x45,
+                                                   0x08, 0x53, 0x56, 0x8B, 0xD9, 0x57, 0x89, 0x5D };
+        if (vt && ReadablePtr(vt[70], sizeof(kPrologue)) && memcmp(vt[70], kPrologue, sizeof(kPrologue)) == 0)
+        {
+            s_find = reinterpret_cast<tFindMaterial>(vt[70]);
+            s_state = 1;
+        }
+        Game::logMsg("IMaterialSystem::FindMaterial %s", s_state == 1 ? "verified at vtable[70]"
+                                                                     : "NOT recognised -- GE:S's crosshair stays visible");
+    }
+    if (s_state != 1)
+        return;
+
+    IMaterial *mat = s_find(m_Game->m_MaterialSystem, "sprites/crosshair", "VGUI textures", false, nullptr);
+    if (!mat || mat->IsErrorMaterial())
+        return;
+    const bool hide = m_TrackedWeapon;
+    if (mat->GetMaterialVarFlag(MATERIAL_VAR_NO_DRAW) != hide)
+    {
+        mat->SetMaterialVarFlag(MATERIAL_VAR_NO_DRAW, hide);
+        Game::logMsg("GE:S crosshair (sprites/crosshair) %s", hide ? "hidden: free aim is on" : "shown");
+    }
+}
+
+// Numpad tuning of where the held weapon sits in the hand (WeaponTuning and
+// free aim on; off by default, the positions ship in weapons.cpp's table)
+// in play). Move mode: 8/2 forward/back, 4/6 left/right, 9/3 up/down. Rotate
+// mode: the same keys pitch, yaw, roll. 5 switches mode, +/- change the step,
+// 0 saves every weapon to VR/weapons.txt, . resets the held one. Each weapon
+// is its own entry; the head-locked toast shows where you are.
+void VR::ProcessTuneKeys()
+{
+    static unsigned s_seen[13] = {};
+    static bool s_init = false;
+    int presses[13];
+    bool any = false;
+    for (int k = 0; k < 13; ++k)
+    {
+        const unsigned now = MenuInput::g_tunePress[k].load();
+        presses[k] = s_init ? (int)(now - s_seen[k]) : 0;
+        s_seen[k] = now;
+        any = any || presses[k] != 0;
+    }
+    s_init = true;
+    if (!any || !m_WeaponTuning || !m_TrackedWeapon || !m_Game || m_Game->m_ActiveWeaponModel.empty())
+        return;
+
+    static bool s_rotate = false;
+    static int s_step = 2;
+    static bool s_unsaved = false;
+    static const float kMove[] = { 0.1f, 0.25f, 0.5f, 1.0f, 2.0f };   // game units
+    static const float kTurn[] = { 0.5f, 1.0f, 2.5f, 5.0f, 10.0f };   // degrees
+
+    const std::string model = m_Game->m_ActiveWeaponModel;
+    const std::string key = Weapons::Key(model);
+    std::wstring status;
+
+    if (presses[5] & 1)
+        s_rotate = !s_rotate;
+    s_step += presses[10] - presses[11];
+    if (s_step < 0) s_step = 0;
+    if (s_step > 4) s_step = 4;
+
+    PositionAngle p = Weapons::GetOffset(model);
+    const int fwd = presses[8] - presses[2], side = presses[6] - presses[4], vert = presses[9] - presses[3];
+    if (fwd || side || vert)
+    {
+        // The stored offset is the controller's position relative to the
+        // model's anchor, so moving the weapon forward shrinks it.
+        if (!s_rotate)
+        {
+            p.position.x -= fwd * kMove[s_step];
+            p.position.y -= side * kMove[s_step];
+            p.position.z -= vert * kMove[s_step];
+        }
+        else
+        {
+            p.angle.x += fwd * kTurn[s_step];
+            p.angle.y += side * kTurn[s_step];
+            p.angle.z += vert * kTurn[s_step];
+        }
+        Weapons::SetOverride(key, p);
+        s_unsaved = true;
+    }
+    if (presses[12])
+    {
+        Weapons::ClearOverride(key);
+        p = Weapons::GetOffset(model);
+        s_unsaved = true;
+        status = L"  RESET";
+    }
+    if (presses[0])
+    {
+        char path[MAX_STR_LEN];
+        MakeVRPath(path, sizeof(path), "weapons.txt");
+        const bool ok = Weapons::SaveOverrides(path);
+        s_unsaved = s_unsaved && !ok;
+        status = ok ? L"  SAVED" : L"  SAVE FAILED";
+        Game::logMsg("Weapon positions %s to %s", ok ? "saved" : "NOT saved", path);
+    }
+
+    wchar_t title[160], detail[200];
+    swprintf(title, 160, L"%ls  %ls  step %g%ls%ls", s_rotate ? L"ROTATE" : L"MOVE",
+             VRWatch::WeaponName(model).c_str(), s_rotate ? kTurn[s_step] : kMove[s_step],
+             s_unsaved ? L"  (unsaved)" : L"", status.c_str());
+    swprintf(detail, 200, L"pos %.2f %.2f %.2f   ang %.1f %.1f %.1f     5 mode  +/- step  0 save",
+             p.position.x, p.position.y, p.position.z, p.angle.x, p.angle.y, p.angle.z);
+    VRToast::Show(title, detail);
 }
 
 void VR::ReadWatchStats(WatchStats &s)
@@ -4123,7 +4628,7 @@ bool VR::IsLookingAtOffhandWatch()
 // this makes the list a config key rather than a rebuild.
 void VR::ApplyExtraCvars()
 {
-    if (m_ExtraCvarsDone || m_ExtraCvars.empty())
+    if (m_ExtraCvarsDone)
         return;
 
     // Let the map finish coming up; cvars set mid-load can be overwritten.
@@ -4139,6 +4644,18 @@ void VR::ApplyExtraCvars()
     m_ExtraCvarsDone = true;
     if (!m_Game)
         return;
+
+    // VR settings for GE:S itself. Both are saved in GE:S's own config.
+    if (m_WeaponFastSwitch)
+    {
+        m_Game->ClientCmd_Unrestricted("hud_fastswitch 1");
+        Game::logMsg("VR cvars: hud_fastswitch 1 (weapons switch as you press)");
+    }
+    if (!m_DeathCamFirstPerson)
+    {
+        m_Game->ClientCmd_Unrestricted("ge_fp_ragdoll 0");
+        Game::logMsg("VR cvars: ge_fp_ragdoll 0 (death camera off the ragdoll's head)");
+    }
 
     size_t start = 0;
     while (start < m_ExtraCvars.size())
@@ -4182,7 +4699,7 @@ void VR::UpdateHurtHUD()
     const bool lowHealth = health >= 0 && health <= m_HurtHealthThreshold;
     // If we can't read health, still flash the visor bars whenever the player
     // is looking at the watch so they can confirm the crop; otherwise only on hit.
-    const bool show = (recentlyHurt || lowHealth) && !m_LookingAtWrist;
+    const bool show = (recentlyHurt || lowHealth) && !m_LookingAtWrist && m_GameHudMode == 1 && health != 0;
 
     if (!show || !m_RenderedHud)
     {
@@ -4370,6 +4887,13 @@ void VR::ParseConfigFile()
     m_TwoHandedGrip = CfgBool(userConfig, "TwoHandedGrip", m_TwoHandedGrip);
     m_TwoHandedNeedsGrip = CfgBool(userConfig, "TwoHandedNeedsGrip", m_TwoHandedNeedsGrip);
     m_ScopeZoom = CfgBool(userConfig, "ScopeZoom", m_ScopeZoom);
+    m_TrackedWeapon = CfgBool(userConfig, "TrackedWeapon", m_TrackedWeapon);
+    m_FixViewmodelAspect = CfgBool(userConfig, "FixViewmodelAspect", m_FixViewmodelAspect);
+    m_SwingMelee = CfgBool(userConfig, "SwingMelee", m_SwingMelee);
+    m_AimWithGun = CfgBool(userConfig, "AimWithGun", m_AimWithGun);
+    m_SwingSpeed = CfgFloat(userConfig, "SwingSpeed", m_SwingSpeed);
+    m_MeleeHideArm = CfgBool(userConfig, "MeleeHideArm", m_MeleeHideArm);
+    m_MeleeAngleOffset = CfgVec(userConfig, "MeleeAngleOffset", m_MeleeAngleOffset);
     m_HeightOffsetMeters = CfgFloat(userConfig, "HeightOffsetMeters", m_HeightOffsetMeters);
     m_MenuUseWin32 = CfgBool(userConfig, "MenuInputWin32", m_MenuUseWin32);
     m_DrawMenuCursor = CfgBool(userConfig, "DrawMenuCursor", m_DrawMenuCursor);
@@ -4384,6 +4908,7 @@ void VR::ParseConfigFile()
         {
             const std::string &v = it->second;
             dxvk::g_GESVR_ReticleStyle =
+                (v.find("classic") != std::string::npos) ? 4 :
                 (v.find("cross") != std::string::npos) ? 0 :
                 (v.find("ringdot") != std::string::npos || v.find("ring+dot") != std::string::npos) ? 3 :
                 (v.find("ring") != std::string::npos) ? 2 : 1;
@@ -4419,6 +4944,22 @@ void VR::ParseConfigFile()
     m_HudDistance = CfgFloat(userConfig, "HudDistance", m_HudDistance);
     m_HudSize = CfgFloat(userConfig, "HudSize", m_HudSize);
     m_HudAlwaysVisible = CfgBool(userConfig, "HudAlwaysVisible", m_HudAlwaysVisible);
+    m_GameHudMode = m_HudAlwaysVisible ? 2 : 1;
+    {
+        auto it = userConfig.find("GameHUD");
+        if (it != userConfig.end())
+        {
+            const std::string &v = it->second;
+            m_GameHudMode = (v.find("always") != std::string::npos) ? 2 :
+                            (v.find("hurt") != std::string::npos) ? 1 :
+                            (v.find("off") != std::string::npos) ? 0 : m_GameHudMode;
+        }
+    }
+    m_FaceAimGunSpread = CfgFloat(userConfig, "FaceAimGunSpread", m_FaceAimGunSpread);
+    m_BloodCurtainScale = CfgFloat(userConfig, "BloodCurtainScale", m_BloodCurtainScale);
+    m_WeaponFastSwitch = CfgBool(userConfig, "WeaponFastSwitch", m_WeaponFastSwitch);
+    m_WeaponTuning = CfgBool(userConfig, "WeaponTuning", m_WeaponTuning);
+    m_DeathCamFirstPerson = CfgBool(userConfig, "DeathCamFirstPerson", m_DeathCamFirstPerson);
 
     m_ShowWristHUD = CfgBool(userConfig, "ShowWristHUD", m_ShowWristHUD);
     m_WristLookMaxDistance = CfgFloat(userConfig, "WristLookMaxDistance", m_WristLookMaxDistance);

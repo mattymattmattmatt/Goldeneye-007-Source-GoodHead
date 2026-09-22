@@ -112,6 +112,18 @@ public:
 		0, true
 	};
 
+	// C_BaseViewModel::FormatViewModelAttachment(int, matrix3x4_t&), vtable[183],
+	// ret 8. Found by comparing C_BaseAnimating's vtable (an empty 'ret 8'
+	// there) with C_BaseViewModel's: MatrixGetColumn / ::FormatViewModelAttachment
+	// / MatrixSetColumn, exactly the SDK source. C_PredictedViewModel inherits it.
+	Offset FormatViewModelAttachment = {
+		"client.dll", 0,
+		std::vector<std::string>{
+			"55 8B EC 83 EC 0C 8D 45 F4 50 6A 03 FF 75 0C E8 ? ? ? ? 8D 45 F4 6A 00 50 E8"
+		},
+		0, true
+	};
+
 	Offset CreateMove = {
 		"client.dll", 0,
 		std::vector<std::string>{
