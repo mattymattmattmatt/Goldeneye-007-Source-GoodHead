@@ -28,6 +28,15 @@ function Get-SteamLibraries([string]$steamPath) {
 }
 
 function Find-Sdk2007([string[]]$libs) {
+    # Prefer the library Steam actually has the app registered in. A reinstall
+    # can land in a different library and leave the old folder behind (that is
+    # what happened on 2026-09-24), and installing the mod into the orphan would
+    # mean Steam launches a game with no VR in it and no obvious reason why.
+    foreach ($lib in $libs) {
+        $p = Join-Path $lib "steamapps\common\Source SDK Base 2007"
+        if ((Test-Path (Join-Path $lib "steamapps\appmanifest_218.acf")) -and
+            (Test-Path (Join-Path $p "hl2.exe"))) { return (Resolve-Path $p).Path }
+    }
     foreach ($lib in $libs) {
         $p = Join-Path $lib "steamapps\common\Source SDK Base 2007"
         if (Test-Path (Join-Path $p "hl2.exe")) { return (Resolve-Path $p).Path }
@@ -141,6 +150,37 @@ Install-D3d9 (Join-Path $sdk "bin")
 $local = Join-Path $sdk "hl2.exe.local"
 if (-not (Test-Path $local)) { New-Item -ItemType File -Path $local | Out-Null }
 
+# Refuse to launch a modified hl2.exe. Setting the large-address-aware bit (a
+# "4 GB patch", PE Characteristics 0x0102 -> 0x0122) makes the game die on
+#     Error!  SteamStartup() failed: SteamAPI_Init_Internal failed
+# and ONE launch like that leaves Steam refusing the app at that install
+# location even after the exe is restored byte for byte -- verifying files,
+# clearing Steam's cache, rebooting and reinstalling into the same library all
+# fail to clear it. What does clear it is moving the install to a different
+# Steam library (Properties > Installed Files > Move install folder). Proved by
+# experiment on 2026-09-24; see HANDOFF.md. So never let it launch at all.
+$hl2 = Join-Path $sdk "hl2.exe"
+if (Test-Path $hl2) {
+    $hdr = [System.IO.File]::ReadAllBytes($hl2)
+    $peAt = [BitConverter]::ToInt32($hdr, 0x3C)
+    $chars = [BitConverter]::ToUInt16($hdr, $peAt + 4 + 18)
+    if (($chars -band 0x20) -ne 0) {
+        Write-Host ""
+        Write-Host "STOP: hl2.exe has been modified (large-address-aware / 4 GB patch)." -ForegroundColor Red
+        Write-Host "Launching it makes Steam refuse the game at this install location," -ForegroundColor Red
+        Write-Host "even after the file is put back. Restore it first:" -ForegroundColor Red
+        Write-Host "  Steam > Library > Source SDK Base 2007 > Properties > Installed Files > Verify integrity"
+        Write-Host "If the game already shows 'SteamStartup() failed', also use"
+        Write-Host "  ... > Installed Files > Move install folder  (to any other Steam library)"
+        exit 1
+    }
+}
+
+# (The SDK's own 2007-era steamclient.dll next to hl2.exe is left alone. It was
+# suspected during the 2026-09-23 "SteamStartup() failed" hunt, but a fresh,
+# healthy install runs with it in place; the real cause was a modified hl2.exe,
+# guarded against above.)
+
 # Source loads bin\binkw32.dll by name from engine.dll *before* it asks for d3d9.
 # Proxy pre-loads our d3d9.dll by full path so SysWOW64 cannot win.
 $bin = Join-Path $sdk "bin"
@@ -181,16 +221,32 @@ foreach ($vrDest in @((Join-Path $sdk "VR"), (Join-Path $sdk "bin\VR"))) {
                 Copy-Item $_.FullName $target -Force
                 Write-Host "Installed default $($_.Name) (yours will be kept from now on)"
             }
+        } elseif ($_.PSIsContainer) {
+            # Copy-Item -Recurse puts a folder INSIDE an existing folder of the
+            # same name, so every bindings update after the first install landed
+            # in SteamVRActionManifest\SteamVRActionManifest\ -- which SteamVR
+            # never reads (it kept running the August bindings). Copy the
+            # contents over the folder instead, and clear that stray copy.
+            New-Item -ItemType Directory -Force -Path $target | Out-Null
+            $stray = Join-Path $target $_.Name
+            if (Test-Path $stray) { Remove-Item $stray -Recurse -Force }
+            Copy-Item (Join-Path $_.FullName "*") $target -Recurse -Force
         } else {
-            Copy-Item $_.FullName $target -Recurse -Force
+            Copy-Item $_.FullName $target -Force
         }
     }
 }
 
-# Spaceless -game path so Source doesn't truncate "Program Files" / "Source SDK Base 2007".
-$gameLink = "G:\gesource"
-Ensure-Junction $gameLink $ges
-Ensure-Junction (Join-Path $sdk "gesource") $ges
+# Spaceless -game path so Source doesn't truncate "Program Files" / "Source SDK
+# Base 2007". A junction named gesource inside the SDK folder lets us pass the
+# RELATIVE "-game gesource", which Source resolves against hl2.exe's folder --
+# no spaces in the argument and no drive letter. (This used to be a junction at
+# a hard-coded G:\gesource, which only worked on the machine it was written on:
+# anywhere without a G: drive the launcher stopped at "Could not create
+# junction".) Copy or delete the SDK folder with junctions excluded (robocopy
+# /XJ; rmdir the link first) -- this one points at the real GE:S install.
+$gameLink = "gesource"
+Ensure-Junction (Join-Path $sdk $gameLink) $ges
 
 # Add "VR Settings" to the GE:S main and pause menus. The entry runs
 # "engine echo gesvr_vrsettings", which the mod catches in the console output
@@ -334,7 +390,7 @@ Write-Host "Headset should leave Theater once d3d9.dll submits stereo frames."
 Write-Host "If it stays 2D: SteamVR Settings > Advanced > Dashboard >"
 Write-Host "  Present Non-VR Applications on Theater Screen Upon Launch = Off"
 Write-Host "Logs:"
-Write-Host "  $sdk\vrmod_log.txt"
+Write-Host "  $sdk\bin\vrmod_log.txt"
 Write-Host "  $env:TEMP\gesvr_boot.log"
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo

@@ -1,9 +1,784 @@
 # GESVR — GoldenEye: Source VR — Handoff
 
-Last updated: **2026-08-28**, after the "crashes just after the menu pops up" session.
+Last updated: **2026-09-24**, after the full audit (below) and the "SteamStartup() failed" investigation.
 Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in Theater".
 
 ---
+
+## MAP LOADS CRASHING: DXVK COMPILING ON 14 THREADS (2026-09-24)
+
+Matty: "it crashes everytime i try to load the map. it get futher each time i
+try like it must be caching or something and then if i restart enough its load
+the map."
+
+* **Signature**: three crashes 19:27-19:28 -- client.dll 0xc0000005, then
+  ucrtbase 0xc0000409 twice at the same offset (0x9eddb): the runtime aborting,
+  the shape of an allocation failure ending in abort(). Textures on High
+  (mat_picmip 0). hl2.exe cannot be made large-address aware (see the section
+  on that), so the process has 2 GB.
+* **Cause (strongly indicated, confirm from the new MEMORY lines)**: DXVK
+  compiles pipelines through the NVIDIA driver inside the 32-bit process, and
+  on an i7-8700 (12 threads) its auto setting ran 7 state-cache compiler
+  threads AND 7 async compiler threads -- hl2_d3d9.log: "Using 7 async compiler
+  threads", "Read 2794 valid state cache entries", "Using 7 compiler threads".
+  This dxvk-async fork creates the async compiler unconditionally
+  (dxvk_pipemanager.cpp, the enableAsync test is commented out). Fourteen
+  concurrent driver compiles is a large transient spike in the same 2 GB as
+  the textures, at exactly the moment a map loads. "Further each time" fits:
+  what compiles before a crash is cached, so the next burst is smaller.
+  The reinstall may have made it worse: NVIDIA's cache in
+  steamapps\shadercache\218\nvidiav1\GLCache was last written 08:40, before
+  the evening's crashes, so crashed sessions never saved what they compiled.
+* **Fix**: dxvk.conf `dxvk.numCompilerThreads = 2`, `dxvk.numAsyncThreads = 2`,
+  in dist\dxvk.conf and written straight into Matty's installed copy (the
+  launcher never overwrites a player's dxvk.conf). Cost: a map's first seconds
+  may show pop-in while the rest compile.
+* **Instrumentation**: the watchdog thread now logs
+  `MEMORY <used> of <total> MB address space in use (peak N), largest free
+  block N MB` on every 64 MB of growth, and the WATCHDOG stall lines carry the
+  same numbers. The last MEMORY line before a crash says how close it was.
+* **Next levers, in order, if it still dies**: threads 1 and 1;
+  `dxvk.enableStateCache = False` (no startup burst of 2794 compiles);
+  Medium textures; a 1920x1080 window (the eye surfaces, backbuffer and
+  captures are full window size).
+
+## THROWING KNIVES WENT INTO THE THROWER (2026-09-24)
+
+Matty: "with manual throwing knives, i cant throw them properly they look like
+they might be hitting myself ... see if we can get it to release later or
+futher through my throw".
+
+The swing is detected the moment hand speed crosses SwingSpeed (2 m/s), which
+is the START of the wind-up: the arm is still going back and the blade points
+at your own head. GE:S spawns the knife at the EYE (Weapon_ShootPosition + 2
+forward + 3 right) along the eye angles, so a release there puts a 16-unit hull
+inside the thrower, aimed backwards. Worse, this code then took the direction
+from `PointingDirAgo(80)` -- 80 ms EARLIER again, deeper into the wind-up.
+(That was added on the reasoning that a flick rotates the wrist off target, so
+the pre-flick pointing direction would be truer. In a real throw the wind-up is
+the one moment the hand points the wrong way, so it was exactly backwards.)
+
+Now the flick only ARMS the throw. The release comes at whichever is first:
+* the hand passing its peak speed and dropping below 65% of it -- the natural
+  end of a throw, when the arm is coming round to the target; or
+* ThrowReleaseMs (config, default 150) after the arm began, for a slow lob that
+  never shows a clear peak.
+The direction is taken at the hand's FASTEST moment, not at the release test.
+Taking it at the release threw knives into the ground (Matty, same evening):
+by the time the hand is measurably slowing, an overhand throw has curved past
+the target into the follow-through and the velocity points at the floor. Peak
+speed is where a real throw lets go.
+
+Even at the peak a swung arm aims a little low, while the hand you consciously
+aimed with does not, so the direction is a mix of the two at that instant:
+`ThrowAimMix` (config, default 0.5), 0 = where the hand was travelling, 1 =
+where it was pointing (which is what the throw guide draws, so 1 makes the
+guide exact at the cost of ignoring the swing). Below 1.5 m/s the motion says
+nothing and pointing is used outright.
+The knife also gets the gun's aim gate back (apply the angles, then attack the
+next frame) so the view angles are on the throw direction before +attack goes
+out; grenades and mines still skip that gate, because they must not lock the
+view while held.
+
+Log line per throw (12 max): `Throw released N ms in by slowing|time, peak X
+m/s: motion=(...) pointing=(...) mix M -> (...)`. It carries both candidate
+directions, so the next report can be settled by reading them rather than by
+another guess: if motion is much lower than pointing and throws still land
+short, raise ThrowAimMix; if knives fly where the head looks rather than the
+hand, the two will agree and the fault is elsewhere.
+
+## FACE AIM IGNORED THE HEIGHT SETTING, AND WHAT COSTS FRAMES (2026-09-24)
+
+Matty: "I just tried changing my height and in free aim it works well but with
+face aim the gun stays at the original position ... also im not getting the
+best performance, seems to be hitching a little".
+
+**Face aim's viewmodel now rides the eye we render from.** The engine draws it
+at ITS eye (m_SetupOrigin); we render from setup.origin + the roomscale head
+offset + HeightOffsetMeters * VRScale. Nothing carried the difference, so the
+gun kept the height the game thought you had. ApplyHeadAndIpd now publishes
+`m_ViewEyeDelta` (rendered eye minus game eye) and FaceAimBones adds it to the
+same translation it already applies for the FOV spread, before the eye squash.
+This also fixes leaning: the face-aim gun used to swim when you moved your head
+in roomscale. Free aim was never affected -- its weapon is placed at the
+controller, which is built from the same corrected camera.
+
+**Hitching: two of the causes were added on 2026-09-24 and are now fixed.**
+* The MEMORY probe walked the whole 2 GB address space with VirtualQuery ONCE A
+  SECOND. That walk takes the process's address-space lock -- the same lock the
+  game needs to allocate -- so it stalled allocations. Now the per-second sample
+  is a single GlobalMemoryStatusEx, and the walk (for "largest free block")
+  happens only on the rare line that is actually logged.
+* The throw guide simulated at 1/40 s, up to 120 engine hull sweeps per frame
+  while a throwable was held. Now 1/20 s: half the traces, and the chord error
+  against the true arc is about 0.2 units, far below the size of what it hits.
+* Per-frame tracing in the present path (FRAME / VR::Update / CURSOR) fired
+  about once a second EACH, and every logMsg is a printf plus a flushed write to
+  two files under a mutex, on the present thread. Now once per ~900 frames.
+
+**New: PACING lines.** Every 10 s in a map the log gets
+`PACING <n> frames in 10 s (<fps>), mean <ms>, worst <ms>, <n> over 22 ms`.
+That separates a steady drizzle from occasional big stalls before anything else
+is changed.
+
+**Still-suspected costs, in order, none of them measured yet:**
+1. The wrist watch redraws whenever its content changes -- which includes the
+   round timer, so at least once a second -- and the render thread then has
+   SteamVR load that PNG from disk (VRWatch::Place -> g_face.Load). A once-a-
+   second overlay upload is exactly the shape of the reported hitch.
+2. DXVK's compiler threads were capped at 2 + 2 today to stop the map-load
+   crash. Fewer threads means a new pipeline takes longer to appear, and the
+   2794-entry state cache takes longer to work through after launch. If the
+   PACING lines show the stalls early in a session, raising it to 4 is the
+   first thing to try -- with texture detail still on Medium.
+3. The eye capture does a full-size StretchRect plus a Vulkan transfer per eye
+   per frame at 2560x1440. Constant cost, not a hitch, but it is the floor.
+
+## THE DEAD AIM VECTOR: m_RightControllerForward (2026-09-24)
+
+Matty: "the aiming position is still staying in one direction ... no matter
+what direction i point the grenade only goes lets say north and i cant get it
+to go higher or lower either and if i try to run while cooked my running
+direct gets messed up".
+
+**`VR::m_RightControllerForward` is never updated. It has always held its
+header value, `{1,0,0}`.** The only code that assigns it is `VR::UpdateTracking()`,
+which has NO CALL SITE -- the note at the top of the per-weapon pose block in
+ApplyHeadAndIpd says as much ("lived in UpdateTracking(), which has never had a
+call site") but the vectors themselves were left behind with no warning on them.
+The throw guide read it, so every grenade and mine was aimed along world +X
+with zero pitch: one fixed direction, no up or down, exactly as reported. The
+guide's landing points still moved a little between log samples, which is what
+made this look like a throw-side problem at first -- but that was the player
+walking, not the aim turning.
+
+Use **`VR::HandForward()`** (new) for hand aim: the forward vector of
+`m_RightControllerAngAbs`, which ApplyHeadAndIpd's placeController refreshes
+every frame and which already carries the grip correction as a plain pitch
+offset. The dead members now carry a comment saying all this. The live basis is
+`m_ViewmodelForward/Right/Up`; the left-hand set (`m_LeftControllerForward`
+etc.) IS live -- it is filled by the same placeController call -- which is why
+the off-hand work was unaffected.
+
+Also fixed, from the same report: **cooking a grenade wrecked movement.** The
+attack-aim lock was re-armed every frame the trigger was HELD
+(`m_AttackAimUntil = now + 150`), so the view angles stayed pinned to the hand
+for the whole cook, and the game walks along view angles. Throwables are now
+excluded from that lock (and from its one-frame gate, so they still attack at
+once): the direction only needs to be right when the item leaves, which the
+freeze windows cover -- press for a mine, release for a grenade.
+
+The throw guide's log line now carries `dir=(x,y,z)`, the live hand direction.
+If it ever stops changing as the hand points, an aim vector has gone dead again.
+
+**Worth a look when there is time:** UpdateTracking() is ~200 lines of dead
+code that still compiles, and it is where the ONLY writes to those vectors
+live. Deleting it (and them) would make this class of bug impossible. It was
+not done now because it is a large edit in a file under active change.
+
+## THROW GUIDE, FIRST TEST BACK (2026-09-24)
+
+Matty: "the mines reticle need work, its only going in one direction and not
+where i point so i cannot place them where i want them. also the reticle is too
+chunky and distracting. just needs to be a thin dotted path to a slight bigger
+dot at the end point. doesnt need the ring"
+
+* **Mines flew where he LOOKED, not where he pointed, and the guide was
+  innocent.** The guide followed the hand the whole time (the log's
+  `Throw guide: kind=3 lands at ...` lines vary sample to sample). The throw
+  did not: GE:S's CGEWeaponMine::PrimaryAttack only starts the animation and
+  sets `m_flReleaseTime = curtime + GetFireDelay()`, and **ItemPreFrame spawns
+  the mine when that time arrives, along EyePosition/EyeAngles of that
+  moment** (weapon_mines.cpp). Our aim hold was the gun's 150 ms, so the view
+  angles had already snapped back to the head. The direction is now frozen at
+  the PRESS (where the guide was pointing when you committed) and held 800 ms,
+  which covers the throw animation. Grenades keep their release-edge freeze:
+  they really are thrown 0.1 s after the trigger comes up.
+  The mines' fire_delay could not be read to set the hold exactly --
+  gesource/scripts/weapon_*.ctx are ICE-encrypted -- so 800 ms is deliberately
+  generous. If a mine ever still lands off-aim, raise it before looking
+  elsewhere. Note the cost of a long hold: the game walks along view angles, so
+  moving while the hold is active drifts you toward where you pointed.
+* **Restyled to a thin dotted path and one end dot.** The ring (16 dots laid on
+  the surface, draining with the fuse) and the blast circle (40 dots) are gone;
+  up to 51 dots and a 7 px blob became 15-25 dots at 3 px down to sub-pixel.
+  Path dots are world-sized (0.17 units) so they recede with distance; the end
+  dot is screen-sized (0.0021 of eye height, about 3 px at 1440) so it stays
+  readable at the far end of a long throw without being fat up close -- that is
+  what the `onScreen` flag on the emit lambda is for. The DXVK clamp went from
+  0.8-7 px to 0.55-4.5 px. The end dot still turns red when a grenade would
+  catch you; the fuse now shows only as the path stopping at the burst point.
+
+## MAP LOAD MEMORY, MEASURED (2026-09-24)
+
+The new MEMORY lines caught the load that crashed, at texture detail High:
+
+    19:43:39  1295 of 2047 MB in use, largest free block 430 MB
+    19:43:41  1554 MB, largest free block 165 MB
+    19:43:42  1915 MB, largest free block  18 MB
+    19:43:43  1945 MB, largest free block  10 MB      <- then it died
+
+So the 2 GB ceiling is real and the failure is fragmentation as much as volume:
+by the end the biggest contiguous hole was 10 MB, and a texture or a driver
+shader compile needs one unbroken block. At Medium, with the compiler threads
+capped at 2 + 2 (hl2_d3d9.log now says "Using 2 compiler threads" / "2 async"),
+the same map loaded on the second attempt and play peaked around 1836 MB.
+A stall was logged at 19:47 -- `WATCHDOG no Present for 5563 ms (inMap=1)` at
+1689 MB with an 87 MB hole -- worth watching; if it recurs, it is the next
+thing to chase.
+
+## THROW GUIDE (2026-09-24; untested in the headset)
+
+Matty: "with the throwing items is there a reticle or something we can add to
+help the aim on them? currently its pretty hard to know where its going".
+
+**Why throws were hard to aim.** GE:S launches every thrown item from the
+EYE. The mod pointed the eye at wherever a STRAIGHT ray from the hand landed
+-- right for a bullet, wrong for anything that falls -- so grenades dropped
+short of what you pointed at, and nothing showed the arc or the landing.
+
+**What it does now** (VR::UpdateThrowGuide, drawn by d3d9_vr.cpp through
+L4D2VR/vr_guide.h):
+* A dotted arc from the gun hand to a ring where the item first lands. The
+  ring lies on the surface hit (trace plane normal): flat on floors, upright
+  on walls, where a mine will stick. Dots are spaced evenly along the path so
+  perspective makes them recede; world-sized, clamped to 0.8-7 px.
+* A cooking grenade's fuse drains the ring (16 dots, one per 0.25 s). If the
+  fuse runs out in flight, the arc stops at the burst point and the ring
+  faces the viewer there.
+* Grenade only: the ring turns red, and the blast radius (260) is drawn flat at
+  the landing height, when your chest would be inside it.
+* Uses the reticle colour. VR Settings > Aiming > Throw guide (ThrowGuide).
+
+**Physics, from GE:S's own source** (ges-legacy-code, SDK 2007 -- the
+version this runs on; see the file list in the function's comment):
+  grenade  eye + 18 fwd + 8 right (hull-checked back from walls, 6 units),
+           (forward + 0.1 z, not renormalised) * 750, VPhysics WITH its
+           default drag (not modelled -- expect it to land a little short of
+           the ring on long throws), 4 s fuse from the pin (press + 0.1 s),
+           released 0.1 s after the trigger comes up, damage 320 radius 260
+  knife    eye + 2 fwd + 3 right, forward * 820, VPhysics, EnableDrag(false)
+  mine     eye, forward * 600 + up * 80, MOVETYPE_FLYGRAVITY (an exact
+           parabola), sticks to the first surface, radius 120
+  all + the thrower's velocity (estimated from the eye's frame-to-frame
+  motion, eased), sv_gravity 600 (GE:S's cfg does not change it). The knife's
+  SetGravity(540) is on a VPhysics object, where entity gravity does not
+  apply, so 600 is used for it too -- worth confirming by eye.
+Simulated at 40 steps/s for up to 3 s with 2-unit hull sweeps
+(MASK_SHOT_HULL, local player skipped).
+
+**Aim changes (Matty approved both):**
+1. Thrown items fly along the hand's POINTING direction
+   (m_RightControllerForward, the dominant hand after the left-handed swap),
+   not at a straight ray's hit. The arc is drawn from the hand and eased into
+   the true eye-launched path over its first 0.25 s, so the ring is exact.
+2. The knife flies where the blade pointed 80 ms BEFORE the flick was detected
+   (a 32-frame pointing history), not along the flick's velocity. The log line
+   `Throw ... blade=(...) flick=(...)` shows both.
+Grenades and mines freeze the pointing direction at trigger release (30 ms
+before) and hold the view angles on it for 450 ms, because GE:S spawns the
+grenade 0.1 s after the release along the eye angles of that moment; guns only
+needed 150 ms.
+
+**First headset session: read these log lines.**
+* `Throw guide: kind=1 lands at (...) N units away, T s, fuse F s, ...` --
+  every 3 s while a throwable is held (12 lines max). A 45-degree grenade
+  throw from standing should land about 1120 units (~28 m) away in about
+  2.1 s.
+* Where the grenade actually lands versus the ring tells how much its drag
+  matters; if it lands consistently short, scale the launch speed down in
+  UpdateThrowGuide rather than guessing a drag model.
+
+## FULL AUDIT (2026-09-24)
+
+Everything since v0.3-sharper, checked against evidence rather than notes.
+
+**Fixed during the audit**
+* **Launcher was not portable (release blocker).** `$gameLink = "G:\gesource"`
+  dated from the first snapshot: on any machine without a G: drive the junction
+  failed and the launcher stopped. It now passes the RELATIVE `-game gesource`,
+  resolved against hl2.exe's folder through the `Source SDK Base 2007\gesource`
+  junction it already made. Tested: GE:S loads and `GoldenEye: Source VR
+  initialized.` (2026-09-24 08:40). The old G:\gesource junction on Matty's
+  machine is now unused and harmless.
+* **Bindings referenced two actions that do not exist.** All three files bound
+  the right stick's left/right to `/actions/main/in/boolean_turnleft|right`,
+  which are not in action_manifest.json and are never read by the code (turning
+  is the `Turn` vector action). Removed in L4D2VR\SteamVRActionManifest, rebuilt,
+  verified identical in source, dist and both installed folders. Possibly why
+  SteamVR's binding page would not activate the config; not proven.
+* The launcher printed the log path without `bin\`.
+* The launcher's steamclient.dll rename is gone (unproven; see above) and the
+  G: install's copy is back to stock.
+
+**Checked and clean**
+* Every shipped file matches across L4D2VR (source), dist and the G: install:
+  manifest, action manifest, three bindings, d3d9.dll (root and bin),
+  openvr_api.dll, Bink proxy, dxvk.conf, default config.txt. dist\d3d9.dll is as
+  new as the newest source file.
+* config.txt: all 99 keys are read by the code (six of them by name lookup, not
+  Cfg*), every key the code reads is documented, no duplicates.
+* Actions: every action the code asks for exists in the manifest. Deliberately
+  without a default button: Flashlight (GE:S has none), ShowHUD, Spray. Pose,
+  skeleton and vibration actions are defined but unused (raw poses are read).
+* Code review of the uncommitted diff (hooks, vr, vr_settings, vr_watch,
+  vr_events, game): no bugs found. Left-handed mode is right (GetPoses swaps
+  the roles, so "left controller" is always the off hand). vr_events calls the
+  engine by raw slot but prologue-checks each slot first and turns itself off
+  for good on a mismatch; every engine read is SEH-guarded.
+* Release package (tools/Make-Release.ps1): 17 files, 1.0 MB -- launcher,
+  README, dist, licences; no logs or personal settings.
+
+**Known, low priority, left alone**
+* Unsaved numpad off-hand tweaks are reset if anything else saves config.txt
+  in the meantime (the hot reload re-reads the saved values). Press 0 to keep.
+* manifest.vrmanifest names `l4d2vr_capsule_main.png` (L4D2VR's art, not
+  shipped) and a `Launch-GESVR.bat` beside it that does not exist. Harmless:
+  the manifest is only registered, temporarily, while the game runs.
+* The game's own HUD is stretched 1.84x vertically (see the stretch section);
+  the fix is per-eye render targets, planned after the trailer.
+* The live session used for the audit had no headset connected
+  (`VR_Init failed: Hmd Not Found`), so VR behaviour was not re-tested.
+
+## OFF HAND AND THE MODEL WATCH (2026-09-23 night; untested in the headset)
+
+Matty: "the mines and grenade all show the left arm model, it seems like its
+one mesh with the right arm... are we able to decouple it and use it for our
+left arm and align our watch to it". Done, both.
+
+* **The arms are one model but two bone chains.** Checked offline with
+  scratchpad/mdl_arms.py (bodyparts + .vvd weights): v_grenade and the mines
+  have bodyparts hand_R, hand_L and item, and mirrored L_/R_ chains with
+  their own weighted vertices, so the left arm can be driven on its own
+  without touching the right. Guns have no hand_L at all - those weapons keep
+  showing no left arm, which Matty accepted.
+* **Finding it** (hooks.cpp, ArmRig::leftHand/leftArm/watchBone/leftSet):
+  FindLeftArm walks the bone list once per model. A bone is left if its name
+  starts with "L_" or its parent is already in the left set (the chains are
+  strictly parented, so one pass in bone order is enough - Source stores
+  parents before children). The hand anchor is L_FK_Hand_jnt; the fold bones
+  are L_FK_Collar_jnt / L_FK_Arm_null / L_FK_Shoulder_jnt / L_FK_Elbow_jnt,
+  mirroring what MeleeHideArm already does on the right.
+* **Driving it**: in TrackedWeaponBones, a second anchor block builds leftTotal
+  from GetLeftControllerAbsPos() plus m_LeftHandOffset in the controller basis
+  (m_LeftControllerForward/Up) and m_LeftHandAngle, eased at 0.02 like the
+  weapon. The bone loop then picks per bone:
+  Concat(InLeftArm(rig, i) ? leftTotal : total, src[i]).
+* **The watch overlay follows the model watch** (WatchFollowModel=true): the
+  grenade/mine left wrist carries a Seamaster (bones seamaster, beep, hours,
+  min, sec under L_FK_Wrist_int). VR::NoteModelWatchPose turns the seamaster
+  bone's world position into an offset in off-hand device space
+  (forward/left/up, metres), eased 0.08, rejected past 0.6 m as a bad pose,
+  and VRWatch::Place uses it when m_HaveModelWatch and not left-handed.
+  Guarded to once per stereo frame (static s_watchFrame != g_stereoFrame),
+  so both eyes do not push the same sample twice.
+* **Tuning**: LeftHandOffset and LeftHandAngle ship at 0,0,0 and hot-reload
+  from config.txt. In the headset, VR Settings > Weapons > Adjust position,
+  then numpad 7 switches the numpad between the weapon and the off hand;
+  0 saves the off hand to config.txt (VRSettings::SaveConfigValue wraps the
+  same QueueSave the panel uses - its writer thread runs whether or not the
+  panel is open). VR Settings > Weapons > Off hand turns the whole thing off
+  (LeftHandOnController), which restores the animated left arm.
+
+## NEVER PATCH hl2.exe: STEAM THEN REFUSES THE APP AT THAT LOCATION (2026-09-24, SOLVED)
+
+**Setting the large-address-aware bit on hl2.exe makes Steam refuse the app at
+that install location, and restoring the file does not undo it. Launch-GESVR.ps1
+now refuses to start a modified hl2.exe.** The cure is to move the install to a
+different Steam library.
+
+### The chain, each link proved by experiment
+
+1. **Trigger.** Set bit 0x20 in hl2.exe's PE Characteristics (0x0102 -> 0x0122,
+   the classic "4 GB patch") and launch: instant
+   `SteamStartup() failed: SteamAPI_Init_Internal failed`, ~30 MB, 4 threads,
+   no mod code reached. Reproduced twice, on two different installs.
+2. **Persistence.** Restore the exe from a backup taken seconds earlier
+   (hash-identical, 0x0102): still fails. It keeps failing after Steam's file
+   verification, clearing Steam\appcache, logging out and in, restarting Steam,
+   rebooting Windows, re-registering the app from a backed-up manifest, and a
+   full 3.7 GB reinstall into the SAME library.
+3. **Location, not files.** A byte-identical copy of the failing install
+   (6,325,742,840 bytes, robocopy /XJ) runs fine once registered in another
+   library: "Source Engine Test" and then `GoldenEye: Source VR initialized.`
+   Moved back to the original library, the same files fail again. So Steam
+   holds the poisoned state against the app's install location, and moving the
+   install is what clears it -- no download needed.
+4. The first poisoned location (G:, 2026-09-23 23:18) works again as of
+   2026-09-24 08:12, while the second (F:, 00:50) still fails. Either Steam
+   keeps one bad location per app and the second poisoning replaced the first,
+   or the state expires after several hours. Not distinguished; it does not
+   change the fix.
+
+### What it is NOT (each ruled out by test)
+
+* Not the mod: the stock game (no d3d9.dll, no proxy, no hl2.exe.local) fails
+  identically in a poisoned location.
+* Not a DRM wrapper: hl2.exe has five plain sections (.text .rdata .data .rsrc
+  .reloc), no `.bind` (SteamStub), no signature, PE checksum 0. Nothing in it can
+  detect a changed byte. (Earlier notes said it was "Steam-wrapped". Wrong.)
+* Not Windows: no AppCompatFlags\Layers or Compatibility Assistant entry for
+  hl2.exe, Fault Tolerant Heap not tracking it, no Image File Execution Options,
+  and no hl2.exe crash events after 2026-09-23 23:07 (the poisoned launches never
+  crash, they show the dialog).
+* Not the per-library shader cache (steamapps\shadercache\218): setting it aside
+  changes nothing.
+* Not the SDK's 2007-era steamclient.dll next to hl2.exe: a healthy install runs
+  with it present. Earlier notes called it "a real bug"; unproven, and the
+  launcher no longer moves it.
+* Not Steam's launch process: replaying Steam's exact environment (96
+  variables, captured from the live process) from a process we started fails the
+  same way.
+
+### Where it fails, as far as it can be seen from outside
+
+The game's only debug output is the error line itself (captured with a DBWIN
+listener). Without a steam_appid.txt, SteamAPI init fails before any Steam
+client DLL is loaded; with one, init passes and the game then parks in
+filesystem_steam's content handshake. Both are the Steam client declining to
+serve app 218 to that install -- consistent with state Steam keeps for the app
+and its install location, which the Steam client's own files do not visibly
+record (no config.vdf / localconfig.vdf / userdata entry mentions the path or
+the exe).
+
+### How to restore, for anyone who hits it
+
+1. Put hl2.exe back: Steam > Library > Source SDK Base 2007 > Properties >
+   Installed Files > Verify integrity.
+2. Still "SteamStartup() failed"? Same page > **Move install folder** to any
+   other Steam library. Seconds, no download. (Done here by hand: robocopy
+   /E /XJ to the other library's steamapps\common, move appmanifest_218.acf to
+   that library's steamapps, restart Steam.)
+3. GE:S itself lives in steamapps\sourcemods and is never affected. VR\config.txt
+   and VR\weapons.txt travel with the install folder.
+
+### Tools written for this (scratchpad/probe)
+
+* `probe.exe dbwin <sec>` -- prints every OutputDebugString in the session with
+  PID (Steam logs its launch steps there too).
+* `probe.exe env|cwd <pid>` -- environment block / command line / working
+  directory of a 32-bit process (x86 build, WOW64 PEB offsets).
+* `try_env.ps1` -- launch hl2.exe with a saved environment, report PASS/FAIL.
+* `mods32.ps1` -- 32-bit module list via the SysWOW64 PowerShell.
+
+### Two hazards met on the way
+
+* **The launcher creates a junction `Source SDK Base 2007\gesource` that points
+  at the real GE:S folder.** A plain `robocopy /E` follows it (a 9 GB copy to an
+  almost-full C: drive had to be killed), and a recursive delete of an old
+  install tries to delete through it (it stopped on "access denied"; GE:S was
+  verified intact, 22,336 files). Always use `/XJ`, and remove junctions with
+  `rmdir` before deleting a tree.
+* Steam will not start an install from `steam://install/218` when the app is
+  unregistered; its dialog needs a click.
+
+## EARLIER, DURING THE SAME FAILURE (investigation trail)
+
+(Superseded by the section above. Kept for the evidence; where it says "reinstall is the only cure" or calls steamclient.dll a real bug, the section above is right.)
+
+Since 2026-09-23 23:21 the game dies at startup with
+`SteamStartup() failed: SteamAPI_Init_Internal failed`. Unresolved at the time
+of writing; Steam has a 3.68 GB repair download queued and suspended.
+
+What is RULED OUT, each by test, not by reasoning:
+
+* **Not the mod.** With d3d9.dll, openvr_api.dll and the Bink proxy removed and
+  hl2.exe.local renamed away, the failure is identical. Our code never loads:
+  no new lines in vrmod_log.txt or %TEMP%\gesvr_boot.log since 23:08:46, and the
+  failing process has 4 threads / ~30 MB.
+* **Not GE:S.** Launching the stock `sourcetest` game fails the same way.
+* **Not the LARGE_ADDRESS_AWARE patch.** hl2.exe is byte-identical to the
+  pre-patch backup (hash-compared), and Steam's own file verification accepted
+  it -- it replaced exactly one file, our binkw32.dll proxy.
+* **Not stale process/system state.** Windows rebooted 23:37, Steam restarted
+  several times, Steam's appcache cleared and rebuilt (23:39, 00:11).
+* **Not Steam being unwell.** Logged on OK each time, same user, not elevated,
+  client unchanged since 2026-09-03, registry ActiveProcess\SteamClientDll
+  correct, app 218 owned by this account, StateFlags 4, no staging leftovers.
+  SteamVR (app 250820) launches fine, so Steam's launch path works in general.
+* **Not antivirus or a compatibility shim** (no Defender detections, no
+  AppCompatFlags\Layers entry for hl2.exe).
+
+What IS known:
+
+* **Launched by Steam** (`-applaunch 218`): dies at SteamStartup having loaded
+  steam.dll but NO steamclient.dll at all.
+* **Launched by hand** with SteamAppId/steam_appid.txt: passes SteamStartup,
+  loads Steam's real steamclient.dll, then parks at ~27 MB / 0.1 s CPU in the
+  filesystem_steam content handshake. Adding SteamClientLaunch/SteamEnv to the
+  environment does not change that.
+  So both routes break at the game <-> Steam client content handshake for 218.
+* **A real bug found on the way** (fixed, but not the cause): the SDK ships a
+  2007-era steamclient.dll (8.8 MB) next to hl2.exe, and Windows prefers a DLL
+  in the application directory over the path steam_api asks for, so it shadows
+  the Steam client's current 21 MB one. Proved by listing the failing process's
+  modules. Launch-GESVR.ps1 now renames it to steamclient.dll.stale on every
+  run (Steam's verification restores it).
+* Diagnostics that worked, worth reusing: list a 32-bit process's modules with
+  the WOW64 PowerShell (scratchpad/mods32.ps1 via
+  C:\Windows\SysWOW64\WindowsPowerShell\v1.0\powershell.exe), and read a dialog's
+  windows with scratchpad/dlgtext.ps1 (DllImport must be CharSet.Unicode).
+
+State left behind:
+
+* appmanifest_218.acf DELETED to force Steam to re-register the install;
+  backup at scratchpad/appmanifest_218.acf.bak. Steam did NOT reuse the 5.9 GB
+  on disk -- it queued a 3.68 GB download, which was suspended after ~50 s.
+  App 218 is "Update Required, Update Queued, Suspended": starting Steam
+  resumes the download; restoring the manifest backup returns to the previous
+  (broken) state with no download.
+* Test artifacts cleaned up (steam_appid.txt removed); hl2_orig.exe and
+  steamclient.dll.stale left in the game folder on purpose.
+
+## NO 4 GB FOR THIS 32-BIT GAME, AND WHY THE GAME HUD IS STRETCHED (2026-09-23 night)
+
+Matty: "im having a few crashes, I think im right near my texture limit" and
+"the hud is still a little vertically stretched ... when i turn the radar on,
+its more of an oval than a circle".
+
+* **hl2.exe cannot be made large-address aware. DO NOT TRY IT AGAIN.** It is
+  not LAA (PE Characteristics 0x0102, bit 0x20 clear), so Windows caps the whole
+  process at 2 GB: game, textures and the copies DXVK keeps of every managed
+  texture. That is the ceiling the High/Very High texture crashes hit. Setting
+  the bit (0x0102 -> 0x0122) was approved and applied, and the game then would
+  not start at all:
+      Error!  SteamStartup() failed: SteamAPI_Init_Internal failed
+  This hl2.exe is a 98 KB Steam-wrapped shim; changing any byte of it makes
+  Steam refuse to initialise. Restoring hl2_orig.exe over it fixed it at once
+  (verified back to 0x0102), and Launch-GESVR.ps1 now carries a comment where
+  the patch was, so nobody re-adds it. Any future attempt at the 2 GB ceiling
+  has to work without editing the exe -- the remaining levers are the ones that
+  reduce demand: texture detail, window resolution, and what DXVK keeps
+  (d3d9.evictManagedOnUnlock, which crashed when tried; see dxvk.conf).
+* **The game's own HUD is stretched vertically by 1.844x**, and it is the same
+  geometry the viewmodel squash already corrects for: the view is rendered with
+  the headset's eye aspect (0.964) into the 16:9 window buffer, so a pixel is
+  1.844 times taller than it is wide (the log line "eye aspect 0.964, pass
+  aspect 1.778 -> squash 0.542" IS this number). The world is right because the
+  per-eye submit crop undoes it; our overlays (watch, menus, toasts, hurt HUD)
+  are right because they are their own quads. Anything GE:S draws in screen
+  pixels -- radar, its health bars -- is stretched, and nothing in the current
+  path can undo it for them alone.
+  Ways out, in order of cost: run the window at the eye aspect (1392x1440
+  instead of 2560x1440: no stretch, but horizontal sharpness nearly halves);
+  a middle ground (1920x1440 leaves 1.38x); or render each eye into its own
+  target at the headset's aspect, which removes the whole class of problem
+  (squash, stretch, wasted vertical resolution) and is the known-broken
+  EyeRenderTargets path. Matty chose to keep the sharpness for the trailer and
+  have the render-target route attempted afterwards.
+
+## THE BUILD OVERWRITES dist\VR -- EDIT L4D2VR\SteamVRActionManifest (2026-09-23 night)
+
+**Read this before touching bindings or config.txt.** The post-build event in
+l4d2vr.vcxproj (both Release and Debug) runs:
+
+    xcopy /Y /E /I "$(ProjectDir)SteamVRActionManifest" "$(SolutionDir)dist\VR\SteamVRActionManifest"
+    copy  /Y "$(ProjectDir)config.txt"        "$(SolutionDir)dist\VR\config.txt"
+    copy  /Y "$(ProjectDir)manifest.vrmanifest" "$(SolutionDir)dist\VR\manifest.vrmanifest"
+
+So `L4D2VR\SteamVRActionManifest\*`, `L4D2VR\config.txt` and
+`L4D2VR\manifest.vrmanifest` are the sources; the copies under `dist\VR\` are
+build output and any edit to them is destroyed by the next build.
+
+That is what happened to the Reload binding twice. Both times it was edited in
+`dist\VR\SteamVRActionManifest`, verified by reading it back, and then wiped by
+the next rebuild -- which is why the handoff note said Reload was on the right
+B while the file on disk (and in the game) still had it on the left Y, shared
+with Pause. Matty: "The controller binding with the reload was gone again and
+the steam vr bindings only show the left for dead vr mod one."
+
+Now done in `L4D2VR\SteamVRActionManifest`, rebuilt so the build itself carries
+it into dist, and both installed copies under Source SDK Base 2007 (`VR\` and
+`bin\VR\`) refreshed. Reload is `/user/hand/right/input/b`, the right stick
+click is free, and the configs are named "Default GoodHead bindings for ...".
+
+Checks worth keeping:
+* config.txt is edited in BOTH places already (that is why it survived), and
+  the pair must stay in step -- the build only copies L4D2VR -> dist.
+* After a binding change: rebuild, then read the file back from `dist\VR\`
+  (not from the source), and confirm the timestamp is newer than the build.
+* The mod registers `bin\VR\manifest.vrmanifest` with AddApplicationManifest
+  (temporary) and IdentifyApplication each run, so `Steam\config\appconfig.json`
+  never lists us -- that is expected, not a fault. Verified in the log:
+  `Identified process as gesource.vr ... bin\VR\manifest.vrmanifest` and
+  `SetActionManifestPath(... bin\VR\SteamVRActionManifest\action_manifest.json) -> 0 OK`.
+* Nothing overrides the defaults: no gesource.vr entry in
+  `Steam\config\steamvr.vrsettings` or in userdata's binding_config.json. The
+  only stale trace is SteamVR's OpenXR remapping cache,
+  `Steam\config\openxr\auto-remapping_*.json` (2026-08-30), which still holds
+  the old binding for app key gesource.vr. Delete those two files if SteamVR
+  ever seems to serve the old mapping; they regenerate.
+
+## THE SETTINGS PANEL COULD BE BURIED BY THE GAME MENU (2026-09-23 night)
+
+Matty: "I accidently brought the menu closer than the vr settings menu and now
+i couldnt close it because i couldnt click the close button as the other menu
+was in the way."
+
+The log confirms it: `VRSettings: opened` at 22:22:58 with no `closed` after it,
+and `UpdateActionState -> 0 OK` nearby, so the action system was alive and the
+panel simply never got a close.
+
+* **The panel is now always in front of the game menu.** It used to sit at a
+  fixed 1.25 m while Menu distance goes down to 1.0, so the game menu covered
+  it -- including the Close button, which the laser then could not reach.
+  VRSettings::Place takes EffectiveMenuGeometry's distance, sits 0.25 m in
+  front of it (floor 0.5 m), and scales its width by dist/1.25 so it keeps its
+  apparent size. Frame re-places it when the menu distance changes, so it
+  follows while you are standing at that very setting.
+* **The game menu stops being laser-interactive while the panel is open**
+  (MakeOverlaysInteractiveIfVisible false in Open; ProcessMenuInput asserts it
+  true again the frame we close), so it cannot take a click meant for us.
+* **B closes the panel, read from the device.** The action-system close
+  (MenuBack/Pause) was already there and did not fire: while SteamVR's laser is
+  driving an interactive overlay it takes that hand's input, so those actions
+  go quiet exactly when you need them. VR::LegacyMenuButtonDown reads
+  k_EButton_ApplicationMenu (B and Y on Touch, both B on Index) with
+  GetControllerState, the same legacy path LegacyTriggerDown already uses, with
+  an edge guard so a button held from opening does not close it immediately.
+  If SteamVR ever stops answering legacy state this goes quiet too -- the
+  placement fix above is what guarantees the Close button is reachable.
+  Closes now log `VRSettings: closed by button (device=N)`.
+
+## MENU SIZE AND DISTANCE NOW MEAN WHAT THEY SAY (2026-09-23 night)
+
+Matty: "Trying to resize the menu it is a little funky, like its not doing
+what i think it should with size and distant changes."
+
+Three things made the two settings interfere, all in VR::EffectiveMenuGeometry:
+
+* **Distance was also a size control.** An overlay's width is metres at its own
+  position, so pushing the panel from 1.6 m to 3.0 m shrank it by nearly half.
+  The width is now scaled by distM/kMenuRefDist (1.6 m), so the panel subtends
+  the same angle wherever you put it -- distance changes depth only.
+* **The pause menu forced distM >= 1.8 m**, so every step of the setting below
+  1.8 did nothing at all while you were in a map, which is where you are most
+  likely to be fiddling with it. Gone.
+* **The character/level panel ignored the setting entirely** (fixed
+  InGameMenuDistance = 2.4 m). It was only out there to make it smaller, which
+  distance no longer does, so it takes the one distance and the in-map size
+  factor. InGameMenuDistance is deleted from vr.h, vr.cpp and both configs.
+* **In-map menus keep a 0.72 size factor** (pause and character/level both):
+  full size covers too much of the view. Measured, at 1440p and the shipped
+  2.0/1.6: main menu 79.6 deg before and after, pause 56.1 -> 61.9, character
+  select 58.1 -> 61.9. Nothing moved more than six degrees, and the distance
+  slider now holds all of them steady across 1.0-3.0 m.
+* **The size setting reads as a percentage** (50-200%, 2.0 = 100%) instead of
+  metres, because the metres depend on the distance and on the resolution
+  (MenuScaleWithRes): the label could not have been honest. The config key
+  stays MenuWidthMeters, documented as the width at 1.6 m.
+* The pointer needs no matching change: both the SteamVR laser and the tip ray
+  hit the overlay itself through ComputeOverlayIntersection, so aiming follows
+  whatever geometry this function chooses. (The old comment above the function
+  claimed the pointer repeated the maths and had to be kept in sync. It does
+  not, and the claim is now corrected in place.)
+
+## BINDINGS: THE RELOAD EDIT NEVER LANDED (2026-09-23 night)
+
+Matty: "The reload isnt there but it might be because im on the left for dead
+config in steam."
+
+* **It was not SteamVR: the files still had the old binding.** The previous
+  session's note in RELEASE POLISH (Reload on the right B, names no longer
+  saying Left 4 Dead 2) describes an edit that never reached disk --
+  `git diff` showed dist/VR/SteamVRActionManifest untouched, and all three
+  files still had Reload on `/user/hand/left/input/y`, the same button as
+  Pause, on Index a button that does not exist. Pressing Y fired Pause and
+  Reload together, so all you saw was the pause menu. Done now, for real:
+  Reload is `/user/hand/right/input/b` beside Use and MenuBack, and the right
+  stick click is no longer Flashlight (GE:S has none). Verified by reloading
+  each file and printing every source (scratchpad/bindings_reload_fix.py).
+  Lesson: check `git diff` for the file you claim to have edited before
+  writing the handoff note.
+* **The configs are now called GoodHead** (Matty's name for it, confirmed):
+  "Default GoodHead bindings for Oculus Touch / Index Controllers / Vive
+  Cosmos Controllers", with a description line. That title is what SteamVR
+  shows under Manage Controller Bindings -- it used to read "Default Left 4
+  Dead 2 VR bindings", which is the "left for dead config" that was suspected.
+  The SteamVR application entry (manifest.vrmanifest, app key `gesource.vr`)
+  is still named "GoldenEye: Source VR".
+* **Nothing overrides them**: Steam's userdata binding_config.json and
+  config/steamvr.vrsettings have no entry for `gesource.vr`, so SteamVR is
+  reading the default files straight from the manifest folder. They install
+  on the next launcher run (the folder-copy fix from last night is in place),
+  so the new binding takes effect the next time GE:S starts.
+
+## OFF HAND, FIRST TEST BACK (2026-09-23 night)
+
+Matty, after trying it: the position could not be dialled in because the hand
+"rotated weirdly ingame when turning the vr controller", and the Display tab
+ran off the bottom of the settings panel.
+
+* **The tilt was Euler addition, not a rotation.** The first cut did
+  lang.x/y/z += LeftHandAngle on the angles VectorAngles had just produced
+  from the controller. Adding degrees to an Euler triple is not a rotation in
+  the hand's frame: how much of the tilt lands on which axis depends on where
+  the controller is pointing, so the hand turned about a moving point and the
+  offset, applied in that skewed basis, swung it further off the more you
+  turned. Now the tilt is composed as a matrix on the right
+  (Concat(lraw, PoseMatrix(tilt))), the same way the melee hand has always
+  done it, and LeftHandOffset is applied in the raw CONTROLLER basis. The two
+  knobs are now independent: rotating turns the hand where it stands, moving
+  slides it without turning it, and in play the hand is still rigid to the
+  controller (it orbits with your wrist, because lraw turns with it).
+* **The settings panel had run out of room**: rows were a fixed 104 px from
+  y=196 with the footer at 830, so six fit exactly and the seventh (Display,
+  once "Watch on model" was added) fell off the panel. VRSettings::RowPitch
+  now shrinks the pitch to fit the tab (88 px at seven rows, floor 72), and
+  the row internals -- label, hint, control, divider -- are derived from it,
+  so they stay centred. Layout and DrawPanel share the one number, so the
+  laser still hits what it looks like it hits.
+  Checked offline with scratchpad/preview (panel_tab*.png): every tab's last
+  row now ends above the footer, no hit-test mismatches, nothing off-panel.
+
+## RELEASE POLISH (2026-09-23 night, after v0.3-sharper; untested in the headset)
+
+* **Why a timer showed with the HUD off**: GE:S paints its HUD into the eye
+  images. `VGui_Paint` (engine.dll) never resolves on this build ("Optional
+  signature not found: 55 8B EC E8 ..."), so dVGui_Paint's "no VGUI in the
+  stereo pass" guard is dead code, and the in-map menus now DEPEND on that
+  painting (the overlay captures it). Do not "fix" the hook without re-testing
+  character select and the pause menu. Instead `VR::SyncHudCvars` switches off,
+  while the watch is on, what the watch shows: `cl_ge_show_timer 0`,
+  `cl_ge_show_ammocount 0`, `cl_ge_hud_noswitchlist 1`, and with WatchKillFeed
+  `cl_ge_drawkillfeed 0` (all GE:S client cvars, archived by GE:S).
+* **Kill feed on the watch** (`vr_events.cpp`, `WatchKillFeed=true`, VR Settings
+  > Display > Watch notices): an IGameEventListener2 on player_death,
+  round_start, round_end. All engine calls by raw slot, prologue-checked
+  (slots verified by disassembly of engine.dll):
+    IGameEventManager2 "GAMEEVENTSMANAGER002": AddListener 3
+      (56 57 8B 7C 24 10 85 FF 8B F1 74), FindListener 4 (8B 44 24 08 57 50 8B F9 E8);
+    listener: dtor 0, FireGameEvent 1 (FireEventIntern calls [vt+4](event));
+    IGameEvent (CGameEvent over KeyValues): GetName 1, GetInt 6, GetString 8;
+    IVEngineClient: GetPlayerInfo 8 (8B 44 24 04 83 E8 01 3B 05; copies 0x84
+      bytes, name first), GetPlayerForUserID 9 (8B 0D ?? ?? ?? ?? 85 C9 75).
+  Registered from VR::Update in map (every 2 s until it takes; FindListener
+  re-checks). Weapon names from GE:S's resource/gesource_english.txt (UTF-16)
+  for the event's "#GE_..." print-name token. Notices: VRWatch::Notify(head,
+  detail, kind 0 news / 1 good / 2 bad, ms, pop). While one shows, it takes
+  the watch screen in place of weapon and ammo (preview renders in scratchpad
+  preview/watch_note_*.png). Your kills and deaths pop the watch up.
+  Log: `Kill feed: game event manager verified`, `Kill feed event ...`.
+* **Bindings were never updating**: Launch-GESVR's `Copy-Item -Recurse` copied
+  dist\VR\SteamVRActionManifest INTO the existing folder, so SteamVR kept
+  reading the August files (no Scope action at all) while updates piled up in
+  SteamVRActionManifest\SteamVRActionManifest. Fixed: contents are copied over,
+  the stray copy removed.
+* **Binding fixes**: Reload shared the left Y with Pause (Touch, Cosmos) since
+  959c505 moved it off the grip, and pointed at a non-existent left Y on Index.
+  Reload is now the right B on all three, alongside Use (Matty asked for the
+  door button); Y / Index left B is Pause only. The right stick click, which
+  was Flashlight (GE:S has none), is left unbound. Binding names no longer
+  say "Left 4 Dead 2".
+* **Defaults for new installs** (dist config): TrackedWeapon=true (free aim),
+  MenuWidthMeters=2.0 (Matty's; the menu scales with resolution).
+* **Logs rotate**: vrmod_log.txt and %TEMP%\gesvr_boot.log move to *.old when
+  over 8 MB at session start.
+* **README.md rewritten** for players: features, install, controls, settings,
+  known limits (texture detail High, 1440p cap, GE:S settings the mod changes).
+* World scale moved to the Comfort tab to make room for Watch notices.
+* `tools/Make-Release.ps1` builds packages/GESVR-<git describe --dirty>.zip:
+  launcher, README, dist, licences (DXVK, OpenVR, MinHook, Source SDK).
 
 ## PICTURE QUALITY INVESTIGATION (2026-09-22, after v0.2-free-aim)
 

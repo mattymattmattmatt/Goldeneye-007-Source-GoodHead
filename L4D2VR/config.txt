@@ -44,11 +44,12 @@ UseVerticalCrop=true
 # HMD native size as the window; that is what used to freeze boot.
 EyeRenderScale=1.0
 
-# Floating menu panel size and distance, in metres. The in-game character/level
-# menu was too big and too close; raise the distance and/or drop the width until
-# it sits comfortably. Both hot-reload.
-MenuWidthMeters=2.4
-MenuDistanceMeters=1.6
+# Floating menu panel: how big the game's menus look, and how far away they
+# float. The two are independent -- the width below is the panel's width at
+# 1.6 m and is scaled with the distance, so moving a menu does not resize it.
+# 2.0 is the 100% the VR Settings panel shows. Both hot-reload.
+MenuWidthMeters=2.0
+MenuDistanceMeters=1.2
 
 # Render each eye into its own engine render target instead of drawing both into
 # the backbuffer one on top of the other.
@@ -280,7 +281,25 @@ FixViewmodelAspect=true
 FaceAimGunSpread=1.0
 # The game HUD in the headset: off, hurt (flash it when you take damage or are
 # low) or always. The Show HUD button works in every mode. Also in VR Settings.
-GameHUD=hurt
+GameHUD=always
+# Kills (yours called out: YOU KILLED / KILLED BY) and round start/end pop up
+# on the watch for a few seconds, and GE:S's own kill feed is kept off the view.
+# With the watch on, the round timer, ammo count and weapon list are also taken
+# off GE:S's HUD, since the watch shows them. Also in VR Settings > Display.
+WatchKillFeed=true
+# The grenade and the mines are the only viewmodels with a left arm, and it
+# carries GoldenEye's Seamaster. true puts that arm on your off-hand
+# controller instead of dragging it along with the gun hand; the grenade or
+# mine itself stays in your gun hand. Offsets are in the hand's own frame
+# (forward,right,up and pitch,yaw,roll), like the weapon positions.
+LeftHandOnController=true
+LeftHandOffset=5.5,-0.5,4
+LeftHandAngle=45,-65,-127.5
+# Tune them in the headset like a weapon: VR Settings > Weapons > Adjust
+# position, then numpad 7 to switch to the off hand (0 saves them here).
+# With that arm drawn, the watch face sits on the Seamaster modelled on its
+# wrist, and stays there afterwards, instead of at WatchOffset.
+WatchFollowModel=true
 # Switch weapons the moment you press (sets GE:S's hud_fastswitch 1): its
 # pick-then-fire weapon list is a 2D panel you cannot see in the headset.
 WeaponFastSwitch=true
@@ -303,16 +322,35 @@ BloodCurtainScale=2.6
 # true = free aim, the gun is in your right hand and fires where it points.
 # Free aim also hides GE:S's own aim-mode crosshair, which is pinned to the
 # centre of your view and would disagree with the gun.
-TrackedWeapon=false
+TrackedWeapon=true
 # With the gun in hand, shots go where the barrel points and the reticle sits
 # on the spot it will hit. false = shots follow your head as before.
 AimWithGun=true
 # With the gun in hand and the slappers or hunting knife out, a fast chop
 # of the right controller attacks; with the throwing knife, a flick throws it
-# the way you flicked. SwingSpeed is how fast, in metres per second: raise it
-# if ordinary movement sets it off, lower it if chops are missed.
+# where the blade was pointing just before the flick. SwingSpeed is how fast,
+# in metres per second: raise it if ordinary movement sets it off, lower it if
+# chops are missed.
 SwingMelee=true
 SwingSpeed=2.0
+# Throwing knife: the swing is detected as your hand starts moving, which is
+# too early to let go -- the blade is still pointing back at you. The throw is
+# released when your hand passes its fastest and begins to slow, or this many
+# milliseconds after the swing started, whichever comes first. Raise it to let
+# the knife go later in the swing, lower it to release sooner.
+ThrowReleaseMs=150
+# Which way a thrown knife goes, decided at the fastest moment of your swing:
+# 0.0 = where your hand was travelling, 1.0 = where your hand was pointing
+# (which is what the throw guide draws). An overhand throw curves downward, so
+# pure motion throws low; pure pointing ignores the swing. Halfway by default.
+ThrowAimMix=0.5
+# Throw guide: with a grenade, throwing knife or mine in hand, a thin dotted
+# path from your hand to a slightly bigger dot where it will first land, in the
+# reticle colour. For a grenade cooked until its fuse would run out in the air,
+# the path stops at the burst point; the end dot turns red if that blast would
+# catch you. Thrown items fly where your hand points, so the path you see is
+# the path it flies.
+ThrowGuide=true
 # Slappers and knives are placed by their hand. MeleeHideArm shows only the
 # hand (the flat-screen arm otherwise runs back into your chest); set false
 # for the full arm. MeleeAngleOffset tilts the hand as pitch,yaw,roll degrees.
@@ -359,13 +397,10 @@ HurtHUDUMax=0.50
 HurtHUDVMax=1.00
 
 # Aiming reticle arm length as a fraction of eye height. 0.006 is small.
-VRReticleSize=0.0007
+VRReticleSize=0.001
 
 # Put the in-map character/level select on the flat panel so the VR pointer works.
 InGameMenuPanel=true
-
-# In-map character/level select panel distance in metres.
-InGameMenuDistance=2.4
 
 # Keep menu apparent size constant as resolution changes.
 MenuScaleWithRes=true
@@ -374,7 +409,7 @@ MenuScaleWithRes=true
 # crosshair: a ring with four spikes; drawn larger than the others).
 VRReticleStyle=dot
 # Aiming reticle colour: yellow, white, green, red or cyan.
-VRReticleColor=yellow
+VRReticleColor=white
 
 # Force the menu panel opaque. Without this it goes see-through in a map.
 ForceMenuOpaque=true

@@ -5,6 +5,7 @@
 #include "hooks.h"
 #include "trace.h"
 #include "weapons.h"
+#include "vr_guide.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -25,6 +26,7 @@
 #include "vr_settings.h"
 #include "vr_watch.h"
 #include "vr_toast.h"
+#include "vr_events.h"
 
 // Frame-stage timing. The mod has twice been diagnosed by guesswork; this
 // makes the cost of each stage visible so a single run localizes a stall.
@@ -266,12 +268,77 @@ static void GESVR_CaptureWorkerStacks()
         Game::logMsg("THREAD: no other thread has d3d9.dll on its stack");
 }
 
+// How much of this 32-bit process's 2 GB of address space is spoken for, and
+// the biggest hole left in it. A texture or a driver shader compile needs one
+// contiguous block, so a fragmented space fails before it is nominally full --
+// and when it fails GE:S dies (an abort in ucrtbase, 0xc0000409, or a crash on
+// the null an allocation returned). Logged so a crash while loading a map says
+// how close to the edge it was.
+//
+// How much is used is a single cheap call. The largest hole means walking every
+// region, which takes the process's address-space lock -- the same lock the
+// game needs to allocate -- so it is only done when a line is actually being
+// logged. Walking it once a second was enough to hitch the game (2026-09-24).
+static void VirtualUsed(unsigned &usedMB, unsigned &totalMB)
+{
+    MEMORYSTATUSEX ms{};
+    ms.dwLength = sizeof(ms);
+    if (!GlobalMemoryStatusEx(&ms))
+    {
+        usedMB = totalMB = 0;
+        return;
+    }
+    totalMB = (unsigned)(ms.ullTotalVirtual >> 20);
+    usedMB = (unsigned)((ms.ullTotalVirtual - ms.ullAvailVirtual) >> 20);
+}
+
+static unsigned LargestFreeBlockMB()
+{
+    SYSTEM_INFO si{};
+    GetSystemInfo(&si);
+    const uintptr_t lo = (uintptr_t)si.lpMinimumApplicationAddress, hi = (uintptr_t)si.lpMaximumApplicationAddress;
+    uintptr_t p = lo;
+    size_t hole = 0;
+    MEMORY_BASIC_INFORMATION mbi{};
+    while (p < hi && VirtualQuery((LPCVOID)p, &mbi, sizeof(mbi)) == sizeof(mbi))
+    {
+        if (mbi.State == MEM_FREE && mbi.RegionSize > hole)
+            hole = mbi.RegionSize;
+        const uintptr_t next = (uintptr_t)mbi.BaseAddress + mbi.RegionSize;
+        if (next <= p)
+            break;
+        p = next;
+    }
+    return (unsigned)(hole >> 20);
+}
+
 static void GESVR_WatchdogThread()
 {
     int reported = 0;
+    unsigned memLogged = 0, memPeak = 0;
+    int memLines = 0;
     while (g_watchdogRun.load())
     {
         Sleep(1000);
+
+        // Every 64 MB of growth gets a line, so a map load leaves its climb in
+        // the log; a big drop (the map unloaded) resets the baseline.
+        {
+            unsigned used = 0, total = 0;
+            VirtualUsed(used, total);
+            if (used > memPeak)
+                memPeak = used;
+            if (used + 256 < memLogged)
+                memLogged = used;
+            if (used >= memLogged + 64 && memLines < 300)
+            {
+                Game::logMsg("MEMORY %u of %u MB address space in use (peak %u), largest free block %u MB",
+                             used, total, memPeak, LargestFreeBlockMB());
+                memLogged = used;
+                ++memLines;
+            }
+        }
+
         const long long last = g_lastPresentMs.load();
         if (last == 0)
             continue;
@@ -280,8 +347,10 @@ static void GESVR_WatchdogThread()
         {
             if (reported < 20)
             {
-                Game::logMsg("WATCHDOG no Present for %lld ms (inMap=%d stereoPasses=%d)",
-                             stalled, g_watchInMap.load(), g_watchStereoPass.load());
+                unsigned used = 0, total = 0;
+                VirtualUsed(used, total);
+                Game::logMsg("WATCHDOG no Present for %lld ms (inMap=%d stereoPasses=%d) memory %u/%u MB, hole %u MB",
+                             stalled, g_watchInMap.load(), g_watchStereoPass.load(), used, total, LargestFreeBlockMB());
                 ++reported;
             }
             // Sample twice, seconds apart: identical EIP means a hard
@@ -1109,11 +1178,13 @@ void VR::Update()
     // The engine may install its own spew function after ours; re-chain.
     if ((s_frames % 120) == 0)
         VRSettings::InstallMenuHook();
-    if ((s_frames % 90) == 0 && m_Game && m_Game->IsInMap())
+    // Once every ~10 s, not every ~1 s: each of these is a flushed write to
+    // two files on the present thread, and in a headset that is felt.
+    if ((s_frames % 900) == 0 && m_Game && m_Game->IsInMap())
         Game::logMsg("CURSOR vgui=%d | win32 polls=%d visible=%d nullImage=%d centred=%d -> menu=%d",
                      m_VguiCursor, MenuInput::g_curPolls.load(), MenuInput::g_curVisible.load(),
                      MenuInput::g_curNull.load(), MenuInput::g_curCentred.load(), (int)m_MenuMode);
-    if ((++s_frames % 90) == 1)
+    if ((++s_frames % 900) == 1)
     {
         Game::logMsg("VR::Update frame=%d stereoFrame=%d menu=%d gameui=%d inmap=%d left=%p right=%p",
                      s_frames, (int)m_RenderedNewFrame, (int)IsMenuMode(),
@@ -1125,7 +1196,7 @@ void VR::Update()
     // Verbose for the first 40 frames, then periodically. If the game is
     // crawling, the timestamps alone reveal the frame rate and the per-stage
     // numbers say which call is eating it.
-    const bool trace = (s_frames <= 40) || ((s_frames % 90) == 1);
+    const bool trace = (s_frames <= 40) || ((s_frames % 900) == 1);
 
     // "gap" is wall time from the end of the previous VR::Update to the start of
     // this one: everything the ENGINE does per frame, with this mod excluded.
@@ -1135,6 +1206,43 @@ void VR::Update()
     static bool s_haveLast = false;
     const auto tFrameStart = vrclock::now();
     g_lastPresentMs.store(NowMs());
+
+    // Frame pacing, summarised every 10 s instead of traced per frame: how many
+    // frames, the typical gap, the worst one, and how many ran over twice the
+    // budget. "Hitching" needs to be measured before it can be chased -- a few
+    // big stalls and a steady drizzle of small ones have different causes.
+    if (m_Game && m_Game->IsInMap())
+    {
+        static vrclock::time_point s_prevFrame{}, s_windowStart{};
+        static bool s_havePrev = false;
+        static float s_worst = 0.0f, s_sum = 0.0f;
+        static int s_count = 0, s_over = 0;
+        if (s_havePrev)
+        {
+            const float ms = MsSince(s_prevFrame, tFrameStart);
+            if (ms > 0.0f && ms < 2000.0f)
+            {
+                s_sum += ms;
+                ++s_count;
+                if (ms > s_worst)
+                    s_worst = ms;
+                if (ms > 22.2f)      // over twice a 90 Hz frame
+                    ++s_over;
+            }
+            if (MsSince(s_windowStart, tFrameStart) >= 10000.0f && s_count > 0)
+            {
+                Game::logMsg("PACING %d frames in 10 s (%.1f fps), mean %.1f ms, worst %.1f ms, %d over 22 ms",
+                             s_count, s_count / 10.0f, s_sum / s_count, s_worst, s_over);
+                s_worst = s_sum = 0.0f;
+                s_count = s_over = 0;
+                s_windowStart = tFrameStart;
+            }
+        }
+        else
+            s_windowStart = tFrameStart;
+        s_prevFrame = tFrameStart;
+        s_havePrev = true;
+    }
     if (!g_presentThread)
     {
         DuplicateHandle(GetCurrentProcess(), GetCurrentThread(),
@@ -1243,6 +1351,8 @@ void VR::Update()
         UpdateGameCrosshair();
         if (m_GraphicsDirty && m_ExtraCvarsDone)
             ApplyGraphicsCvars();
+        SyncHudCvars();
+        VREvents::Update(this);
         ProcessTuneKeys();
         VRWatch::Update();
         UpdateHurtHUD();
@@ -1594,6 +1704,10 @@ void VR::ShowMenuPanel()
     }
 }
 
+// MenuWidthMeters is the panel's width at this distance; EffectiveMenuGeometry
+// scales it either way from here so the menu keeps its apparent size.
+static const float kMenuRefDist = 1.6f;
+
 void VR::PlaceMenuPanelInFront()
 {
     if (!m_Overlay || !m_MainMenuHandle || !vr::VRCompositor())
@@ -1635,37 +1749,44 @@ void VR::PlaceMenuPanelInFront()
     }
 }
 
-// Effective menu panel geometry.
+// Effective menu panel geometry. The pointer does not repeat this maths: both
+// the laser and the tip ray hit the overlay itself (ComputeOverlayIntersection
+// in ComputeMenuPointer), so wherever this puts the panel, aiming follows.
 //
-// Two separate corrections live here, and BOTH the panel placement and the
-// pointer's angular fallback must use the same answer or aiming is miscalibrated.
+// The two settings are meant to be independent -- distance moves the menu,
+// size resizes it -- and three things used to break that:
 //
-// 1. Resolution. Source lays the GameUI out in FIXED PIXELS, so as the capture
-//    gets bigger the menu covers a smaller fraction of it -- which is why the
-//    menu shrank and looked further away every time the resolution went up.
-//    The overlay maps the whole texture to its width, so scaling the width by
-//    the same factor keeps the menu's apparent size constant.
-// 2. Pregame vs in-game want different distances: the create-server menu wants
-//    to be close enough to read, the in-map character panel wants to be far
-//    enough not to feel pressed against your face.
+// 1. An overlay's width is metres AT ITS OWN POSITION, so pushing the panel
+//    further away made it look smaller: "distance" doubled as a size control.
+//    The width is scaled by distM/kMenuRefDist, so a menu moved from 1.6 m to
+//    3.0 m subtends the same angle -- it just sits deeper.
+// 2. The pause menu forced a minimum distance of 1.8 m, so every step of the
+//    distance setting below that did nothing at all. Gone: the pause menu is
+//    still 0.72 of the size (it covers too much of the view at full size),
+//    which is a size change, not a distance one.
+// 3. The cursor-driven in-map panel (character/level select) ignored the
+//    setting entirely for a fixed 2.4 m. It was pushed out because distance
+//    was the only way to make it smaller; with (1) it no longer is, so it
+//    takes the one distance and the in-map size factor like the pause menu
+//    (InGameMenuDistance is gone).
+//
+// Resolution stays: Source lays the GameUI out in FIXED PIXELS, so as the
+// capture gets bigger the menu covers a smaller fraction of it. The overlay
+// maps the whole texture to its width, so scaling the width by the same factor
+// keeps the apparent size constant. This is why the size setting reads as a
+// percentage rather than metres -- the metres depend on your resolution.
 void VR::EffectiveMenuGeometry(float &widthM, float &distM) const
 {
-    const bool inMap  = m_Game && m_Game->IsInMap();
-    const bool gameUi = m_Game && m_Game->IsGameUIVisible();
+    const bool inMap = m_Game && m_Game->IsInMap();
 
-    // Only the cursor-driven in-map panel (character/level select) wants the far
-    // distance. The PAUSE menu is in a map AND is GameUI, so keying purely off
-    // inMap pushed it out to the far distance -- which is exactly why it read as
-    // the worst of the lot. GameUI menus are text you read, so they stay near.
-    distM  = (inMap && !gameUi) ? m_InGameMenuDistance : m_MenuDistanceMeters;
+    distM  = m_MenuDistanceMeters;
     widthM = m_MenuWidthMeters;
-    // Pause (GameUI while in a map) was filling too much of the view once
-    // compositor stereo was skipped behind it.
-    if (inMap && gameUi)
-    {
-        widthM = m_MenuWidthMeters * 0.72f;
-        if (distM < 1.8f) distM = 1.8f;
-    }
+    // In a map, menus are three quarters the size: the pause menu filled too
+    // much of the view at full size, and the character/level panel is the same
+    // once it is no longer held at arm's length to keep it small. Both land
+    // within a few degrees of the size they have always been.
+    if (inMap)
+        widthM *= 0.72f;
 
     if (m_MenuScaleWithRes)
     {
@@ -1681,6 +1802,7 @@ void VR::EffectiveMenuGeometry(float &widthM, float &distM) const
         }
     }
     if (distM < 0.3f) distM = 0.3f;
+    widthM *= distM / kMenuRefDist;   // same apparent size at any distance
     if (widthM < 0.2f) widthM = 0.2f;
 }
 
@@ -2254,6 +2376,29 @@ void VR::GetViewParameters()
 // sel=0/atk=0 on every sample while the laser tracked fine (moves climbing), so
 // this exists both as a diagnostic and as a working fallback if the action set
 // turns out to be the broken link.
+// B / Y (ApplicationMenu on every controller SteamVR maps) straight from the
+// device, not through the action system. While SteamVR's laser is driving an
+// interactive overlay it takes that hand's input, so the VR Settings panel --
+// which is an interactive overlay you are pointing at -- could be left with no
+// way out if the game menu covered its Close button. Read from the device it
+// always answers. (Same reasoning and shape as LegacyTriggerDown.)
+bool VR::LegacyMenuButtonDown()
+{
+    if (!m_System)
+        return false;
+    for (vr::TrackedDeviceIndex_t i = 1; i < vr::k_unMaxTrackedDeviceCount; ++i)
+    {
+        if (m_System->GetTrackedDeviceClass(i) != vr::TrackedDeviceClass_Controller)
+            continue;
+        vr::VRControllerState_t st{};
+        if (!m_System->GetControllerState(i, &st, sizeof(st)))
+            continue;
+        if (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_ApplicationMenu))
+            return true;
+    }
+    return false;
+}
+
 bool VR::LegacyTriggerDown(float *outValue)
 {
     if (outValue) *outValue = 0.0f;
@@ -2707,6 +2852,54 @@ void VR::MoveCmd(const char *cmd)
     m_Game->ClientCmd_Unrestricted(cmd);
 }
 
+// What a viewmodel throws, by its file name: 0 nothing, 1 grenade
+// (grenade/v_grenade.mdl), 2 throwing knife (knife/v_tknife.mdl), 3 a mine
+// (mines/v_proximitymine, v_remotemine, v_timedmine). The grenade LAUNCHER is
+// gl/v_gl.mdl, so "grenade" alone would not have been safe.
+static int ThrowKindOf(const std::string &model)
+{
+    if (model.find("/v_grenade.") != std::string::npos) return 1;
+    if (model.find("/v_tknife.") != std::string::npos) return 2;
+    if (model.find("mine.mdl") != std::string::npos) return 3;
+    return 0;
+}
+
+// Where the gun hand has pointed over the last quarter second, one sample a
+// frame (UpdateGunAim). A knife flick swings the wrist, so the direction at
+// the moment the flick is detected is not where you were aiming; a moment
+// before it is. Render thread only, like everything that reads it.
+static struct { unsigned long long tick; Vector dir; } g_pointHist[32];
+static int g_pointHistNext = 0;
+
+static void NotePointing(const Vector &dir)
+{
+    g_pointHist[g_pointHistNext].tick = GetTickCount64();
+    g_pointHist[g_pointHistNext].dir = dir;
+    g_pointHistNext = (g_pointHistNext + 1) % 32;
+}
+
+Vector VR::HandForward() const
+{
+    Vector f, r, u;
+    QAngle::AngleVectors(m_RightControllerAngAbs, &f, &r, &u);
+    VectorNormalize(f);
+    return f;
+}
+
+Vector VR::PointingDirAgo(unsigned ms) const
+{
+    const unsigned long long want = GetTickCount64() - ms;
+    Vector best = HandForward();
+    unsigned long long bestTick = 0;
+    for (const auto &h : g_pointHist)
+        if (h.tick != 0 && h.tick <= want && h.tick > bestTick)
+        {
+            best = h.dir;
+            bestTick = h.tick;
+        }
+    return best;
+}
+
 void VR::ProcessInput()
 {
     if (!m_IsVREnabled)
@@ -2828,33 +3021,105 @@ void VR::ProcessInput()
         {
             const vr::HmdVector3_t &v = m_Poses[hand].vVelocity;
             const float speed = sqrtf(v.v[0] * v.v[0] + v.v[1] * v.v[1] + v.v[2] * v.v[2]);
-            if (speed > m_SwingSpeed && now - s_lastSwing > 450)
+            // OpenVR velocity -> Source axes (as GetPoseData), then into the
+            // turned game frame like the hand positions.
+            Vector flick(0.0f, 0.0f, 0.0f);
+            if (speed > 0.01f)
             {
-                s_lastSwing = now;
-                s_swingUntil = now + 150;
-                if (throwWeapon && speed > 0.01f)
+                flick = Vector(-v.v[2] / speed, -v.v[0] / speed, v.v[1] / speed);
+                if (fabsf(m_RotationOffset) > 0.01f)
+                    flick = VectorRotate(flick, Vector(0.0f, 0.0f, 1.0f), m_RotationOffset);
+            }
+
+            // A THROWN knife waits for the swing to come round before it goes.
+            // The speed threshold is crossed at the START of the wind-up, with
+            // the arm still going back and the blade pointing at your own head;
+            // throwing there sent the knife into the thrower (Matty, 2026-09-24
+            // -- and taking the direction from 80 ms before that, as this did,
+            // was deeper into the wind-up still). So the flick only ARMS the
+            // throw, and the release is whichever comes first: the hand passing
+            // its peak speed and starting to slow (the natural end of a throw),
+            // or ThrowReleaseMs after the arm began. The direction is taken at
+            // the release, from where the hand is travelling.
+            static ULONGLONG s_armedAt = 0;
+            static float s_peak = 0.0f;
+            static Vector s_peakVel(0.0f, 0.0f, 0.0f), s_peakHand(0.0f, 0.0f, 0.0f);
+            if (throwWeapon)
+            {
+                if (s_armedAt == 0)
                 {
-                    // OpenVR velocity -> Source axes (as GetPoseData), then
-                    // into the turned game frame like the hand positions.
-                    Vector d(-v.v[2] / speed, -v.v[0] / speed, v.v[1] / speed);
-                    if (fabsf(m_RotationOffset) > 0.01f)
-                        d = VectorRotate(d, Vector(0.0f, 0.0f, 1.0f), m_RotationOffset);
-                    m_ThrowDir = d;
-                    // Past GE:S's release delay, and short of its refire.
-                    m_ThrowAimUntil = now + 700;
-                    static int s_thrown = 0;
-                    if (s_thrown < 10)
+                    if (speed > m_SwingSpeed && now - s_lastSwing > 450)
                     {
-                        Game::logMsg("Throw %.1f m/s dir=(%.2f,%.2f,%.2f) head=(%.2f,%.2f,%.2f)", speed,
-                                     d.x, d.y, d.z, m_HmdForward.x, m_HmdForward.y, m_HmdForward.z);
-                        ++s_thrown;
+                        s_armedAt = now;
+                        s_peak = speed;
+                        s_peakVel = flick;
+                        s_peakHand = HandForward();
                     }
                 }
-                static int s_logged = 0;
-                if (s_logged < 10)
+                else
                 {
-                    Game::logMsg("Swing %.1f m/s -> attack", speed);
-                    ++s_logged;
+                    // The direction is taken where the hand is FASTEST, which is
+                    // where a real throw lets go. Taking it when the hand had
+                    // begun to slow threw into the ground (Matty, 2026-09-24):
+                    // by then the arm has curved past the target into the
+                    // follow-through, and the velocity points at the floor.
+                    if (speed > s_peak)
+                    {
+                        s_peak = speed;
+                        s_peakVel = flick;
+                        s_peakHand = HandForward();
+                    }
+                    const bool slowing = speed < s_peak * 0.65f;
+                    const bool timeUp = now - s_armedAt >= (ULONGLONG)(m_ThrowReleaseMs < 0 ? 0 : m_ThrowReleaseMs);
+                    if (slowing || timeUp)
+                    {
+                        // Where the hand was travelling, mixed with where it was
+                        // pointing, both at that fastest moment. An overhand
+                        // throw curves down, so the motion alone aims low; the
+                        // hand you aimed with does not. ThrowAimMix picks
+                        // between them: 0 pure motion, 1 pure pointing.
+                        float mix = m_ThrowAimMix;
+                        if (mix < 0.0f) mix = 0.0f;
+                        if (mix > 1.0f) mix = 1.0f;
+                        if (s_peak <= 1.5f)
+                            mix = 1.0f;   // barely moved: the motion says nothing
+                        Vector dir = s_peakVel * (1.0f - mix) + s_peakHand * mix;
+                        if (VectorLength(dir) < 0.01f)
+                            dir = s_peakHand;
+                        VectorNormalize(dir);
+                        m_ThrowDir = dir;
+                        m_ThrowAimUntil = now + 700;   // past GE:S's release delay, short of its refire
+                        s_lastSwing = now;
+                        s_swingUntil = now + 150;
+                        static int s_thrown = 0;
+                        if (s_thrown < 12)
+                        {
+                            ++s_thrown;
+                            Game::logMsg("Throw released %llu ms in by %s, peak %.1f m/s: motion=(%.2f,%.2f,%.2f) "
+                                         "pointing=(%.2f,%.2f,%.2f) mix %.2f -> (%.2f,%.2f,%.2f)",
+                                         now - s_armedAt, slowing ? "slowing" : "time", s_peak,
+                                         s_peakVel.x, s_peakVel.y, s_peakVel.z,
+                                         s_peakHand.x, s_peakHand.y, s_peakHand.z, mix,
+                                         m_ThrowDir.x, m_ThrowDir.y, m_ThrowDir.z);
+                        }
+                        s_armedAt = 0;
+                        s_peak = 0.0f;
+                    }
+                }
+            }
+            else
+            {
+                s_armedAt = 0;
+                if (speed > m_SwingSpeed && now - s_lastSwing > 450)
+                {
+                    s_lastSwing = now;
+                    s_swingUntil = now + 150;
+                    static int s_logged = 0;
+                    if (s_logged < 10)
+                    {
+                        Game::logMsg("Swing %.1f m/s -> attack", speed);
+                        ++s_logged;
+                    }
                 }
             }
         }
@@ -2867,8 +3132,57 @@ void VR::ProcessInput()
     // attack waits one frame: this frame arms the barrel angles, the next
     // RenderView applies them, then +attack goes out and the first shot lands
     // on the dot. Held 150 ms after release so a burst's last shots do too.
+    // Grenades and mines: the throw guide's fuse and the aim hand-off. GE:S
+    // pulls the grenade's pin 0.1 s after the press (its 4 s fuse runs from
+    // then, weapon_grenade.cpp) and lets it go 0.1 s after the RELEASE, along
+    // the eye angles of that moment. So the pointing direction is frozen at the
+    // release and the view angles hold it for 450 ms -- well past the spawn and
+    // a network round trip -- instead of the 150 ms a gun's last shot needs.
+    {
+        const int kind = ThrowKindOf(held);
+        const bool trigger = PressedDigitalAction(m_ActionPrimaryAttack);
+        static bool s_trigger = false;
+        const ULONGLONG now = GetTickCount64();
+        if (kind == 1 && trigger && !s_trigger)
+            m_GrenadePrimedAt = now + 100;
+        // A MINE is committed on the press, but does not leave then: GE:S's
+        // PrimaryAttack only starts the animation and sets a release time, and
+        // ItemPreFrame spawns the mine when that passes, along the eye angles of
+        // THAT moment (weapon_mines.cpp). The delay is the throw animation --
+        // longer than the 150 ms a gun's last shot needs -- so the angles had
+        // snapped back to the head and every mine flew where Matty was looking
+        // instead of where he pointed. Freeze at the press and hold for 800 ms,
+        // which covers the animation with room to spare.
+        if (kind == 3 && trigger && !s_trigger)
+        {
+            m_ThrowFrozenDir = PointingDirAgo(30);
+            m_ThrowFrozenUntil = now + 800;
+            m_AttackAimUntil = (std::max)(m_AttackAimUntil, now + 800);
+        }
+        // A GRENADE is committed on the release: it is thrown 0.1 s later, along
+        // the eye angles of that moment.
+        if (kind == 1 && !trigger && s_trigger)
+        {
+            m_ThrowFrozenDir = PointingDirAgo(30);
+            m_ThrowFrozenUntil = now + 450;
+            m_AttackAimUntil = (std::max)(m_AttackAimUntil, now + 450);
+        }
+        if (kind != 1 || (!trigger && now > m_ThrowFrozenUntil))
+            m_GrenadePrimedAt = 0;
+        s_trigger = trigger;
+    }
+
     bool wantAttack = PressedDigitalAction(m_ActionPrimaryAttack) || swingAttack;
-    if (m_TrackedWeapon && m_AimWithGun)
+    // Guns only. Holding the trigger kept pushing the aim lock forward, so
+    // cooking a grenade pinned the view angles to the hand for the whole cook --
+    // and the game walks along the view angles, so running while cooking went
+    // sideways (Matty, 2026-09-24). A throwable does not need the lock while it
+    // is held: what matters is the direction at the moment it leaves, which the
+    // freeze windows above cover (press for a mine, release for a grenade). The
+    // one-frame wait for the barrel angles is a gun's need too, so throwables
+    // attack immediately.
+    const int heldThrowKind = ThrowKindOf(held);
+    if (m_TrackedWeapon && m_AimWithGun && (heldThrowKind == 0 || heldThrowKind == 2))
     {
         if (wantAttack)
             m_AttackAimUntil = (std::max)(m_AttackAimUntil, GetTickCount64() + 150);
@@ -3392,6 +3706,7 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
 
     Vector eyeOrigin = setup.origin + m_HmdPosLocalInWorld;
     eyeOrigin.z += m_HeightOffsetMeters * m_VRScale;
+    m_ViewEyeDelta = eyeOrigin - setup.origin;   // face aim's viewmodel rides this
 
     left.origin = eyeOrigin + (m_HmdRight * (-halfIpd));
     right.origin = eyeOrigin + (m_HmdRight * (halfIpd));
@@ -4259,6 +4574,7 @@ static tTraceRay2007 TraceRayFunction(void *engineTrace)
 void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
 {
     dxvk::g_GESVR_ReticleUseAim = false;
+    dxvk::g_GESVR_GuideCount[0] = dxvk::g_GESVR_GuideCount[1] = 0;   // no stale arc on an early return
     if (!m_Game || !m_Game->m_EngineClient)
         return;
     const bool freeAim = m_TrackedWeapon;
@@ -4303,6 +4619,19 @@ void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
     }
     m_GunAimPoint = hit;
 
+    // Thrown items fly where the hand POINTS -- the arc the throw guide draws --
+    // not at where a straight ray from the hand lands, which is right for a
+    // bullet and wrong for anything that falls (grenades dropped short of what
+    // you pointed at). Frozen at the release, or just before a knife flick.
+    const int throwKind = ThrowKindOf(m_Game->m_ActiveWeaponModel);
+    Vector throwDir = HandForward();
+    if (freeAim)
+        NotePointing(throwDir);
+    if (throwKind == 2 && throwing)
+        throwDir = m_ThrowDir;
+    else if (throwKind != 0 && GetTickCount64() < m_ThrowFrozenUntil)
+        throwDir = m_ThrowFrozenDir;
+
     // Only while attacking. The game walks along the view angles too, so
     // holding them on the barrel every frame made the stick walk you wherever
     // the gun pointed (the 23:12 run). Otherwise they stay on the head, as
@@ -4311,7 +4640,8 @@ void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
     m_AttackAimApplied = false;
     if (freeAim && m_AimWithGun && (GetTickCount64() < m_AttackAimUntil || throwing))
     {
-        const Vector d(hit.x - m_SetupOrigin.x, hit.y - m_SetupOrigin.y, hit.z - m_SetupOrigin.z);
+        const Vector d = throwKind != 0 ? throwDir
+                                        : Vector(hit.x - m_SetupOrigin.x, hit.y - m_SetupOrigin.y, hit.z - m_SetupOrigin.z);
         const float flat = sqrtf(d.x * d.x + d.y * d.y);
         QAngle aim(-atan2f(d.z, flat) * 57.2957795f, atan2f(d.y, d.x) * 57.2957795f, 0.0f);
         if (aim.x > 89.0f) aim.x = 89.0f;
@@ -4389,6 +4719,267 @@ void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
         s_lastWhy[0] = why[0];
         s_lastWhy[1] = why[1];
     }
+
+    // The throw guide for whatever thrown item is in hand. In face aim the game
+    // throws along the view itself, so that is the direction.
+    Vector viewF, viewR, viewU;
+    QAngle::AngleVectors(left.angles, &viewF, &viewR, &viewU);
+    UpdateThrowGuide(left, right, throwKind, freeAim ? throwDir : viewF, freeAim);
+}
+
+// The throw guide: an arc from the gun hand to a ring where the grenade,
+// throwing knife or mine will first touch down, simulated with GE:S's own
+// launch numbers (ges-legacy-code: game/ges/shared/weapon_grenade.cpp,
+// weapon_knife_throwing.cpp, weapon_mines.cpp; flight in game/ges/server/
+// grenade_ge.cpp, npc_tknife.cpp, grenade_mine.cpp):
+//   grenade  from eye + 18 forward + 8 right (pulled back if that is inside a
+//            wall), (forward + 0.1 up) * 750; VPhysics, whose light drag is not
+//            modelled; 4 s fuse from the pin; blast radius 260
+//   knife    from eye + 2 forward + 3 right, forward * 820; VPhysics, no drag
+//   mine     from the eye, forward * 600 + up * 80; FLYGRAVITY, and it sticks
+//            to the first thing it touches
+// each plus the thrower's own velocity, under sv_gravity 600 (GE:S leaves it
+// alone). The game launches from the eye, a hand's length from where you see
+// the item, so the drawn arc starts at the hand and eases into the true path
+// over its first quarter second: the ring is exact, and the arc still reads as
+// leaving your hand. Bounces after the first touch cannot be predicted.
+void VR::UpdateThrowGuide(const CViewSetup &left, const CViewSetup &right, int kind, const Vector &dir, bool freeAim)
+{
+    using namespace dxvk;
+    g_GESVR_GuideCount[0] = g_GESVR_GuideCount[1] = 0;
+
+    // The thrower's own velocity, which every throw inherits: from the eye's
+    // motion between frames, eased, and dropped over a teleport or a stall.
+    {
+        static Vector s_prev(0.0f, 0.0f, 0.0f);
+        static vrclock::time_point s_prevTime{};
+        static bool s_have = false;
+        const vrclock::time_point nowT = vrclock::now();
+        const float dt = s_have ? MsSince(s_prevTime, nowT) / 1000.0f : 0.0f;
+        const Vector delta = m_SetupOrigin - s_prev;
+        if (!s_have || dt <= 0.0005f || dt > 0.25f || VectorLength(delta) > 64.0f)
+            m_PlayerVelocity = Vector(0.0f, 0.0f, 0.0f);
+        else
+            m_PlayerVelocity = m_PlayerVelocity + (delta * (1.0f / dt) - m_PlayerVelocity) * 0.25f;
+        s_prev = m_SetupOrigin;
+        s_prevTime = nowT;
+        s_have = true;
+    }
+
+    if (!m_ThrowGuide || kind == 0 || !m_Game || !m_Game->m_EngineClient)
+        return;
+    tTraceRay2007 trace = TraceRayFunction(m_Game->m_EngineTrace);
+    if (!trace)
+        return;
+    SkipOneEntityFilter filter(m_Game->GetClientEntity(m_Game->m_EngineClient->GetLocalPlayer()));
+
+    // A swept box (half-size h) from a to b: where it first touches, and the
+    // surface normal there. Hull, not ray, so the path cannot thread a gap the
+    // item itself would not fit through.
+    auto sweep = [&](const Vector &a, const Vector &b, float h, Vector &hitPos, Vector &normal) -> bool {
+        TraceRay2007 ray{};
+        ray.start = { a.x, a.y, a.z, 0.0f };
+        ray.delta = { b.x - a.x, b.y - a.y, b.z - a.z, 0.0f };
+        ray.extents = { h, h, h, 0.0f };
+        ray.isRay = h <= 0.0f;
+        ray.isSwept = true;
+        alignas(16) unsigned char result[256] = {};   // CGameTrace, 84 bytes in 2007
+        trace(m_Game->m_EngineTrace, &ray, MASK_SHOT_HULL, &filter, result);
+        const float fraction = *reinterpret_cast<const float *>(result + 44);
+        normal = Vector(*reinterpret_cast<const float *>(result + 24), *reinterpret_cast<const float *>(result + 28),
+                        *reinterpret_cast<const float *>(result + 32));   // plane.normal
+        if (!(fraction >= 0.0f && fraction < 1.0f))
+            return false;
+        hitPos = a + (b - a) * fraction;
+        return true;
+    };
+
+    // The angles the game will hold (pitch clamped as in UpdateGunAim), and
+    // their axes, which GE:S's launch offsets are measured along.
+    Vector aim = dir;
+    VectorNormalize(aim);
+    const float flat = sqrtf(aim.x * aim.x + aim.y * aim.y);
+    QAngle ang(-atan2f(aim.z, flat) * 57.2957795f, atan2f(aim.y, aim.x) * 57.2957795f, 0.0f);
+    if (ang.x > 89.0f) ang.x = 89.0f;
+    if (ang.x < -89.0f) ang.x = -89.0f;
+    Vector F, R, U;
+    QAngle::AngleVectors(ang, &F, &R, &U);
+
+    const Vector eye = m_SetupOrigin;
+    Vector src = eye, vel = m_PlayerVelocity;
+    float blast = 0.0f, tMax = 3.0f, fuseLeft = 4.0f;
+    const bool cooking = kind == 1 && m_GrenadePrimedAt != 0;
+    if (kind == 1)
+    {
+        src = eye + F * 18.0f + R * 8.0f;
+        Vector hp, hn;
+        if (sweep(eye, src, 6.0f, hp, hn))   // CheckThrowPosition
+            src = hp;
+        Vector lob = F;
+        lob.z += 0.1f;                       // not renormalised, as in GE:S
+        vel = vel + lob * 750.0f;
+        blast = 260.0f;
+        if (cooking)
+        {
+            const long long left_ms = (long long)m_GrenadePrimedAt + 4000 - (long long)GetTickCount64();
+            fuseLeft = left_ms / 1000.0f;
+            if (fuseLeft > 4.0f) fuseLeft = 4.0f;
+            if (fuseLeft < 0.0f) fuseLeft = 0.0f;
+        }
+        // It leaves 0.1 s after the release, with what is left of the fuse.
+        if (fuseLeft - 0.1f < tMax)
+            tMax = fuseLeft - 0.1f;
+    }
+    else if (kind == 2)
+    {
+        src = eye + R * 3.0f + F * 2.0f;
+        vel = vel + F * 820.0f;
+    }
+    else
+    {
+        vel = vel + F * 600.0f + U * 80.0f;
+    }
+
+    // Fly it. Every step costs an engine hull sweep, so the step is as long as
+    // accuracy allows: at 1/20 s a chord of the arc departs from the true curve
+    // by 0.5*g*dt^2/4, about a fifth of a unit, while halving the traces. (It
+    // was 1/40, which put up to 120 traces a frame into a 90 Hz budget --
+    // enough to feel, 2026-09-24.)
+    const float g = 600.0f, dt = 1.0f / 20.0f;
+    constexpr int kPath = 72;
+    Vector path[kPath];
+    float pathT[kPath];
+    int np = 0;
+    path[np] = src;
+    pathT[np++] = 0.0f;
+    Vector p = src, v = vel, landing = src, normal(0.0f, 0.0f, 1.0f);
+    bool landed = false;
+    float t = 0.0f;
+    while (t < tMax - 1e-4f && np < kPath)
+    {
+        const float step = (tMax - t < dt) ? tMax - t : dt;
+        const Vector next(p.x + v.x * step, p.y + v.y * step, p.z + v.z * step - 0.5f * g * step * step);
+        Vector hp, hn;
+        if (sweep(p, next, 2.0f, hp, hn))
+        {
+            landing = hp;
+            normal = hn;
+            landed = true;
+            path[np] = hp;
+            pathT[np++] = t + step;
+            break;
+        }
+        v.z -= g * step;
+        p = next;
+        t += step;
+        path[np] = p;
+        pathT[np++] = t;
+    }
+    const bool burst = !landed && kind == 1 && tMax < 3.0f - 1e-3f;   // the fuse wins
+    if (burst)
+        landing = p;
+
+    // Each eye's projection, once: normalised image coordinates (fov is
+    // horizontal, the aspect sets the vertical) and a world radius turned into
+    // a fraction of the eye image's height.
+    struct EyeProj { Vector o, f, r, u; float tn, aspect; } ep[2];
+    const CViewSetup *eyes[2] = { &left, &right };
+    for (int e = 0; e < 2; ++e)
+    {
+        ep[e].o = eyes[e]->origin;
+        QAngle::AngleVectors(eyes[e]->angles, &ep[e].f, &ep[e].r, &ep[e].u);
+        ep[e].tn = tanf(eyes[e]->fov * 0.5f * 3.14159265f / 180.0f);
+        ep[e].aspect = eyes[e]->m_flAspectRatio > 0.1f ? eyes[e]->m_flAspectRatio : m_Aspect;
+    }
+    // radius is a size in world units, which shrinks with distance, unless
+    // onScreen: then it is a fraction of the eye image's height and holds its
+    // size wherever it is -- which is what the end dot wants, so it stays
+    // readable at the far end of a long throw without being fat up close.
+    auto emit = [&](const Vector &w, float radius, int colour, bool onScreen = false) {
+        for (int e = 0; e < 2; ++e)
+        {
+            int &n = g_GESVR_GuideCount[e];
+            if (n >= kGESVRGuideMax)
+                continue;
+            const Vector d = w - ep[e].o;
+            const float zc = DotProduct(d, ep[e].f);
+            if (zc < 2.0f)
+                continue;
+            const float nx = DotProduct(d, ep[e].r) / (zc * ep[e].tn);
+            const float ny = DotProduct(d, ep[e].u) * ep[e].aspect / (zc * ep[e].tn);
+            if (fabsf(nx) > 1.3f || fabsf(ny) > 1.3f)
+                continue;
+            g_GESVR_Guide[e][n] = { 0.5f + 0.5f * nx, 0.5f - 0.5f * ny,
+                                    onScreen ? radius : 0.5f * radius * ep[e].aspect / (zc * ep[e].tn), colour };
+            ++n;
+        }
+    };
+
+    // One dot where it lands, a little bigger than the path's, drawn first so
+    // it is never the part that runs out of room. It goes red when a grenade
+    // would catch you in its own blast. (There was a ring here, laid on the
+    // surface, with the fuse draining it and the blast radius drawn around it:
+    // too chunky and distracting in the headset -- Matty, 2026-09-24.)
+    const bool marker = landed || burst;
+    const bool danger = kind == 1 && marker && VectorLength(landing - (eye - Vector(0.0f, 0.0f, 32.0f))) < blast;
+    if (marker)
+    {
+        Vector n = landed ? normal : Vector(-ep[0].f.x, -ep[0].f.y, -ep[0].f.z);
+        if (VectorLength(n) < 0.5f)
+            n = Vector(0.0f, 0.0f, 1.0f);
+        VectorNormalize(n);
+        emit(landing + n * 0.6f, 0.0021f, danger ? 2 : 0, true);
+    }
+
+    // The arc, drawn from the hand, as evenly spaced dots so perspective makes
+    // them recede into the distance. In face aim it starts a little in front of
+    // the eye instead, so the first dots are not in your face.
+    const Vector hand = GetRightControllerAbsPos();
+    const Vector off = freeAim ? hand - src : Vector(0.0f, 0.0f, 0.0f);
+    Vector q[kPath];
+    float total = 0.0f;
+    for (int i = 0; i < np; ++i)
+    {
+        const float k = pathT[i] < 0.25f ? 1.0f - pathT[i] / 0.25f : 0.0f;
+        q[i] = path[i] + off * (k * k);
+        if (i > 0)
+            total += VectorLength(q[i] - q[i - 1]);
+    }
+    const float spacing = total / 24.0f > 24.0f ? total / 24.0f : 24.0f;
+    const float stopShort = marker ? 14.0f : 0.0f;   // a gap, so the path does not crowd the end dot
+    float nextMark = freeAim ? 6.0f : 40.0f, acc = 0.0f;
+    for (int i = 1; i < np; ++i)
+    {
+        const Vector seg = q[i] - q[i - 1];
+        const float len = VectorLength(seg);
+        while (len > 0.0f && nextMark <= acc + len && nextMark < total - stopShort)
+        {
+            emit(q[i - 1] + seg * ((nextMark - acc) / len), 0.17f, 0);
+            nextMark += spacing;
+        }
+        acc += len;
+    }
+
+    static int s_logged = 0;
+    if (s_logged < 12)
+    {
+        static ULONGLONG s_next = 0;
+        const ULONGLONG nowL = GetTickCount64();
+        if (nowL >= s_next)
+        {
+            s_next = nowL + 3000;
+            ++s_logged;
+            // dir is the live hand direction (HandForward). If it ever stops
+            // changing as you point, an aim vector has gone dead again.
+            Game::logMsg("Throw guide: kind=%d dir=(%.2f,%.2f,%.2f) %s at (%.0f,%.0f,%.0f) %.0f units away, %.2f s%s%s, "
+                         "fuse %.1f s, throwerVel=(%.0f,%.0f,%.0f), dots %d/%d",
+                         kind, aim.x, aim.y, aim.z,
+                         landed ? "lands" : burst ? "bursts" : "flies on", landing.x, landing.y, landing.z,
+                         VectorLength(landing - eye), pathT[np - 1], danger ? ", DANGER" : "", cooking ? ", cooking" : "",
+                         fuseLeft, m_PlayerVelocity.x, m_PlayerVelocity.y, m_PlayerVelocity.z,
+                         g_GESVR_GuideCount[0], g_GESVR_GuideCount[1]);
+        }
+    }
 }
 
 // GE:S's own crosshair (CGEViewEffects::DrawCrosshair) is the classic red
@@ -4447,7 +5038,9 @@ void VR::UpdateGameCrosshair()
 }
 
 // Numpad tuning of where the held weapon sits in the hand (WeaponTuning and
-// free aim on; off by default, the positions ship in weapons.cpp's table)
+// free aim on; off by default, the positions ship in weapons.cpp's table).
+// Numpad 7 switches between the weapon and the off-hand arm the grenade and
+// mines carry, which is saved to config.txt instead (one arm for all of them)
 // in play). Move mode: 8/2 forward/back, 4/6 left/right, 9/3 up/down. Rotate
 // mode: the same keys pitch, yaw, roll. 5 switches mode, +/- change the step,
 // 0 saves every weapon to VR/weapons.txt, . resets the held one. Each weapon
@@ -4470,6 +5063,7 @@ void VR::ProcessTuneKeys()
         return;
 
     static bool s_rotate = false;
+    static bool s_offHand = false;
     static int s_step = 2;
     static bool s_unsaved = false;
     static const float kMove[] = { 0.1f, 0.25f, 0.5f, 1.0f, 2.0f };   // game units
@@ -4481,12 +5075,66 @@ void VR::ProcessTuneKeys()
 
     if (presses[5] & 1)
         s_rotate = !s_rotate;
+    if (presses[7] & 1)
+        s_offHand = !s_offHand;
     s_step += presses[10] - presses[11];
     if (s_step < 0) s_step = 0;
     if (s_step > 4) s_step = 4;
 
-    PositionAngle p = Weapons::GetOffset(model);
     const int fwd = presses[8] - presses[2], side = presses[6] - presses[4], vert = presses[9] - presses[3];
+
+    // The off hand (numpad 7): the left arm the grenade and mines carry, in
+    // its own frame, saved straight to config.txt rather than per weapon --
+    // it is the same arm on all of them.
+    if (s_offHand)
+    {
+        if (fwd || side || vert)
+        {
+            if (!s_rotate)
+            {
+                m_LeftHandOffset.x -= fwd * kMove[s_step];
+                m_LeftHandOffset.y -= side * kMove[s_step];
+                m_LeftHandOffset.z -= vert * kMove[s_step];
+            }
+            else
+            {
+                m_LeftHandAngle.x += fwd * kTurn[s_step];
+                m_LeftHandAngle.y += side * kTurn[s_step];
+                m_LeftHandAngle.z += vert * kTurn[s_step];
+            }
+            s_unsaved = true;
+        }
+        if (presses[12])
+        {
+            m_LeftHandOffset = Vector(0.0f, 0.0f, 0.0f);
+            m_LeftHandAngle = Vector(0.0f, 0.0f, 0.0f);
+            s_unsaved = true;
+            status = L"  RESET";
+        }
+        if (presses[0])
+        {
+            char buf[64];
+            snprintf(buf, sizeof(buf), "%g,%g,%g", m_LeftHandOffset.x, m_LeftHandOffset.y, m_LeftHandOffset.z);
+            VRSettings::SaveConfigValue("LeftHandOffset", buf);
+            snprintf(buf, sizeof(buf), "%g,%g,%g", m_LeftHandAngle.x, m_LeftHandAngle.y, m_LeftHandAngle.z);
+            VRSettings::SaveConfigValue("LeftHandAngle", buf);
+            s_unsaved = false;
+            status = L"  SAVED";
+            Game::logMsg("Off hand saved: offset %g,%g,%g angle %g,%g,%g",
+                         m_LeftHandOffset.x, m_LeftHandOffset.y, m_LeftHandOffset.z,
+                         m_LeftHandAngle.x, m_LeftHandAngle.y, m_LeftHandAngle.z);
+        }
+        wchar_t t[160], d[200];
+        swprintf(t, 160, L"OFF HAND  %ls  step %g%ls%ls", s_rotate ? L"ROTATE" : L"MOVE",
+                 s_rotate ? kTurn[s_step] : kMove[s_step], s_unsaved ? L"  (unsaved)" : L"", status.c_str());
+        swprintf(d, 200, L"pos %.2f %.2f %.2f   ang %.1f %.1f %.1f     7 weapon  5 mode  0 save",
+                 m_LeftHandOffset.x, m_LeftHandOffset.y, m_LeftHandOffset.z,
+                 m_LeftHandAngle.x, m_LeftHandAngle.y, m_LeftHandAngle.z);
+        VRToast::Show(t, d);
+        return;
+    }
+
+    PositionAngle p = Weapons::GetOffset(model);
     if (fwd || side || vert)
     {
         // The stored offset is the controller's position relative to the
@@ -4527,7 +5175,7 @@ void VR::ProcessTuneKeys()
     swprintf(title, 160, L"%ls  %ls  step %g%ls%ls", s_rotate ? L"ROTATE" : L"MOVE",
              VRWatch::WeaponName(model).c_str(), s_rotate ? kTurn[s_step] : kMove[s_step],
              s_unsaved ? L"  (unsaved)" : L"", status.c_str());
-    swprintf(detail, 200, L"pos %.2f %.2f %.2f   ang %.1f %.1f %.1f     5 mode  +/- step  0 save",
+    swprintf(detail, 200, L"pos %.2f %.2f %.2f   ang %.1f %.1f %.1f     7 off hand  5 mode  0 save",
              p.position.x, p.position.y, p.position.z, p.angle.x, p.angle.y, p.angle.z);
     VRToast::Show(title, detail);
 }
@@ -4632,6 +5280,37 @@ bool VR::IsLookingAtOffhandWatch()
 // saved in its own settings). Filtering is a sampler state -- no texture
 // reload, safe mid-map. Texture DETAIL is deliberately not touched:
 // mat_picmip -1 hung the NVIDIA driver loading a map in this 32-bit process.
+// Where the Seamaster modelled on the viewmodel's left wrist sits on the
+// off-hand controller, so VRWatch::Place can put the watch face on it instead
+// of at the configured offset. In the controller's OWN space (forward, left,
+// up, metres), measured against the raw device pose the overlay is parented
+// to -- not the grip-corrected gun frame. Eased, and kept after the model is
+// gone, so the watch does not jump about as weapons change.
+void VR::NoteModelWatchPose(const Vector &worldPos)
+{
+    if (m_VRScale < 1.0f)
+        return;
+    QAngle raw = m_LeftControllerPose.TrackedDeviceAng;
+    raw.y += m_RotationOffset;
+    raw.y -= 360.0f * std::floor((raw.y + 180.0f) / 360.0f);
+    Vector f, r, u;
+    QAngle::AngleVectors(raw, &f, &r, &u);
+    const Vector d = worldPos - m_LeftControllerPosAbs;
+    const Vector want(DotProduct(d, f) / m_VRScale,
+                      -DotProduct(d, r) / m_VRScale,
+                      DotProduct(d, u) / m_VRScale);
+    if (VectorLength(want) > 0.6f)   // nonsense: a metre of arm is not a wrist
+        return;
+    const float a = m_HaveModelWatch ? 0.08f : 1.0f;
+    m_ModelWatchOffset = m_ModelWatchOffset + (want - m_ModelWatchOffset) * a;
+    if (!m_HaveModelWatch)
+    {
+        m_HaveModelWatch = true;
+        Game::logMsg("Watch: following the model's Seamaster at (%.3f, %.3f, %.3f) m on the off hand",
+                     want.x, want.y, want.z);
+    }
+}
+
 void VR::ApplyGraphicsCvars()
 {
     m_GraphicsDirty = false;
@@ -4649,6 +5328,32 @@ void VR::ApplyGraphicsCvars()
                  m_TextureFiltering > 0 ? (std::to_string(m_TextureFiltering) + "x anisotropic + trilinear").c_str()
                                         : "left to the game",
                  m_Bloom ? "on" : "off");
+}
+
+// GE:S paints its HUD into the eye images as well as the 2D frame (the
+// engine's VGui_Paint hook that would stop that is not found on this build,
+// and the in-map menus depend on the painting as things stand), so the round
+// timer sat at the bottom of your view with the Game HUD off. Whatever the
+// watch already shows -- time, ammo, the weapon you switched to, and with
+// WatchKillFeed the kill feed -- is switched off on GE:S's own HUD while the
+// watch is on, with its own client settings, and back on when it is not.
+void VR::SyncHudCvars()
+{
+    if (!m_Game || !m_ExtraCvarsDone)
+        return;
+    const bool watch = m_ShowWristHUD;
+    const bool feed = watch && m_WatchKillFeed;
+    const int want = (watch ? 1 : 0) | (feed ? 2 : 0);
+    static int s_applied = -1;
+    if (want == s_applied)
+        return;
+    s_applied = want;
+    m_Game->ClientCmd_Unrestricted(watch ? "cl_ge_show_timer 0" : "cl_ge_show_timer 1");
+    m_Game->ClientCmd_Unrestricted(watch ? "cl_ge_show_ammocount 0" : "cl_ge_show_ammocount 1");
+    m_Game->ClientCmd_Unrestricted(watch ? "cl_ge_hud_noswitchlist 1" : "cl_ge_hud_noswitchlist 0");
+    m_Game->ClientCmd_Unrestricted(feed ? "cl_ge_drawkillfeed 0" : "cl_ge_drawkillfeed 1");
+    Game::logMsg("HUD: timer, ammo and weapon list %s the game's HUD; kill feed %s",
+                 watch ? "moved from" : "back on", feed ? "on the watch" : "on the game's HUD");
 }
 
 void VR::ApplyExtraCvars()
@@ -4886,7 +5591,6 @@ void VR::ParseConfigFile()
         if (it != userConfig.end())
             m_ExtraCvars = it->second;
     }
-    m_InGameMenuDistance = CfgFloat(userConfig, "InGameMenuDistance", m_InGameMenuDistance);
     m_MenuScaleWithRes = CfgBool(userConfig, "MenuScaleWithRes", m_MenuScaleWithRes);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
     m_EyeHudPass = CfgBool(userConfig, "EyeHudPass", m_EyeHudPass);
@@ -4918,6 +5622,9 @@ void VR::ParseConfigFile()
     m_SwingMelee = CfgBool(userConfig, "SwingMelee", m_SwingMelee);
     m_AimWithGun = CfgBool(userConfig, "AimWithGun", m_AimWithGun);
     m_SwingSpeed = CfgFloat(userConfig, "SwingSpeed", m_SwingSpeed);
+    m_ThrowReleaseMs = CfgInt(userConfig, "ThrowReleaseMs", m_ThrowReleaseMs);
+    m_ThrowAimMix = CfgFloat(userConfig, "ThrowAimMix", m_ThrowAimMix);
+    m_ThrowGuide = CfgBool(userConfig, "ThrowGuide", m_ThrowGuide);
     m_MeleeHideArm = CfgBool(userConfig, "MeleeHideArm", m_MeleeHideArm);
     m_MeleeAngleOffset = CfgVec(userConfig, "MeleeAngleOffset", m_MeleeAngleOffset);
     m_HeightOffsetMeters = CfgFloat(userConfig, "HeightOffsetMeters", m_HeightOffsetMeters);
@@ -4992,6 +5699,11 @@ void VR::ParseConfigFile()
     m_DeathCamFirstPerson = CfgBool(userConfig, "DeathCamFirstPerson", m_DeathCamFirstPerson);
 
     m_ShowWristHUD = CfgBool(userConfig, "ShowWristHUD", m_ShowWristHUD);
+    m_WatchKillFeed = CfgBool(userConfig, "WatchKillFeed", m_WatchKillFeed);
+    m_LeftHandOnController = CfgBool(userConfig, "LeftHandOnController", m_LeftHandOnController);
+    m_LeftHandOffset = CfgVec(userConfig, "LeftHandOffset", m_LeftHandOffset);
+    m_LeftHandAngle = CfgVec(userConfig, "LeftHandAngle", m_LeftHandAngle);
+    m_WatchFollowModel = CfgBool(userConfig, "WatchFollowModel", m_WatchFollowModel);
     m_WristLookMaxDistance = CfgFloat(userConfig, "WristLookMaxDistance", m_WristLookMaxDistance);
     m_WristLookMinDot = CfgFloat(userConfig, "WristLookMinDot", m_WristLookMinDot);
     m_WatchAlwaysVisible = CfgBool(userConfig, "WatchAlwaysVisible", m_WatchAlwaysVisible);

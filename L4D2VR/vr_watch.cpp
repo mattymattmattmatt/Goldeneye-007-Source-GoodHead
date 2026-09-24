@@ -34,6 +34,32 @@ static int g_pendingMaxHealth = 100, g_pendingMaxArmor = 100;
 static std::mutex g_imageMtx;
 static std::string g_readyImage;
 
+// The current notice (Notify) and until when the watch is up regardless of
+// where you look (a new weapon, a notice about you).
+static std::mutex g_noteMtx;
+static std::wstring g_noteHead, g_noteDetail;
+static int g_noteKind = 0;
+static ULONGLONG g_noteUntil = 0;
+static std::atomic<ULONGLONG> g_popUntil{ 0 };
+
+void Notify(const std::wstring &headline, const std::wstring &detail, int kind, int millis, bool pop)
+{
+    const ULONGLONG now = GetTickCount64();
+    {
+        std::lock_guard<std::mutex> lk(g_noteMtx);
+        g_noteHead = headline;
+        g_noteDetail = detail;
+        g_noteKind = kind;
+        g_noteUntil = now + (ULONGLONG)(millis > 0 ? millis : 3000);
+    }
+    if (pop)
+    {
+        const ULONGLONG until = now + 3000;
+        ULONGLONG cur = g_popUntil.load();
+        while (cur < until && !g_popUntil.compare_exchange_weak(cur, until)) {}
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Weapon names, as GoldenEye 64's watch lists them. Keyed by the viewmodel's
 // file name after "v_"; most specific first, since matching is by substring.
@@ -238,36 +264,52 @@ static void DrawWatch(Canvas &c, const Fonts &f, const WatchStats &s, int maxHea
     }
 
     const COLORREF lcd = RGB(132, 255, 176), lcdDim = RGB(52, 132, 86);
-    const std::wstring weapon = WeaponName(s.weaponModel);
-    c.Text(f.name, lcd, weapon.empty() ? L"NO WEAPON" : weapon, { scr.left + 12, 158, scr.right - 12, 184 },
-           DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
-    c.Text(f.label, lcdDim, L"AMMO", { scr.left, 184, scr.right, 204 }, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-
-    // Big clip count with the reserve beside it, sharing a baseline. Weapons
-    // with no clip (grenades, mines) show their count as the big number.
-    std::wstring big, mid;
-    if (s.clip >= 0)
+    if (!s.noteHead.empty())
     {
-        big = std::to_wstring(s.clip);
-        if (s.reserve >= 0)
-            mid = L"/" + std::to_wstring(s.reserve);
+        // A notice (kill feed, rounds) takes the screen for its few seconds:
+        // the headline lit by what it means for you, the name big in LCD
+        // green (a size down if it would not fit), ammo back when it ends.
+        const COLORREF head = s.noteKind == 1 ? RGB(255, 226, 110)
+                            : s.noteKind == 2 ? RGB(255, 104, 88) : RGB(226, 246, 232);
+        const RECT headBox = { scr.left + 12, 162, scr.right - 12, 198 };
+        c.Text(f.time, head, s.noteHead, headBox, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        const RECT nameBox = { scr.left + 12, 204, scr.right - 12, 280 };
+        const HFONT nameFont = (c.TextSize(f.mid, s.noteDetail).cx <= nameBox.right - nameBox.left) ? f.mid : f.time;
+        c.Text(nameFont, lcd, s.noteDetail, nameBox, DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
     }
-    else if (s.reserve > 0)
-        big = std::to_wstring(s.reserve);
     else
-        big = L"--";
-    const SIZE bs = c.TextSize(f.big, big);
-    const SIZE ms = mid.empty() ? SIZE{ 0, 0 } : c.TextSize(f.mid, mid);
-    const int gapPx = mid.empty() ? 0 : 6;
-    const int total = bs.cx + gapPx + ms.cx;
-    const int x0 = (int)C - total / 2;
-    const int bigBottom = 296;
-    c.Text(f.big, lcd, big, { x0, bigBottom - bs.cy, x0 + bs.cx + 2, bigBottom }, DT_LEFT | DT_TOP | DT_SINGLELINE);
-    if (!mid.empty())
     {
-        const int midBottom = bigBottom - (c.Descent(f.big) - c.Descent(f.mid));
-        c.Text(f.mid, lcd, mid, { x0 + bs.cx + gapPx, midBottom - ms.cy, x0 + total + 2, midBottom },
-               DT_LEFT | DT_TOP | DT_SINGLELINE);
+        const std::wstring weapon = WeaponName(s.weaponModel);
+        c.Text(f.name, lcd, weapon.empty() ? L"NO WEAPON" : weapon, { scr.left + 12, 158, scr.right - 12, 184 },
+               DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+        c.Text(f.label, lcdDim, L"AMMO", { scr.left, 184, scr.right, 204 }, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+
+        // Big clip count with the reserve beside it, sharing a baseline. Weapons
+        // with no clip (grenades, mines) show their count as the big number.
+        std::wstring big, mid;
+        if (s.clip >= 0)
+        {
+            big = std::to_wstring(s.clip);
+            if (s.reserve >= 0)
+                mid = L"/" + std::to_wstring(s.reserve);
+        }
+        else if (s.reserve > 0)
+            big = std::to_wstring(s.reserve);
+        else
+            big = L"--";
+        const SIZE bs = c.TextSize(f.big, big);
+        const SIZE ms = mid.empty() ? SIZE{ 0, 0 } : c.TextSize(f.mid, mid);
+        const int gapPx = mid.empty() ? 0 : 6;
+        const int total = bs.cx + gapPx + ms.cx;
+        const int x0 = (int)C - total / 2;
+        const int bigBottom = 296;
+        c.Text(f.big, lcd, big, { x0, bigBottom - bs.cy, x0 + bs.cx + 2, bigBottom }, DT_LEFT | DT_TOP | DT_SINGLELINE);
+        if (!mid.empty())
+        {
+            const int midBottom = bigBottom - (c.Descent(f.big) - c.Descent(f.mid));
+            c.Text(f.mid, lcd, mid, { x0 + bs.cx + gapPx, midBottom - ms.cy, x0 + total + 2, midBottom },
+                   DT_LEFT | DT_TOP | DT_SINGLELINE);
+        }
     }
 
     if (s.timeLeft >= 0)
@@ -373,7 +415,13 @@ static void Place(vr::TrackedDeviceIndex_t hand, bool rightHand)
     const vr::HmdMatrix34_t &e = v->m_Poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
 
     // Config offset is (forward, left, up); device space is (right, up, back).
-    float o[3] = { -v->m_WatchOffset.y, v->m_WatchOffset.z, -v->m_WatchOffset.x };
+    // Once a viewmodel with the Seamaster on its wrist has been drawn, the face
+    // goes where that watch is instead (VR::NoteModelWatchPose), so it sits on
+    // the arm you can see. Not for a left-handed player: the watch is then on
+    // the hand the model's arm never goes to.
+    const bool onModel = v->m_WatchFollowModel && v->m_HaveModelWatch && !v->m_LeftHanded;
+    const Vector &off = onModel ? v->m_ModelWatchOffset : v->m_WatchOffset;
+    float o[3] = { -off.y, off.z, -off.x };
     if (rightHand)
         o[0] = -o[0];
     float w[3];
@@ -442,7 +490,6 @@ void Update()
     static int s_maxHealthSeen = 100, s_maxArmorSeen = 100;
     // A new weapon brings the watch up for a moment, look or not.
     static std::string s_lastWeapon;
-    static ULONGLONG s_popUntil = 0;
     const ULONGLONG now = GetTickCount64();
     if (now - s_lastRead >= 100)
     {
@@ -451,9 +498,18 @@ void Update()
         v->ReadWatchStats(s);
         if (!s.weaponModel.empty() && s.weaponModel != s_lastWeapon)
         {
-            if (!s_lastWeapon.empty())
-                s_popUntil = now + 2500;
+            if (!s_lastWeapon.empty() && g_popUntil.load() < now + 2500)
+                g_popUntil.store(now + 2500);
             s_lastWeapon = s.weaponModel;
+        }
+        {
+            std::lock_guard<std::mutex> lk(g_noteMtx);
+            if (now < g_noteUntil)
+            {
+                s.noteHead = g_noteHead;
+                s.noteDetail = g_noteDetail;
+                s.noteKind = g_noteKind;
+            }
         }
         // GE:S may not network the maximums; the largest value seen stands in.
         if (s.health > s_maxHealthSeen) s_maxHealthSeen = s.health;
@@ -482,7 +538,7 @@ void Update()
         Hide();
         return;
     }
-    if (!v->m_WatchAlwaysVisible && now >= s_popUntil && !v->IsLookingAtOffhandWatch())
+    if (!v->m_WatchAlwaysVisible && now >= g_popUntil.load() && !v->IsLookingAtOffhandWatch())
     {
         Hide();
         return;

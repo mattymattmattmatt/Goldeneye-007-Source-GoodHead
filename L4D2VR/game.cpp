@@ -183,11 +183,27 @@ void Game::logMsg(const char* fmt, ...)
     if (!s_opened)
     {
         s_opened = true;
-        s_modLog = fopen(g_LogPath[0] ? g_LogPath : "vrmod_log.txt", "a");
+        // Both files used to grow without end (16 MB after a few days of
+        // testing). Past 8 MB at the start of a session the old one is kept
+        // once, as *.old, and a fresh one started.
+        auto rotate = [](const char *path) {
+            WIN32_FILE_ATTRIBUTE_DATA fad;
+            if (GetFileAttributesExA(path, GetFileExInfoStandard, &fad) &&
+                (fad.nFileSizeHigh != 0 || fad.nFileSizeLow > 8u * 1024u * 1024u))
+            {
+                char old[MAX_PATH];
+                snprintf(old, sizeof(old), "%s.old", path);
+                MoveFileExA(path, old, MOVEFILE_REPLACE_EXISTING);
+            }
+        };
+        const char *modPath = g_LogPath[0] ? g_LogPath : "vrmod_log.txt";
+        rotate(modPath);
+        s_modLog = fopen(modPath, "a");
         char tempLog[MAX_PATH] = {};
         if (GetTempPathA(MAX_PATH, tempLog))
         {
             strncat_s(tempLog, "gesvr_boot.log", _TRUNCATE);
+            rotate(tempLog);
             s_bootLog = fopen(tempLog, "a");
         }
     }

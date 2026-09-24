@@ -467,6 +467,7 @@ copy /Y "$(ProjectDir)manifest.vrmanifest" "$(SolutionDir)dist\VR\manifest.vrman
     <ClInclude Include="vr_watch.h" />
     <ClInclude Include="vr_flipoverlay.h" />
     <ClInclude Include="vr_toast.h" />
+    <ClInclude Include="vr_events.h" />
     <ClInclude Include="vrnet.h" />
     <ClInclude Include="weapons.h" />
   </ItemGroup>
@@ -613,6 +614,7 @@ copy /Y "$(ProjectDir)manifest.vrmanifest" "$(SolutionDir)dist\VR\manifest.vrman
     <ClCompile Include="vr_canvas.cpp" />
     <ClCompile Include="vr_watch.cpp" />
     <ClCompile Include="vr_toast.cpp" />
+    <ClCompile Include="vr_events.cpp" />
     <ClCompile Include="weapons.cpp" />
   </ItemGroup>
   <ItemGroup>

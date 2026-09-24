@@ -11,3 +11,6 @@ x64/
 *.idb
 *.log
 .vs/
+
+# Player packages built by tools/Make-Release.ps1
+packages/

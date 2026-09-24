@@ -153,7 +153,10 @@ static int g_hover = -1;
 
 static std::atomic<bool> g_open{ false };
 static bool g_placed = false;
+// The menu distance this panel was last placed in front of.
+static float g_placedMenuDist = 0.0f;
 static bool g_legacyPrev = true;   // true: a trigger still held from opening is not a click
+static bool g_legacyMenuPrev = true;   // the same for B/Y: held from opening is not a close
 // Written by the draw thread, handed to SteamVR by the render thread, so every
 // IVROverlay call stays on the one thread that already makes them.
 static std::mutex g_imageMtx;
@@ -178,6 +181,11 @@ static void QueueSave(const char *key, const std::string &value)
         g_dirty = true;
     }
     g_cv.notify_one();
+}
+
+void SaveConfigValue(const char *key, const char *value)
+{
+    QueueSave(key, value);
 }
 
 static std::string FloatStr(float v)
@@ -280,6 +288,9 @@ static void BuildModel(VR *vr)
         [vr]() { return vr->m_LeftHanded ? 1 : 0; },
         [vr](int i) { vr->m_LeftHanded = (i != 0); },
         "LeftHanded", { "false", "true" }));
+    comfort.items.push_back(Numeric(L"World scale", L"Lower: you feel taller, the world smaller. 40 is life size.",
+        &vr->m_VRScale, "VRScale", Range(34.0f, 48.0f, 1.0f),
+        [](float v) { return Fmt(L"%.0f", v); }));
     g_tabs.push_back(comfort);
 
     Tab aim{ L"Aiming" };
@@ -310,6 +321,8 @@ static void BuildModel(VR *vr)
         [vr]() { return vr->m_TrackedWeapon ? 1 : 0; },
         [vr](int i) { vr->m_TrackedWeapon = (i != 0); },
         "TrackedWeapon", { "false", "true" }));
+    aim.items.push_back(Toggle(L"Throw guide", L"Grenades, knives and mines: the arc, and a ring where it lands.",
+        &vr->m_ThrowGuide, "ThrowGuide"));
     g_tabs.push_back(aim);
 
     Tab weapons{ L"Weapons" };
@@ -317,6 +330,8 @@ static void BuildModel(VR *vr)
         &vr->m_SwingMelee, "SwingMelee"));
     weapons.items.push_back(Toggle(L"Adjust position", L"Free aim, numpad: 8 2 4 6 9 3 move, 5 rotate, 0 save.",
         &vr->m_WeaponTuning, "WeaponTuning"));
+    weapons.items.push_back(Toggle(L"Off hand", L"Grenades and mines: put their left arm on your off hand.",
+        &vr->m_LeftHandOnController, "LeftHandOnController"));
     g_tabs.push_back(weapons);
 
     Tab display{ L"Display" };
@@ -327,15 +342,19 @@ static void BuildModel(VR *vr)
         [vr]() { return vr->m_WatchAlwaysVisible ? 1 : 0; },
         [vr](int i) { vr->m_WatchAlwaysVisible = (i != 0); },
         "WatchAlwaysVisible", { "false", "true" }));
-    display.items.push_back(Numeric(L"Menu distance", L"How far away the main menu floats.",
+    display.items.push_back(Toggle(L"Watch notices", L"Kills and rounds pop up on the watch instead of the HUD.",
+        &vr->m_WatchKillFeed, "WatchKillFeed"));
+    display.items.push_back(Toggle(L"Watch on model", L"Sit the watch where the one on the grenade hand sits.",
+        &vr->m_WatchFollowModel, "WatchFollowModel"));
+    display.items.push_back(Numeric(L"Menu distance", L"How deep the game's menus sit. It does not resize them.",
         &vr->m_MenuDistanceMeters, "MenuDistanceMeters", Range(1.0f, 3.0f, 0.2f),
         [](float v) { return Fmt(L"%.1f m", v); }, []() { GESVR_RequestMenuReplace(); }));
-    display.items.push_back(Numeric(L"Menu size", L"Width of the main menu panel.",
-        &vr->m_MenuWidthMeters, "MenuWidthMeters", Range(1.2f, 3.6f, 0.2f),
-        [](float v) { return Fmt(L"%.1f m", v); }, []() { GESVR_RequestMenuReplace(); }));
-    display.items.push_back(Numeric(L"World scale", L"Lower: you feel taller, the world smaller. 40 is life size.",
-        &vr->m_VRScale, "VRScale", Range(34.0f, 48.0f, 1.0f),
-        [](float v) { return Fmt(L"%.0f", v); }));
+    // Shown as a percentage, not metres: the panel's width in metres also
+    // depends on the distance and the resolution (VR::EffectiveMenuGeometry),
+    // so the metres on the label would not be the metres you got. 2.0 = 100%.
+    display.items.push_back(Numeric(L"Menu size", L"How big the game's menus look.",
+        &vr->m_MenuWidthMeters, "MenuWidthMeters", Range(1.0f, 4.0f, 0.2f),
+        [](float v) { return Fmt(L"%.0f%%", v * 50.0f); }, []() { GESVR_RequestMenuReplace(); }));
     display.items.push_back(Named(L"Game HUD", L"The game's own HUD in front of you. The watch has the same.",
         { L"Off", L"When hurt", L"Always" },
         [vr]() { return vr->m_GameHudMode; },
@@ -378,6 +397,17 @@ static const int kFooterTop = 830;
 
 struct Hit { int id; RECT rc; };
 
+// Rows shrink to fit the panel rather than running off the bottom of it, so a
+// tab can grow a row without the panel needing a new size. (Display grew to
+// seven and its last row fell off the panel entirely.)
+static int RowPitch(int rows)
+{
+    if (rows <= 0)
+        return kRowH;
+    const int fit = (kFooterTop - 16 - kRowTop) / rows;
+    return fit >= kRowH ? kRowH : (fit < 72 ? 72 : fit);
+}
+
 static void Layout(int tab, std::vector<Hit> &out)
 {
     out.clear();
@@ -386,22 +416,25 @@ static void Layout(int tab, std::vector<Hit> &out)
         out.push_back({ ID_TAB + i, { kMargin + i * tabW, kTabTop, kMargin + (i + 1) * tabW, kTabTop + kTabH } });
 
     const auto &items = g_tabs[tab].items;
+    const int pitch = RowPitch((int)items.size());
     for (int r = 0; r < (int)items.size(); ++r)
     {
-        const int top = kRowTop + r * kRowH;
+        const int top = kRowTop + r * pitch;
         const int base = ID_ROW + r * 4;
+        const int ch = (pitch - 24 < 60) ? pitch - 24 : 60;   // control height, centred in the row
+        const int ct = top + (pitch - ch) / 2, cb = ct + ch;
         switch (items[r].kind)
         {
         case Kind::Choice:
-            out.push_back({ base + PART_LEFT,  { kCtrlL, top + 22, kCtrlL + 80, top + 82 } });
-            out.push_back({ base + PART_MAIN,  { kCtrlL + 80, top + 22, kCtrlR - 80, top + 82 } });
-            out.push_back({ base + PART_RIGHT, { kCtrlR - 80, top + 22, kCtrlR, top + 82 } });
+            out.push_back({ base + PART_LEFT,  { kCtrlL, ct, kCtrlL + 80, cb } });
+            out.push_back({ base + PART_MAIN,  { kCtrlL + 80, ct, kCtrlR - 80, cb } });
+            out.push_back({ base + PART_RIGHT, { kCtrlR - 80, ct, kCtrlR, cb } });
             break;
         case Kind::Toggle:
-            out.push_back({ base + PART_MAIN, { kCtrlR - 150, top + 25, kCtrlR, top + 79 } });
+            out.push_back({ base + PART_MAIN, { kCtrlR - 150, ct + 3, kCtrlR, cb - 3 } });
             break;
         case Kind::Button:
-            out.push_back({ base + PART_MAIN, { kCtrlR - 300, top + 22, kCtrlR, top + 82 } });
+            out.push_back({ base + PART_MAIN, { kCtrlR - 300, ct, kCtrlR, cb } });
             break;
         }
     }
@@ -480,17 +513,20 @@ static void DrawPanel(Canvas &c, const Fonts &f, int tab, int hover)
     }
 
     const auto &items = g_tabs[tab].items;
+    const int pitch = RowPitch((int)items.size());
     for (int r = 0; r < (int)items.size(); ++r)
     {
         const Item &it = items[r];
-        const int top = kRowTop + r * kRowH;
+        const int top = kRowTop + r * pitch;
         const int base = ID_ROW + r * 4;
         const bool hasHint = !it.hint.empty();
+        // Label over hint, the pair centred in the row (14 and 58 at full pitch).
+        const int pad = (pitch - 76) / 2 > 2 ? (pitch - 76) / 2 : 2;
         c.Text(f.label, C_TEXT, it.label,
-             { kMargin, top + (hasHint ? 14 : 0), kCtrlL - 20, hasHint ? top + 58 : top + kRowH },
+             { kMargin, top + (hasHint ? pad : 0), kCtrlL - 20, hasHint ? top + pad + 44 : top + pitch },
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (hasHint)
-            c.Text(f.hint, C_HINT, it.hint, { kMargin, top + 58, kCtrlL - 20, top + 90 },
+            c.Text(f.hint, C_HINT, it.hint, { kMargin, top + pad + 44, kCtrlL - 20, top + pad + 76 },
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         const int cur = it.get ? it.get() : 0;
@@ -538,7 +574,7 @@ static void DrawPanel(Canvas &c, const Fonts &f, int tab, int hover)
         }
         }
         if (r + 1 < (int)items.size())
-            c.Fill({ kMargin, top + kRowH - 1, W - kMargin, top + kRowH }, C_LINE);
+            c.Fill({ kMargin, top + pitch - 1, W - kMargin, top + pitch }, C_LINE);
     }
 
     c.Fill({ 0, kFooterTop - 8, W, kFooterTop - 7 }, C_LINE);
@@ -708,14 +744,22 @@ void Open()
     g_open.store(true);
     g_placed = false;
     g_legacyPrev = true;
+    g_legacyMenuPrev = true;
     {
         std::lock_guard<std::mutex> lk(g_mtx);
         g_hover = -1;
     }
     // Dim the game menu behind us. ShowMenuPanel sets alpha only once, when it
-    // configures the panel, so this holds until Close puts it back.
+    // configures the panel, so this holds until Close puts it back. Its laser
+    // interaction goes off with it: while this panel is up it owns the pointer,
+    // and a menu the laser can still grab is a menu that can steal a click
+    // meant for us. ProcessMenuInput turns it back on the frame we close.
     if (g_vr->m_Overlay && g_vr->m_MainMenuHandle)
+    {
         g_vr->m_Overlay->SetOverlayAlpha(g_vr->m_MainMenuHandle, 0.35f);
+        g_vr->m_Overlay->SetOverlayFlag(g_vr->m_MainMenuHandle,
+                                        vr::VROverlayFlags_MakeOverlaysInteractiveIfVisible, false);
+    }
     MarkDirty();
     Game::logMsg("VRSettings: opened");
 }
@@ -738,6 +782,20 @@ static void Place()
     const vr::TrackedDevicePose_t &hmd = g_vr->m_Poses[vr::k_unTrackedDeviceIndex_Hmd];
     if (!hmd.bPoseIsValid || !vr::VRCompositor())
         return;
+    // In front of the game's menu, always. This panel used to sit at a fixed
+    // 1.25 m while Menu distance could be set to 1.0 -- the game menu then
+    // covered it, including the Close button, and the laser hit that instead.
+    // It is the panel you are adjusting things from, so it takes the front and
+    // scales with the distance to keep the same apparent size.
+    float menuW = 0.0f, menuD = 0.0f;
+    g_vr->EffectiveMenuGeometry(menuW, menuD);
+    float dist = kDistanceMeters;
+    if (menuD - 0.25f < dist)
+        dist = menuD - 0.25f;
+    if (dist < 0.5f)
+        dist = 0.5f;
+    const float width = kWidthMeters * (dist / kDistanceMeters);
+    g_placedMenuDist = menuD;
     const vr::HmdMatrix34_t &m = hmd.mDeviceToAbsoluteTracking;
     float fx = -m.m[0][2], fz = -m.m[2][2];
     const float len = sqrtf(fx * fx + fz * fz);
@@ -747,13 +805,13 @@ static void Place()
     xf.m[0][0] = -fz; xf.m[0][1] = 0.0f; xf.m[0][2] = -fx;
     xf.m[1][0] = 0.0f; xf.m[1][1] = 1.0f; xf.m[1][2] = 0.0f;
     xf.m[2][0] = fx;  xf.m[2][1] = 0.0f; xf.m[2][2] = -fz;
-    xf.m[0][3] = m.m[0][3] + fx * kDistanceMeters;
+    xf.m[0][3] = m.m[0][3] + fx * dist;
     xf.m[1][3] = m.m[1][3] - 0.12f;
-    xf.m[2][3] = m.m[2][3] + fz * kDistanceMeters;
+    xf.m[2][3] = m.m[2][3] + fz * dist;
     for (int i = 0; i < 2; ++i)
     {
         g_vr->m_Overlay->SetOverlayTransformAbsolute(g_panel.Handle(i), vr::VRCompositor()->GetTrackingSpace(), &xf);
-        g_vr->m_Overlay->SetOverlayWidthInMeters(g_panel.Handle(i), kWidthMeters);
+        g_vr->m_Overlay->SetOverlayWidthInMeters(g_panel.Handle(i), width);
     }
     g_placed = true;
 }
@@ -829,7 +887,12 @@ void Frame()
         return;
     vr::IVROverlay *ov = g_vr->m_Overlay;
 
-    if (!g_placed)
+    // Re-place when the game menu moves: this panel sits in front of it, so
+    // changing Menu distance has to move this one too, live, while you are
+    // standing at that very setting.
+    float menuW = 0.0f, menuD = 0.0f;
+    g_vr->EffectiveMenuGeometry(menuW, menuD);
+    if (!g_placed || fabsf(menuD - g_placedMenuDist) > 0.01f)
         Place();
 
     std::string image;
@@ -955,7 +1018,21 @@ void Frame()
             return;
     }
 
-    if (g_vr->PressedDigitalAction(g_vr->m_MenuBack, true) || g_vr->PressedDigitalAction(g_vr->m_Pause, true))
+    // B (Menu back), Y (Pause) and left X (the Scoreboard toggle in VR::Update)
+    // all close the panel, so it can always be dismissed without the pointer.
+    //
+    // The device read is the one that matters: while SteamVR's laser is driving
+    // this overlay it takes that hand's input, and the actions below never fire
+    // -- which is how a session on 2026-09-23 got stuck with the game menu over
+    // the Close button ("VRSettings: opened" with no "closed" after it).
+    const bool menuBtnNow = g_vr->LegacyMenuButtonDown();
+    const bool menuBtnEdge = menuBtnNow && !g_legacyMenuPrev;
+    g_legacyMenuPrev = menuBtnNow;
+    if (menuBtnEdge || g_vr->PressedDigitalAction(g_vr->m_MenuBack, true)
+        || g_vr->PressedDigitalAction(g_vr->m_Pause, true))
+    {
+        Game::logMsg("VRSettings: closed by button (device=%d)", (int)menuBtnEdge);
         Close();
+    }
 }
 } // namespace VRSettings

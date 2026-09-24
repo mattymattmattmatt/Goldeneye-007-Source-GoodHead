@@ -31,4 +31,8 @@ namespace VRSettings
 
     // Per menu frame, render thread, while open: placement and input.
     void Frame();
+
+    // Write one key back to config.txt, comments and the rest of the file
+    // intact. Used by the numpad off-hand tuning as well as the panel.
+    void SaveConfigValue(const char *key, const char *value);
 }

@@ -1470,6 +1470,14 @@ static int FindStudioBone(void *state, const char *wanted)
 }
 
 // Arm-rig models, cached by model: the hand bone and the arm bones to fold.
+//
+// The grenade and the three mines carry a LEFT arm too (bodyparts hand_R and
+// hand_L, mirrored bone chains, ~6800 vertices each) with GoldenEye's Seamaster
+// watch modelled on its wrist ("seamaster", with hour/minute/second bones).
+// Moving the whole model to the gun hand dragged that arm along through the
+// air, so the left chain is placed on the off-hand controller instead, and its
+// watch tells the overlay watch where to sit. The item (nade_body, mine_body)
+// hangs off the model root, not off either hand, so it stays with the gun hand.
 struct ArmRig
 {
 	const void *model;
@@ -1477,7 +1485,56 @@ struct ArmRig
 	int arm[4];          // collar, arm null, shoulder, elbow (-1 if absent)
 	float local[3];      // hand position in model space, slowly averaged
 	bool haveLocal;
+	int leftHand;        // L_FK_Hand_jnt, -1 when the model has no left arm
+	int leftArm[4];
+	int watchBone;       // "seamaster" on the left wrist, -1 if absent
+	unsigned char leftSet[32];   // one bit per bone: part of the left arm
+	float leftLocal[3];
+	bool haveLeftLocal;
 };
+
+static bool InLeftArm(const ArmRig &r, int bone)
+{
+	return bone >= 0 && bone < 256 && (r.leftSet[bone >> 3] & (1 << (bone & 7))) != 0;
+}
+
+// Every bone of the left arm: named L_*, or descended from one (the wrist
+// helper, the sleeve, and the watch with its hands). Source orders bones
+// parents first, so one pass down the list is enough.
+static void FindLeftArm(void *state, ArmRig &r)
+{
+	r.leftHand = -1;
+	r.watchBone = -1;
+	for (int i = 0; i < 4; ++i)
+		r.leftArm[i] = -1;
+	__try
+	{
+		const unsigned char *hdr = *reinterpret_cast<const unsigned char *const *>(state);
+		const int count = *reinterpret_cast<const int *>(hdr + 156);
+		const int boneIndex = *reinterpret_cast<const int *>(hdr + 160);
+		static const char *kFold[4] = { "L_FK_Collar_jnt", "L_FK_Arm_null", "L_FK_Shoulder_jnt", "L_FK_Elbow_jnt" };
+		for (int i = 0; i < count && i < 256; ++i)
+		{
+			const unsigned char *bone = hdr + boneIndex + i * 216;
+			const char *name = reinterpret_cast<const char *>(bone + *reinterpret_cast<const int *>(bone));
+			const int parent = *reinterpret_cast<const int *>(bone + 4);
+			if (strncmp(name, "L_", 2) == 0 || InLeftArm(r, parent))
+				r.leftSet[i >> 3] |= (unsigned char)(1 << (i & 7));
+			if (strcmp(name, "L_FK_Hand_jnt") == 0)
+				r.leftHand = i;
+			else if (strcmp(name, "seamaster") == 0)
+				r.watchBone = i;
+			for (int k = 0; k < 4; ++k)
+				if (strcmp(name, kFold[k]) == 0)
+					r.leftArm[k] = i;
+		}
+	}
+	__except (EXCEPTION_EXECUTE_HANDLER)
+	{
+		r.leftHand = -1;
+		r.watchBone = -1;
+	}
+}
 
 static ArmRig *ArmRigFor(void *state, const void *model, const char *modelName)
 {
@@ -1493,8 +1550,10 @@ static ArmRig *ArmRigFor(void *state, const void *model, const char *modelName)
 	for (int i = 0; i < 4; ++i)
 		r.arm[i] = (r.hand >= 0) ? FindStudioBone(state, armBones[i]) : -1;
 	if (r.hand >= 0)
-		Game::logMsg("TRACKED GUN: %s is an arm rig -- hand bone %d, arm bones %d %d %d %d",
-		             modelName, r.hand, r.arm[0], r.arm[1], r.arm[2], r.arm[3]);
+		FindLeftArm(state, r);
+	if (r.hand >= 0)
+		Game::logMsg("TRACKED GUN: %s is an arm rig -- hand bone %d, arm bones %d %d %d %d, left hand %d, watch %d",
+		             modelName, r.hand, r.arm[0], r.arm[1], r.arm[2], r.arm[3], r.leftHand, r.watchBone);
 	if (s_count < 16)
 		s_rigs[s_count++] = r;
 	else
@@ -1956,6 +2015,12 @@ static void *FaceAimBones(void *state, const ModelRenderInfo_t &info, void *bone
 	float w[3];
 	for (int r = 0; r < 3; ++r)
 		w[r] = vm.m[r][1] * s.shift[1] + vm.m[r][2] * s.shift[2];
+	// ...plus the gap between the game's eye and the one we render from. The
+	// engine draws this viewmodel at ITS eye, so without this the gun keeps the
+	// height (and the lean) the game thinks you have, not the one you set.
+	w[0] += vr->m_ViewEyeDelta.x;
+	w[1] += vr->m_ViewEyeDelta.y;
+	w[2] += vr->m_ViewEyeDelta.z;
 	BoneMat squash;
 	const bool squashed = EyeSquash(squash);
 	if (!squashed && fabsf(w[0]) + fabsf(w[1]) + fabsf(w[2]) < 0.001f)
@@ -2072,6 +2137,54 @@ static void *TrackedWeaponBones(void *state, const ModelRenderInfo_t &info, void
 	NoteTrackedHand(static_cast<const char *>(info.pRenderable) - 4, hand);   // for its attachments
 	const BoneMat move = Concat(hand, InvertRigid(vm));
 
+	// The left arm on the off hand, placed by its own hand bone exactly as the
+	// gun hand is placed by its own. Only the grenade and the mines have one.
+	BoneMat leftMove;
+	bool haveLeftArm = false;
+	if (rig && rig->leftHand >= 0 && rig->leftHand < count && vr->m_LeftHandOnController)
+	{
+		QAngle lang;
+		QAngle::VectorAngles(vr->m_LeftControllerForward, vr->m_LeftControllerUp, lang);
+		const BoneMat lraw = PoseMatrix(lang, vr->GetLeftControllerAbsPos());
+		// Tilt the hand about itself, by composing matrices. Adding LeftHandAngle
+		// to the controller's own Euler angles is NOT a rotation in the hand's
+		// frame: how much of it lands on which axis changes as you turn the
+		// controller, so the hand rolled about a moving point and, with an offset
+		// applied in that skewed frame, swung further off the more it turned.
+		const QAngle tilt(vr->m_LeftHandAngle.x, vr->m_LeftHandAngle.y, vr->m_LeftHandAngle.z);
+		BoneMat lhand = Concat(lraw, PoseMatrix(tilt, Vector(0.0f, 0.0f, 0.0f)));
+		const BoneMat local = Concat(InvertRigid(vm), src[rig->leftHand]);   // left hand in model space
+		const float a = rig->haveLeftLocal ? 0.02f : 1.0f;
+		for (int k = 0; k < 3; ++k)
+			rig->leftLocal[k] += (local.m[k][3] - rig->leftLocal[k]) * a;
+		rig->haveLeftLocal = true;
+		// LeftHandOffset slides the hand along the CONTROLLER's axes (lraw), not
+		// the tilted hand's, so the two tuning knobs stay independent: rotating
+		// turns the hand where it is, moving slides it without turning it. In
+		// play the offset is rigid to the controller, so the hand still orbits
+		// with your wrist.
+		const Vector c = vr->GetLeftControllerAbsPos();
+		const float cv[3] = {
+			c.x - (lraw.m[0][0] * vr->m_LeftHandOffset.x + lraw.m[0][1] * vr->m_LeftHandOffset.y + lraw.m[0][2] * vr->m_LeftHandOffset.z),
+			c.y - (lraw.m[1][0] * vr->m_LeftHandOffset.x + lraw.m[1][1] * vr->m_LeftHandOffset.y + lraw.m[1][2] * vr->m_LeftHandOffset.z),
+			c.z - (lraw.m[2][0] * vr->m_LeftHandOffset.x + lraw.m[2][1] * vr->m_LeftHandOffset.y + lraw.m[2][2] * vr->m_LeftHandOffset.z),
+		};
+		for (int i = 0; i < 3; ++i)
+			lhand.m[i][3] = cv[i] - (lhand.m[i][0] * rig->leftLocal[0] + lhand.m[i][1] * rig->leftLocal[1] + lhand.m[i][2] * rig->leftLocal[2]);
+		leftMove = Concat(lhand, InvertRigid(vm));
+		haveLeftArm = true;
+
+		// The Seamaster on that wrist: where the watch overlay should sit.
+		// Once a frame, not once an eye, so the easing runs at frame rate.
+		static unsigned s_watchFrame = 0;
+		if (rig->watchBone >= 0 && rig->watchBone < count && s_watchFrame != g_stereoFrame)
+		{
+			s_watchFrame = g_stereoFrame;
+			const BoneMat w = Concat(leftMove, src[rig->watchBone]);
+			vr->NoteModelWatchPose(Vector(w.m[0][3], w.m[1][3], w.m[2][3]));
+		}
+	}
+
 	// Guns (not arm rigs): note the barrel for the trace. Once a frame, not
 	// per eye, so the easing runs at frame rate.
 	if (!rig)
@@ -2109,8 +2222,9 @@ static void *TrackedWeaponBones(void *state, const ModelRenderInfo_t &info, void
 	BoneMat squash = PoseMatrix(QAngle(0.0f, 0.0f, 0.0f), Vector(0.0f, 0.0f, 0.0f));
 	EyeSquash(squash);
 	const BoneMat total = Concat(squash, move);
+	const BoneMat leftTotal = haveLeftArm ? Concat(squash, leftMove) : total;
 	for (int i = 0; i < count; ++i)
-		g_handBones[i] = Concat(total, src[i]);
+		g_handBones[i] = Concat((haveLeftArm && InLeftArm(*rig, i)) ? leftTotal : total, src[i]);
 
 	// Floating hand: fold every arm bone to a point at the hand, so the upper
 	// arm and forearm shrink into the wrist and only the hand and cuff remain.
@@ -2127,6 +2241,23 @@ static void *TrackedWeaponBones(void *state, const ModelRenderInfo_t &info, void
 				for (int j = 0; j < 3; ++j)
 					g_handBones[b].m[i][j] = 0.0f;
 				g_handBones[b].m[i][3] = h.m[i][3];
+			}
+		}
+		// The same for the off hand, so its forearm does not run off to where
+		// the model's elbow would be.
+		if (haveLeftArm)
+		{
+			const BoneMat &lh = g_handBones[rig->leftHand];
+			for (int b : rig->leftArm)
+			{
+				if (b < 0 || b >= count)
+					continue;
+				for (int i = 0; i < 3; ++i)
+				{
+					for (int j = 0; j < 3; ++j)
+						g_handBones[b].m[i][j] = 0.0f;
+					g_handBones[b].m[i][3] = lh.m[i][3];
+				}
 			}
 		}
 	}

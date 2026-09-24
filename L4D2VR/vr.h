@@ -78,6 +78,12 @@ public:
 	Vector m_LeftControllerRight = { 0,-1,0 };
 	Vector m_LeftControllerUp = { 0,0,1 };
 
+	// DEAD. Only VR::UpdateTracking() assigns these, and it has no call site, so
+	// they still hold the values on this line -- a fixed +X with no pitch. Aim
+	// that reads them does not move with your hand: that is what made every
+	// grenade and mine fly the same way, level, whatever you pointed at
+	// (2026-09-24). The live hand basis is m_ViewmodelForward/Right/Up, and the
+	// live hand ANGLE for aiming is m_RightControllerAngAbs -- use HandForward().
 	Vector m_RightControllerForward = { 1,0,0 };
 	Vector m_RightControllerRight = { 0,-1,0 };
 	Vector m_RightControllerUp = { 0,0,1 };
@@ -97,6 +103,14 @@ public:
 	Vector m_SetupOriginPrev = { 0,0,0 };
 	Vector m_CameraAnchor = { 0,0,0 };
 	Vector m_SetupOriginToHMD = { 0,0,0 };
+	// The eye we actually render from, minus the eye the GAME thinks you have:
+	// the roomscale head offset plus the height setting. Face aim's viewmodel is
+	// drawn by the engine at the game's eye, so without this it stays put while
+	// the camera moves -- raising your height left the gun at the old height
+	// (Matty, 2026-09-24), and leaning made it swim. Free aim never had this:
+	// its weapon is placed at the controller, which is built from the same
+	// corrected camera.
+	Vector m_ViewEyeDelta = { 0,0,0 };
 
 	float m_HeightOffset = 0.0;
 	bool m_RoomscaleActive = false;
@@ -363,10 +377,10 @@ public:
 	bool m_MotionDebug = true;
 	// Re-run the slot counter (conflicts with the real hook; for diagnosis only).
 	bool m_VtableProbe = false;
-	// Floating menu panel. The in-game character/level menu was reported as
-	// too big and too close; these make it placeable without a rebuild.
+	// Floating menu panel: how big it looks and how far away it floats. The
+	// width is the panel's width AT kMenuRefDist (1.6 m); VR::EffectiveMenuGeometry
+	// scales it with the distance so moving the menu does not resize it.
 	float m_MenuWidthMeters = 2.4f;
-	// Pregame (create-server) menu distance. In-map uses m_InGameMenuDistance.
 	float m_MenuDistanceMeters = 1.6f;
 	// Route in-map VGUI panels (character/team/level select) onto the flat menu
 	// panel instead of leaving them inside the 3D view. Detected via the OS
@@ -381,9 +395,6 @@ public:
 	std::string m_ExtraCvars;
 	bool m_ExtraCvarsDone = false;
 	unsigned m_InMapSinceMs = 0;
-	// The in-map panel wants to sit further back than the create-server menu,
-	// which wants to stay close enough to read. They used to share one distance.
-	float m_InGameMenuDistance = 2.4f;
 	// Keep the menu the same apparent size as resolution changes. See
 	// VR::EffectiveMenuGeometry -- Source's GameUI is laid out in fixed pixels.
 	bool m_MenuScaleWithRes = true;
@@ -536,6 +547,7 @@ public:
 	// Set when either changes in VR Settings; applied on the next in-map frame.
 	bool m_GraphicsDirty = false;
 	void ApplyGraphicsCvars();
+	void SyncHudCvars();
 	// GE:S's first-person death camera rides the ragdoll's head (ge_fp_ragdoll).
 	bool m_DeathCamFirstPerson = false;
 	// The game HUD in the headset: 0 off, 1 flash it when hurt, 2 always.
@@ -557,9 +569,38 @@ public:
 	// of that moment.
 	Vector m_ThrowDir = { 1.0f, 0.0f, 0.0f };
 	unsigned long long m_ThrowAimUntil = 0;
+	// Throw guide (VR::UpdateThrowGuide): an arc from the hand to a ring where
+	// the grenade, throwing knife or mine will land. Thrown items fly where the
+	// hand POINTS, so the arc you see is the arc the game flies. The direction
+	// is frozen at the release (or, for the knife, just before the flick) and
+	// held until the game has let the item go.
+	bool m_ThrowGuide = true;
+	Vector m_ThrowFrozenDir = { 1.0f, 0.0f, 0.0f };
+	unsigned long long m_ThrowFrozenUntil = 0;
+	// When GE:S pulled the grenade's pin (press + its 0.1 s pin delay); the fuse
+	// is 4 s from then. 0 = not cooking.
+	unsigned long long m_GrenadePrimedAt = 0;
+	Vector m_PlayerVelocity = { 0.0f, 0.0f, 0.0f };   // game units/s, from the eye's motion
+	void UpdateThrowGuide(const CViewSetup &left, const CViewSetup &right, int kind, const Vector &dir, bool freeAim);
+	Vector PointingDirAgo(unsigned ms) const;
+	// Where the gun hand points, live, in game space: from m_RightControllerAngAbs,
+	// which ApplyHeadAndIpd refreshes every frame and which already carries the
+	// grip correction as a plain pitch offset (see the note there about pitch
+	// inversion). This is the aim direction -- never m_RightControllerForward.
+	Vector HandForward() const;
 	// Slappers with the tracked weapon: a fast swing of the gun hand slaps.
 	bool m_SwingMelee = true;
 	float m_SwingSpeed = 2.0f;   // metres per second of hand speed
+	// Throwing knife: how long after the swing is detected the knife may still
+	// be held, if the hand has not started slowing by then. The detection fires
+	// at the start of the wind-up, so releasing there threw it backwards into
+	// the thrower; this carries it round to the end of the swing.
+	int m_ThrowReleaseMs = 150;
+	// How the knife's direction is taken at that release: 0 = where the hand
+	// was travelling, 1 = where it was pointing, both sampled at the hand's
+	// fastest moment. An overhand throw curves downward, so pure motion aims
+	// low; pure pointing matches the throw guide but ignores the swing.
+	float m_ThrowAimMix = 0.5f;
 	// Arm-rig weapons (slappers, knives): show only the hand, not the arm, and
 	// an extra pitch,yaw,roll for the hand around the controller.
 	bool m_MeleeHideArm = true;
@@ -571,6 +612,20 @@ public:
 
 	// Wrist watch (vr_watch.cpp). Shown when you look at the off hand, or always.
 	bool m_ShowWristHUD = true;
+	// Kill feed and round start/end as notices on the watch (VREvents); GE:S's
+	// own kill feed is then kept off the view.
+	bool m_WatchKillFeed = true;
+	// The left arm some viewmodels carry (grenade, mines) goes on the off-hand
+	// controller, with its own placement in the hand's own frame.
+	bool m_LeftHandOnController = true;
+	Vector m_LeftHandOffset = { 0.0f, 0.0f, 0.0f };   // forward, right, up
+	Vector m_LeftHandAngle = { 0.0f, 0.0f, 0.0f };    // pitch, yaw, roll
+	// The watch overlay sits on the Seamaster modelled on that arm, instead of
+	// at WatchOffset, once one has been seen.
+	bool m_WatchFollowModel = true;
+	bool m_HaveModelWatch = false;
+	Vector m_ModelWatchOffset = { 0.0f, 0.0f, 0.0f };   // forward, left, up, metres
+	void NoteModelWatchPose(const Vector &worldPos);
 	bool m_WatchAlwaysVisible = false;
 	float m_WristLookMaxDistance = 0.6f;
 	float m_WristLookMinDot = 0.45f;
@@ -672,6 +727,7 @@ public:
 	void ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &setup);
 	// Reads the trigger off the device directly, bypassing the action manifest.
 	bool LegacyTriggerDown(float *outValue = nullptr);
+	bool LegacyMenuButtonDown();
 		bool PressedDigitalAction(vr::VRActionHandle_t &actionHandle, bool checkIfActionChanged = false);
 	bool GetAnalogActionData(vr::VRActionHandle_t &actionHandle, vr::InputAnalogActionData_t &analogDataOut);
 	void ResetPosition();
