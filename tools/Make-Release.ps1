@@ -50,5 +50,14 @@ Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip, [System.IO.Compression.CompressionLevel]::Optimal, $true)
 
 $files = Get-ChildItem $stage -Recurse -File
-Write-Host ("{0}: {1} files, {2:N1} MB zipped" -f (Split-Path -Leaf $zip), $files.Count, ((Get-Item $zip).Length / 1MB))
-$files | ForEach-Object { "  " + $_.FullName.Substring($stage.Length + 1) }
+$list = $files | ForEach-Object { "  " + $_.FullName.Substring($stage.Length + 1) }
+
+# The staging folder has served its purpose. Leaving it behind next to the zip
+# made it easy to miss which of the two was the download.
+Remove-Item $stage -Recurse -Force
+
+Write-Host ""
+Write-Host ("  {0}" -f $zip) -ForegroundColor Green
+Write-Host ("  {0} files, {1:N1} MB" -f $files.Count, ((Get-Item $zip).Length / 1MB))
+Write-Host ""
+$list
