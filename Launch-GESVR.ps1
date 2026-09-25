@@ -295,6 +295,22 @@ if (Test-Path $gameMenu) {
 # still match ours byte for byte.
 $goodheadMenu = $true
 
+# Where the menu list starts, in the 640x480 space every Source scheme uses, so
+# 115 means 24% down the screen whatever the real resolution is. GE:S ships 240
+# -- dead centre -- which sat the bottom half of the list on top of the GoldenEye
+# logo in our artwork.
+#
+# Proved out of gameui.dll rather than guessed. Its CBasePanel reads
+# "MainMenu.Inset" from its own scheme, then asks for "ClientScheme" and reads
+# "Main.Menu.X", "Main.Menu.Y" and "Main.BottomBorder" from that -- the four
+# string references sit within 0x2c0 of each other at 0x1000644f..0x1000670d, one
+# function. So the key that moves the menu lives in GE:S's ClientScheme.res, not
+# in SourceScheme.res beside the other MainMenu.* keys.
+#
+# Measured off a headset screenshot: the list is ten rows spanning ~21.6% of
+# screen height, and the logo starts at 63.5%. 115 puts the list at 24%..46%.
+$menuY = 115
+
 $menuSrc = Join-Path $dist "menu"
 $menuSkin = @(
     @{ src = "background01.vtf";            dest = "materials\console\background01.vtf" },
@@ -346,6 +362,31 @@ if (Test-Path $menuSrc) {
         } else {
             Write-Host "Restored the original GE:S menu splash and music"
         }
+    }
+}
+
+# ClientScheme.res is patched rather than replaced: it is 1800 lines of HUD
+# styling and only two numbers in it are ours, so shipping a whole copy would
+# freeze every other thing in it at whatever GE:S 5.0.6 happened to say. The
+# patch is always applied to the pristine copy, never to an already-patched
+# file, which is what makes $menuY re-tunable -- change the number above, run
+# the launcher, done. ("Main.Menu.Y" appears twice in the one BaseSettings
+# block; KeyValues takes the first, so both are set to keep them agreeing.)
+$clientScheme = Join-Path $ges "resource\ClientScheme.res"
+if (Test-Path $clientScheme) {
+    $csOrig = "$clientScheme.gesvr-orig"
+    if ($goodheadMenu) {
+        if (-not (Test-Path $csOrig)) { Copy-Item $clientScheme $csOrig -Force }
+        $csText = [IO.File]::ReadAllText($csOrig)
+        $csText = [regex]::Replace($csText, '("Main\.Menu\.Y"\s*")\d+(")', "`${1}$menuY`${2}")
+        if ($csText -ne [IO.File]::ReadAllText($clientScheme)) {
+            [IO.File]::WriteAllText($clientScheme, $csText)
+            Write-Host "Moved the GE:S menu list up (Main.Menu.Y = $menuY)"
+        }
+    } elseif (Test-Path $csOrig) {
+        Copy-Item $csOrig $clientScheme -Force
+        Remove-Item $csOrig -Force
+        Write-Host "Restored the original GE:S menu position"
     }
 }
 

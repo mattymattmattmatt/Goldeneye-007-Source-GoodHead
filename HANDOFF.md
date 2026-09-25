@@ -63,6 +63,43 @@ GoldenEye tracks by default; we replace the list with one file.
 added. Tested: three installs then two restores leaves the three originals
 byte-identical with nothing of ours left behind.
 
+**Moving the menu list off the logo (same day).** With our artwork behind it the
+bottom half of the list sat on the GoldenEye logo. The key that moves it is
+`Main.Menu.Y`, and the non-obvious part is **which file it has to be in**.
+`SourceScheme.res` is where all the other `MainMenu.*` keys live, and it is the
+scheme gameui's own panel uses -- but `Main.Menu.Y` is not read from there.
+Cross-references in `gameui.dll` settle it:
+
+```
+MainMenu.Inset            ref at 0x1000644f
+ClientScheme              ref at 0x10006478     <- looks up a DIFFERENT scheme
+Main.Menu.X               ref at 0x100066ab
+Main.Menu.Y               ref at 0x100066dc
+Main.BottomBorder         ref at 0x1000670d
+```
+
+One function: `CBasePanel::ApplySchemeSettings` reads `MainMenu.Inset` from its
+own scheme, then fetches "ClientScheme" and reads the three `Main.*` keys from
+that. So the menu position lives in **GE:S's `resource\ClientScheme.res`**, in
+640x480 space run through `GetProportionalScaledValue`. GE:S ships 240 -- dead
+centre. `Main.Menu.Y` appears **twice** in the one `BaseSettings` block (lines
+130 and 319); KeyValues takes the first, and the launcher sets both so they
+cannot disagree.
+
+Geometry, measured off a headset screenshot rather than guessed: ten rows at
+~23 px pitch on a panel ~1067 px tall = the list spans ~21.6% of screen height,
+starting at 50%. The logo starts at 63.5% of the artwork (found by counting
+bright, highly saturated pixels per row). 115 puts the list at 24%..46%.
+
+That measurement is worth repeating rather than eyeballing: predicting the
+current layout from `Main.Menu.Y = 240` and the measured row pitch reproduced
+the screenshot, which is what made it safe to change a value that cannot be
+tested without putting the headset on.
+
+ClientScheme.res is **patched, not replaced** -- 1800 lines of HUD styling where
+only two numbers are ours -- and the patch is always applied to the pristine
+`.gesvr-orig`, never to an already-patched file, so `$menuY` stays re-tunable.
+
 **Bug worth remembering.** The backup test started as "back up if there is no
 backup yet". `goodhead_title.mp3` has no original, so on the *second* launch
 that test was still true and the launcher saved OUR OWN mp3 as the "original" --
