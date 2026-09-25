@@ -2,7 +2,7 @@
 
 **[GoldenEye: Source](https://www.geshl2.com/)** — the fan-made Source remake of GoldenEye 007's multiplayer — played in a SteamVR headset. Full 6DoF stereo, the gun in your hand, bullets down the barrel, and a Q-branch watch on your wrist. Online and with bots, on any server, alongside flat players.
 
-It installs as a `d3d9.dll` next to the game (DXVK plus the VR code, in the style of [L4D2VR](https://github.com/sd805/l4d2vr)). **Nothing in GoldenEye: Source is modified**, and the launcher never overwrites your settings.
+It installs as a `d3d9.dll` next to the game (DXVK plus the VR code, in the style of [L4D2VR](https://github.com/sd805/l4d2vr)). **Nothing in GoldenEye: Source is deleted or patched.** The launcher replaces four of its files — the menu list, the two menu background textures and the menu playlist — and keeps the untouched original of each one beside it as `.gesvr-orig`, so it all goes back. Your own settings are never overwritten.
 
 ---
 
@@ -156,6 +156,7 @@ Reinstalling into the *same* folder does not fix it. Your GE:S install and your 
 ## Good to know
 
 * **Multiplayer works normally.** Aiming goes through the game's own input, so free aim and face aim work on any server, including ones that have never heard of this mod, and flat players can play alongside you.
+* **The main menu gets the GoodHead splash and title track.** GE:S's nine menu tunes and its own artwork are kept as `.gesvr-orig` files next to the ones we install. To go back to them, open `Launch-GESVR.ps1`, change `$goodheadMenu = $true` to `$false`, and run the launcher once — it restores the originals exactly and removes our track.
 * **The mod changes a few GE:S settings** and the game saves them in its own config: fast weapon switching, the standard death camera, and — while the watch is on — the round timer, ammo count, weapon list and kill feed come off the game's HUD, because the watch shows them. To go back for flat play, change them in GE:S's options, or paste into its console:
   ```
   hud_fastswitch 0; ge_fp_ragdoll 1; cl_ge_show_timer 1; cl_ge_show_ammocount 1; cl_ge_hud_noswitchlist 0; cl_ge_drawkillfeed 1

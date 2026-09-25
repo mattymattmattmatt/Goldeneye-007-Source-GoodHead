@@ -273,6 +273,82 @@ if (Test-Path $gameMenu) {
     }
 }
 
+# --- GoodHead main menu -----------------------------------------------------
+# The splash behind the menu and the track that plays over it.
+#
+# The background is not ours to name: the engine hard-codes it. engine.dll holds
+# the literal strings "materials/console/background01.vtf" and
+# "materials/console/background01_widescreen.vtf" and uses them whenever
+# scripts\ChapterBackgrounds.txt is absent, which it is in GE:S. So the only way
+# in is to be those two files. Both are VTF 7.2 DXT1 with a DXT1 thumbnail and
+# come out the same byte length as the originals -- see tools\Make-MenuAssets.py,
+# which also explains why the widescreen one is 2048x1024 rather than 16:9.
+#
+# The music is GE:S's own system, not the engine's: its client.dll reads
+# "scripts/music/level_music_%s" and plays one entry from the list at random, so
+# _menu is the menu playlist. (The engine's own menu music never fires here --
+# gameui.dll globs sound/ui/gamestartup*.mp3 and GE:S ships only a .wav there.)
+#
+# Every GE:S file this replaces is copied to <name>.gesvr-orig first. Set
+# $goodheadMenu to $false and run the launcher once to put GE:S back exactly as
+# it was; files of ours that had no original are removed, and only when they
+# still match ours byte for byte.
+$goodheadMenu = $true
+
+$menuSrc = Join-Path $dist "menu"
+$menuSkin = @(
+    @{ src = "background01.vtf";            dest = "materials\console\background01.vtf" },
+    @{ src = "background01_widescreen.vtf"; dest = "materials\console\background01_widescreen.vtf" },
+    @{ src = "level_music__menu.txt";       dest = "scripts\music\level_music__menu.txt" },
+    @{ src = "goodhead_title.mp3";          dest = "sound\music\goodhead_title.mp3" }
+)
+function Same-File([string]$a, [string]$b) {
+    if (-not (Test-Path $a) -or -not (Test-Path $b)) { return $false }
+    return (Get-FileHash $a -Algorithm SHA1).Hash -eq (Get-FileHash $b -Algorithm SHA1).Hash
+}
+if (Test-Path $menuSrc) {
+    $skinned = 0
+    foreach ($item in $menuSkin) {
+        $src = Join-Path $menuSrc $item.src
+        $dest = Join-Path $ges $item.dest
+        $orig = "$dest.gesvr-orig"
+        if ($goodheadMenu) {
+            if (-not (Test-Path $src)) { continue }
+            # Keep GE:S's file the first time we stand in for it. Never back up
+            # a file that is already ours: goodhead_title.mp3 has no original,
+            # so on the second launch the plain "no backup yet" test happily
+            # saved our own mp3 as the "original" and the restore below then had
+            # something to put back and left the track installed for good.
+            if ((Test-Path $dest) -and -not (Test-Path $orig) -and -not (Same-File $src $dest)) {
+                Copy-Item $dest $orig -Force
+            }
+            if (-not (Same-File $src $dest)) {
+                New-Item -ItemType Directory -Force -Path (Split-Path $dest) | Out-Null
+                Copy-Item $src $dest -Force
+                $skinned++
+            }
+        } else {
+            if (Test-Path $orig) {
+                Copy-Item $orig $dest -Force
+                Remove-Item $orig -Force
+                $skinned++
+            } elseif (Same-File $src $dest) {
+                # No original means we added this file. Removing it is only safe
+                # while it is still ours, so the hash has to match.
+                Remove-Item $dest -Force
+                $skinned++
+            }
+        }
+    }
+    if ($skinned -gt 0) {
+        if ($goodheadMenu) {
+            Write-Host "Installed the GoodHead menu splash and title music"
+        } else {
+            Write-Host "Restored the original GE:S menu splash and music"
+        }
+    }
+}
+
 # --- Render resolution ------------------------------------------------------
 # EVERYTHING the headset sees is captured from this window, so this is the real
 # resolution control -- not any setting inside the game. At 1280x720 each eye was

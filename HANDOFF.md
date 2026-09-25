@@ -1,7 +1,80 @@
 # GESVR — GoldenEye: Source VR — Handoff
 
-Last updated: **2026-09-24**, after the full audit (below) and the "SteamStartup() failed" investigation.
+Last updated: **2026-09-25**, after v1.0 and the main-menu skin (below).
 Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in Theater".
+
+---
+
+## SKINNING THE MAIN MENU: BACKGROUND AND MUSIC (2026-09-25)
+
+Matty wanted the GoodHead key art behind the menu and his own title track over
+it. Both are GE:S files, so the launcher replaces them and keeps the originals.
+
+**The background name is the engine's, not the mod's.** Strings in
+`Source SDK Base 2007\bin\engine.dll`:
+
+```
+materials/console/%s.vtf
+materials/console/%s_widescreen.vtf
+materials/console/background01.vtf
+materials/console/background01_widescreen.vtf
+scripts/ChapterBackgrounds.txt
+```
+
+`%s` comes from `ChapterBackgrounds.txt`. GE:S does not ship that file, so the
+engine falls back to the built-in `background01`, and the only way in is to BE
+those two files. Not the VMTs beside them -- the engine names the `.vtf`
+directly, so repointing `$basetexture` at a new texture is not enough.
+
+**The VTF shape that works.** Both GE:S originals are VTF 7.2, DXT1, one mip,
+flags `0x300` (`NOMIP|NOLOD`), with a DXT1 thumbnail, 80-byte header:
+
+```
+background01.vtf             1024x1024  thumb 16x16   80 + 128 + 524288 =  524496 bytes
+background01_widescreen.vtf  2048x1024  thumb 16x8    80 +  64 + 1048576 = 1048720 bytes
+```
+
+`tools\Make-MenuAssets.py` writes exactly that, and the generated files come out
+at those same two byte counts -- a free structural check that the header,
+thumbnail and mip data all landed where the engine expects. Header fields were
+verified field by field against the shipped files; only reflectivity differs.
+
+The encoder is ours (numpy): principal-axis endpoints per 4x4 block, then two
+least-squares refits against the indices they produced. 35-37 dB PSNR on this
+artwork. Do not be tempted by an uncompressed format here -- BGR888 at 2048x1024
+is 6 MB of a 2 GB address space that already crashes on map load.
+
+**ASPECT: the texture has to be pre-distorted.** The engine stretches the
+texture over the whole screen, so a 2048x1024 (2.00) texture on a 16:9 (1.778)
+screen is squeezed horizontally by 0.889. Feed it a 16:9 picture stretched by
+1.125 and it comes out right. Same reason the 4:3 file is a square: a 4:3 centre
+crop squashed into 1024x1024, which the 1.333 stretch undoes. Get this backwards
+and Brosnan is 12% too wide.
+
+**The music is GE:S's, not the engine's.** `gameui.dll` globs
+`sound/ui/gamestartup*.mp3`, and GE:S ships only `gamestartup1.wav` there (1.2 KB
+of silence), so the engine's menu music never fires. GE:S's own `client.dll`
+holds `scripts/music/level_music_%s`, reads the list and plays one entry at
+random -- so `scripts\music\level_music__menu.txt` is the menu playlist. Nine
+GoldenEye tracks by default; we replace the list with one file.
+
+**Backups.** Every replaced file is copied to `<name>.gesvr-orig` first, and
+`$goodheadMenu = $false` in the launcher restores them and deletes the files we
+added. Tested: three installs then two restores leaves the three originals
+byte-identical with nothing of ours left behind.
+
+**Bug worth remembering.** The backup test started as "back up if there is no
+backup yet". `goodhead_title.mp3` has no original, so on the *second* launch
+that test was still true and the launcher saved OUR OWN mp3 as the "original" --
+after which restore had something to put back and left the track installed for
+good. The condition also has to check that the destination is not already ours:
+
+```powershell
+if ((Test-Path $dest) -and -not (Test-Path $orig) -and -not (Same-File $src $dest))
+```
+
+Any "snapshot the original once" scheme that can be handed a file it already
+wrote has this hole. Run the installer twice in the test, not once.
 
 ---
 

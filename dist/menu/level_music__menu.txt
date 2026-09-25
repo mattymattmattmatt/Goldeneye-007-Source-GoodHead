@@ -1,0 +1,10 @@
+// GoodHead main-menu music.
+//
+// GE:S reads scripts/music/level_music_<name>.txt and plays one entry at
+// random, so _menu is the main menu. The original list of nine GoldenEye
+// tracks is kept beside this file as level_music__menu.txt.gesvr-orig and is
+// put back if the launcher is run with $goodheadMenu set to $false.
+"music"
+{
+	"file"	"music/goodhead_title.mp3"
+}
