@@ -42,6 +42,40 @@ the map."
   Medium textures; a 1920x1080 window (the eye surfaces, backbuffer and
   captures are full window size).
 
+## THE SETTINGS PANEL TAKES THE TRIGGER AND NOTHING ELSE (2026-09-25)
+
+Matty, on the v1.0 README: "it only opens with the clicking the menu option
+with the trigger and then trigger to do anything and clicking the close button
+eith the trigger. the other buttons do nothing."
+
+So, tested in a headset at last: **every action-driven shortcut on the VR
+settings panel is dead.** X does not open it, B / Y / left X do not close it.
+Only the SteamVR laser works -- opening it from the GameMenu.res entry, moving
+between rows, and the Close button.
+
+This confirms the hypothesis from 2026-09-23 (the session that got stuck with
+the game menu over the Close button) and kills the fix that was written for it:
+while SteamVR's laser is driving an interactive overlay it takes that hand's
+input, so `PressedDigitalAction` reads inside VRSettings::Frame never fire.
+The trigger works because SteamVR delivers it to the overlay itself as
+VREvent_MouseButtonDown, not through the action system at all.
+
+`VR::LegacyMenuButtonDown` (GetControllerState, k_EButton_ApplicationMenu) was
+added as a way round that and **does not work either** -- SteamVR's legacy
+input is evidently not answering for this device. It is left in place, harmless
+and doing nothing, rather than removed on one negative result.
+
+The panel's own footer used to read "Changes apply and save immediately.
+B / Y / left X: close". That line was written from the code, never from a
+headset, and it was a lie in the player's face. It now reads only the first
+sentence. The README no longer claims X opens it. **Do not put a button hint
+back on that panel without pressing the button in a headset first.**
+
+If someone wants the shortcuts to work, the lead is the overlay event queue:
+the panel already reads VREvent_MouseButtonDown from it, and whatever else
+SteamVR delivers there is the only input that reaches an overlay with the laser
+on it.
+
 ## THROWING KNIVES WENT INTO THE THROWER (2026-09-24)
 
 Matty: "with manual throwing knives, i cant throw them properly they look like

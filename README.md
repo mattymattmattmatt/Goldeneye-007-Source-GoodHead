@@ -47,7 +47,7 @@ Defaults for Quest/Touch. Rebind anything in SteamVR > Settings > Controllers > 
 | Scoreboard | Hold X |
 | Pause menu | Y |
 | Recentre your view | Left stick click |
-| Open VR Settings | X while any menu is open |
+| Open VR Settings | Click **VR Settings** in the main or pause menu |
 | Click in menus | Point with your right hand, right trigger |
 | Look at the watch | Turn your left wrist towards you |
 
@@ -63,7 +63,7 @@ On Index controllers the left A and B are scoreboard and pause.
 
 ## The VR menu
 
-Open it with **X while any menu is open**, or pick **VR Settings** in the main or pause menu. Point with your right hand and click with the trigger. Close it with **B**, **Y**, or **X** again. Everything applies and saves the moment you change it.
+Bring up the game's menu (**Y** for pause), then click **VR Settings** in it. The panel is driven entirely by pointing with your right hand and clicking the trigger, including the **Close** button at the bottom -- the controller buttons do nothing while it is open, because SteamVR gives your hand to the panel while you are pointing at it. Everything applies and saves the moment you change it.
 
 ### Comfort
 Smooth or snap turning, turn speed and snap angle, a **height offset** if you sit or if you feel too short, dominant hand for left-handers, and **world scale** — lower makes you feel taller and the world smaller; 40 is life size.

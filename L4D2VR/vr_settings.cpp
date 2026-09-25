@@ -578,7 +578,13 @@ static void DrawPanel(Canvas &c, const Fonts &f, int tab, int hover)
     }
 
     c.Fill({ 0, kFooterTop - 8, W, kFooterTop - 7 }, C_LINE);
-    c.Text(f.hint, C_HINT, L"Changes apply and save immediately.   B / Y / left X: close",
+    // It used to promise "B / Y / left X: close". None of them work: while
+    // SteamVR's laser is driving an interactive overlay it takes that hand's
+    // input, so the action reads in Frame() never fire, and the device-level
+    // read added for B does not reach us either. The trigger works because
+    // SteamVR delivers it to the overlay itself as a mouse event. Do not put a
+    // button hint back here without pressing it in a headset first.
+    c.Text(f.hint, C_HINT, L"Changes apply and save immediately.",
          { kMargin, kFooterTop, W - kMargin - 220, kFooterTop + 62 }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
     const RECT close = FindRect(hits, ID_CLOSE);
     c.Round(close, 12, hover == ID_CLOSE ? RGB(234, 200, 96) : C_GOLD);
