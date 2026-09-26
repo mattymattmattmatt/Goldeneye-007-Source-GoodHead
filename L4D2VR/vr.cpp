@@ -38,6 +38,61 @@ namespace {
     }
 }
 
+// --- Frame phase accounting -------------------------------------------------
+// PACING says a frame was late. This says which PART of it was late. One frame,
+// from D3D9DeviceEx::PresentEx, is:
+//
+//   eng   engine: end of AfterPresent -> start of the next Update. Source's own
+//         work, including BOTH stereo passes. Not ours.
+//   upd   VR::Update: overlay capture, watch, settings panel, input. Ours.
+//   pres  DXVK's swapchain Present.
+//   wait  WaitGetPoses.
+//   sub   compositor Submit for both eyes.
+//
+// READ "wait" FIRST. WaitGetPoses blocks until the compositor wants the next
+// frame, so time spent in it is headroom, not cost. A healthy wait means the
+// frame was finished early and the late frames are stalls, not load -- chasing
+// eng or upd then buys nothing. A wait near zero means we are the bottleneck
+// and whichever of the other columns is largest is where the gain is.
+//
+// Cost of measuring: five clock reads a frame, which is nanoseconds. The last
+// round of instrumentation caused the hitching it was added to find (a
+// VirtualQuery walk and 120 traces a frame), so this one stays arithmetic only.
+namespace {
+    struct PhaseAcc
+    {
+        double sum = 0.0;
+        float  worst = 0.0f;
+        int    n = 0;
+        void add(float ms)
+        {
+            if (ms < 0.0f || ms > 2000.0f)   // clock glitch or a breakpoint
+                return;
+            sum += ms;
+            ++n;
+            if (ms > worst)
+                worst = ms;
+        }
+        float mean() const { return n ? (float)(sum / n) : 0.0f; }
+        void reset() { sum = 0.0; worst = 0.0f; n = 0; }
+    };
+
+    PhaseAcc g_phEngine, g_phUpdate, g_phPresent, g_phWait, g_phSubmit;
+    vrclock::time_point g_tAfterPresentEnd{};
+    vrclock::time_point g_tUpdateEnd{};
+    bool g_haveAfterPresentEnd = false;
+    bool g_haveUpdateEnd = false;
+
+    void ResetPhases()
+    {
+        g_phEngine.reset();
+        g_phUpdate.reset();
+        g_phPresent.reset();
+        g_phWait.reset();
+        g_phSubmit.reset();
+    }
+}
+
 static int  g_theaterThrottleMs = 2000;
 static bool g_menuDriveCursor = true;
 
@@ -1207,6 +1262,10 @@ void VR::Update()
     const auto tFrameStart = vrclock::now();
     g_lastPresentMs.store(NowMs());
 
+    // Everything Source did since we last handed the frame back.
+    if (g_haveAfterPresentEnd)
+        g_phEngine.add(MsSince(g_tAfterPresentEnd, tFrameStart));
+
     // Frame pacing, summarised every 10 s instead of traced per frame: how many
     // frames, the typical gap, the worst one, and how many ran over twice the
     // budget. "Hitching" needs to be measured before it can be chased -- a few
@@ -1233,6 +1292,16 @@ void VR::Update()
             {
                 Game::logMsg("PACING %d frames in 10 s (%.1f fps), mean %.1f ms, worst %.1f ms, %d over 22 ms",
                              s_count, s_count / 10.0f, s_sum / s_count, s_worst, s_over);
+                // Read wait first -- see the note above PhaseAcc.
+                Game::logMsg("PHASE eng %.1f/%.1f  upd %.1f/%.1f  pres %.1f/%.1f  "
+                             "wait %.1f/%.1f  sub %.1f/%.1f  (mean/worst ms, n=%d, compositor n=%d)",
+                             g_phEngine.mean(), g_phEngine.worst,
+                             g_phUpdate.mean(), g_phUpdate.worst,
+                             g_phPresent.mean(), g_phPresent.worst,
+                             g_phWait.mean(), g_phWait.worst,
+                             g_phSubmit.mean(), g_phSubmit.worst,
+                             g_phEngine.n, g_phWait.n);
+                ResetPhases();
                 s_worst = s_sum = 0.0f;
                 s_count = s_over = 0;
                 s_windowStart = tFrameStart;
@@ -1321,6 +1390,9 @@ void VR::Update()
                          s_frames, MsSince(tStart, tCapture),
                          MsSince(tCapture, tPanel), MsSince(tPanel, tEnd),
                          MsSince(tStart, tEnd));
+        g_phUpdate.add(MsSince(tFrameStart, tEnd));
+        g_tUpdateEnd = tEnd;
+        g_haveUpdateEnd = true;
         // Compositor Submit is AfterPresent — never inside PresentEx.
         return;
     }
@@ -1364,11 +1436,18 @@ void VR::Update()
         VRWatch::Hide();
     }
 
+    const auto tBeforeInput = vrclock::now();
     ProcessInput();
     const auto tEnd = vrclock::now();
     if (trace)
         Game::logMsg("GAME f=%d input=%.1f TOTAL=%.1fms",
-                     s_frames, MsSince(tStart, tEnd), MsSince(tStart, tEnd));
+                     s_frames, MsSince(tBeforeInput, tEnd), MsSince(tStart, tEnd));
+
+    // Whole-frame accounting, not just this branch's tStart: the PHASE columns
+    // have to add up to the frame time or they cannot be reasoned about.
+    g_phUpdate.add(MsSince(tFrameStart, tEnd));
+    g_tUpdateEnd = tEnd;
+    g_haveUpdateEnd = true;
 }
 
 static bool ReadablePtr(const void *p, size_t bytes);
@@ -1464,6 +1543,9 @@ void VR::AfterPresent()
     const bool haveEyes = TextureReady(m_VKLeftEye) && TextureReady(m_VKRightEye);
     const bool clicking = g_pendMouseDown || g_pendMouseUp;
     const auto t0 = vrclock::now();
+    // DXVK's swapchain Present sits between the end of Update and here.
+    if (g_haveUpdateEnd)
+        g_phPresent.add(MsSince(g_tUpdateEnd, t0));
     vr::EVRCompositorError werr = vr::VRCompositorError_None;
 
     // Clicks must not share a callstack with WaitGetPoses/Submit. Create
@@ -1527,7 +1609,11 @@ void VR::AfterPresent()
     if (!VRSubmit::g_useThread.load() && vr::VRCompositor() && inMap && !pauseUi)
     {
         auto *comp = vr::VRCompositor();
+        const auto tWait0 = vrclock::now();
         werr = comp->WaitGetPoses(m_Poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+        const auto tWait1 = vrclock::now();
+        // Headroom, not cost: this blocks until the compositor wants the frame.
+        g_phWait.add(MsSince(tWait0, tWait1));
         GetPoses();
 
         const vr::VRTextureBounds_t full = { 0.0f, 0.0f, 1.0f, 1.0f };
@@ -1618,6 +1704,8 @@ void VR::AfterPresent()
         if (g_D3DVR9)
             g_D3DVR9->UnlockSubmission();
 
+        g_phSubmit.add(MsSince(tWait1, vrclock::now()));
+
         if (submitted)
         {
             const int n = VRSubmit::g_frames.fetch_add(1) + 1;
@@ -1634,7 +1722,11 @@ void VR::AfterPresent()
     if (IsMenuMode() && m_Overlay && m_MainMenuHandle && TextureReady(m_VKHUD))
         SetOverlayTextureLocked(m_Overlay, m_MainMenuHandle, &m_VKHUD.m_VRTexture);
 
-    const float ms = MsSince(t0, vrclock::now());
+    const auto tEnd = vrclock::now();
+    g_tAfterPresentEnd = tEnd;
+    g_haveAfterPresentEnd = true;
+
+    const float ms = MsSince(t0, tEnd);
     static int s_n = 0;
     if ((++s_n) <= 8 || (s_n % 90) == 1 || ms > 50.0f)
         Game::logMsg("AfterPresent tick #%d %.1fms inmap=%d waitErr=%d eyes=%d click=%d",
