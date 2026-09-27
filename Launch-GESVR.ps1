@@ -427,8 +427,29 @@ if (Test-Path $clientScheme) {
 # Set $gesForceGraphics = $true to re-enable the overrides below.
 $gesForceGraphics = $false
 $gesPicmip = 0      # 0 = high, 1 = medium, 2 = low. -1 is beyond High: avoid.
-$gesAA     = 4      # MSAA samples.
 $gesAniso  = 8      # anisotropic filtering.
+
+# Anti-aliasing, on its own, because it is the one of the three worth having and
+# it must NOT drag mat_picmip along with it.
+#
+#   0  leave the game's own Anti-Aliasing setting alone (default)
+#   2  2x MSAA
+#   4  4x MSAA
+#
+# Set it here rather than in GE:S's video options. Changing it in-game restarts
+# the material system mid-session, which re-creates every render target while
+# the mod is holding surfaces of its own; setting the cvar before the device
+# exists avoids all of that.
+#
+# The cost is memory, not frames. Measured 2026-09-27, in-map frames were 4-6 ms
+# of real work against a 13.9 ms budget at 72 Hz, with 8-9 ms sitting idle in
+# WaitGetPoses -- there is room for the GPU work. What there is not much room for
+# is address space: at 2560x1440 the primary colour + depth pair costs 28 MB with
+# no AA, 56 MB at 2x and 113 MB at 4x, and the peak that session was 1802 of
+# 2047 MB with a largest free block of 135 MB. So 2 is the safe try and 4 is the
+# one that may well put map loads back over the edge. If loads start failing
+# again, this is the first thing to put back to 0.
+$gesAA = 0
 
 # Window size: the largest 16:9 that fits the primary desktop, capped at
 # 2560x1440. On a 1080p desktop that is exactly 1920x1080, as before. It only
@@ -473,7 +494,13 @@ if ($gesResolution -match '^(\d+)x(\d+)$') {
 $vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +crosshair 1 +mat_queue_mode 0 +mat_vsync 0 +mat_grain_scale_override 0 +engine_no_focus_sleep 0 +snd_mute_losefocus 0 -width $gesWidth -height $gesHeight"
 
 if ($gesForceGraphics) {
-    $vrArgs += " +mat_antialias $gesAA +mat_forceaniso $gesAniso +mat_picmip $gesPicmip"
+    $vrArgs += " +mat_forceaniso $gesAniso +mat_picmip $gesPicmip"
+}
+# Independent of the block above: 0 means "say nothing", so the game's own
+# Anti-Aliasing setting stands.
+if ($gesAA -gt 0) {
+    $vrArgs += " +mat_antialias $gesAA"
+    Write-Host "Forcing ${gesAA}x MSAA (set `$gesAA = 0 in this script to stop)"
 }
 
 # Must go through Steam so SDK 2007 mounts its VPKs (startup_loading.vtf lives there).
