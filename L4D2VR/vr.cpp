@@ -367,6 +367,15 @@ static unsigned LargestFreeBlockMB()
     return (unsigned)(hole >> 20);
 }
 
+namespace GESVRMem
+{
+    std::atomic<unsigned> g_usedMB{ 0 };
+    std::atomic<unsigned> g_totalMB{ 0 };
+    std::atomic<unsigned> g_holeMB{ 0 };
+    std::atomic<unsigned> g_peakMB{ 0 };
+    std::atomic<bool>     g_wantHole{ false };
+}
+
 static void GESVR_WatchdogThread()
 {
     int reported = 0;
@@ -383,6 +392,15 @@ static void GESVR_WatchdogThread()
             VirtualUsed(used, total);
             if (used > memPeak)
                 memPeak = used;
+
+            // Publish for the settings panel's meter. The hole walk only runs
+            // while the panel asks for it -- see the note in vr.h.
+            GESVRMem::g_usedMB.store(used);
+            GESVRMem::g_totalMB.store(total);
+            GESVRMem::g_peakMB.store(memPeak);
+            if (GESVRMem::g_wantHole.load())
+                GESVRMem::g_holeMB.store(LargestFreeBlockMB());
+
             if (used + 256 < memLogged)
                 memLogged = used;
             if (used >= memLogged + 64 && memLines < 300)

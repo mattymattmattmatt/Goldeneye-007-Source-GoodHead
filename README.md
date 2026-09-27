@@ -84,7 +84,9 @@ The **reticle** on or off, with five styles (dot, cross, ring, ring + dot, and *
 The **wrist watch**, and whether it shows always or only when you look at it. **Watch notices** put kills, round start and round end on the watch face instead of the HUD. **Watch on model** sits the watch where the grenade hand's own watch is. **Menu distance** and **menu size** are independent: distance moves the game's menus deeper without resizing them. **Game HUD** — off, only when hurt, or always.
 
 ### Graphics
-**Texture filtering** (16× by default) and **bloom**.
+**Texture filtering** (16× by default) and **bloom**, plus where the two settings that aren't ours actually live — anti-aliasing is `$gesAA` in `Launch-GESVR.ps1`, texture detail is GE:S's own option.
+
+Underneath, a live **address space** meter, which is the number that decides whether your next map loads. GE:S is 32-bit, so 2047 MB is the whole world — game, map, every texture, and the copies the graphics layer keeps. It goes **green** with room to spare, **amber** once a map is loaded and a second one might not fit, and **red** past the point where loads start failing. The **largest free block** below it matters just as much: a texture needs one unbroken piece, and a load can fail with plenty free in total but nowhere to put it. Both update twice a second while the tab is open, so you can watch a map load climb.
 
 Everything here is also in `…\Source SDK Base 2007\bin\VR\config.txt`, one setting per line with a comment explaining each. The mod notices when that file is saved, **even mid-game**, so you can tune it on a second monitor while wearing the headset.
 

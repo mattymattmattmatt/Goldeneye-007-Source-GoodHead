@@ -38,6 +38,43 @@ Five clock reads a frame, arithmetic only. The previous round of instrumentation
 120 traces a frame). Do not add anything to this path that allocates, logs per
 frame, or takes a lock.
 
+### The Graphics tab now shows the address space live
+
+`Kind::Meter` in vr_settings.cpp: a read-only row with a bar, its own live
+caption, and a colour band. `Layout` gives it no hit rects, so the laser passes
+over it, and `max = 0` draws no bar at all, which is how the two "this setting
+lives elsewhere" lines are done.
+
+The bands are measured, not invented. Loads that SUCCEEDED sat at 1802 and 1872
+MB; the two that CRASHED were at 1968 and 2011, with largest free blocks of 33
+and 24 MB.
+
+```
+Address space       green < 1500    amber < 1850    red >= 1850
+Largest free block  red < 64        amber < 192     green >= 192   (bar scaled to 512)
+```
+
+64 MB is the red line for the hole because 4x MSAA alone wants two ~59 MB
+contiguous blocks at 2560x1440.
+
+**Where the numbers come from matters.** `GESVRMem` in vr.h is published by the
+watchdog thread. `g_usedMB` is free -- the watchdog already reads
+`GlobalMemoryStatusEx` every second. `g_holeMB` is NOT: `LargestFreeBlockMB()`
+walks the whole address space with `VirtualQuery`, which takes the process
+address-space lock, and **putting that on a timer is what made the game hitch
+once already**. So it only runs while `g_wantHole` is set, which `Frame()` does
+only while the panel is open on a tab that has a meter -- the player is standing
+in a menu, where a stall costs nothing. `Close()` clears it.
+
+The panel is dirty-driven and nothing the player does changes a meter, so
+`Frame()` also calls `MarkDirty()` twice a second while such a tab is showing.
+
+Anti-aliasing and texture detail are shown as text, not controls, on purpose:
+the mod has **no cvar read path** -- only `ClientCmd_Unrestricted` -- so a
+control could set them but could never show their real value, and changing
+either mid-session restarts the material system, which is what crashes map
+loads after the player touches them.
+
 ### Two attempts at the 2 GB wall, neither yet confirmed
 
 **1. Tell the game it has less video memory.** `d3d9.maxAvailableMemory = 512`

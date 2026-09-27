@@ -113,7 +113,20 @@ bool ConsumeOpenRequest()
 // ---------------------------------------------------------------------------
 // Model
 // ---------------------------------------------------------------------------
-enum class Kind { Choice, Toggle, Button };
+enum class Kind { Choice, Toggle, Button, Meter };
+
+// A Meter is read-only: a bar with a colour band and its own caption. Nothing
+// to click, so Layout gives it no hit rects and the laser passes over it.
+enum Band { BAND_GOOD = 0, BAND_TIGHT = 1, BAND_BAD = 2, BAND_INFO = 3 };
+
+struct MeterInfo
+{
+    int value = 0;
+    int max = 1;
+    std::wstring text;      // the number, drawn over the bar
+    std::wstring note;      // what the colour means right now
+    int band = BAND_GOOD;
+};
 
 struct Item
 {
@@ -125,6 +138,7 @@ struct Item
     std::function<int()> get;          // current choice index
     std::function<void(int)> set;      // apply + save (render thread)
     std::function<void()> action;      // Button only
+    std::function<MeterInfo()> meter;  // Meter only
 };
 
 struct Tab
@@ -247,10 +261,27 @@ static Item Named(const wchar_t *label, const wchar_t *hint, std::vector<std::ws
     return it;
 }
 
+static Item Meter(const wchar_t *label, std::function<MeterInfo()> read)
+{
+    Item it;
+    it.label = label;
+    it.kind = Kind::Meter;
+    it.meter = read;
+    return it;
+}
+
 static std::wstring Fmt(const wchar_t *f, float v)
 {
     wchar_t buf[64];
     swprintf(buf, 64, f, v);
+    return buf;
+}
+
+// Same idea for the meters, which format integers and need two of them.
+static std::wstring FmtN(const wchar_t *f, unsigned a, unsigned b = 0)
+{
+    wchar_t buf[96];
+    swprintf(buf, 96, f, a, b);
     return buf;
 }
 
@@ -373,6 +404,57 @@ static void BuildModel(VR *vr)
         [vr]() { return vr->m_Bloom ? 1 : 0; },
         [vr](int i) { vr->m_Bloom = (i != 0); vr->m_GraphicsDirty = true; },
         "Bloom", { "false", "true" }));
+
+    // The two that matter most for sharpness are not ours to set: the mod has
+    // no cvar READ path, only ClientCmd_Unrestricted, so a control here could
+    // change them but never show their real value -- and changing either one
+    // mid-session restarts the material system, which is what crashes map loads
+    // after the player touches them. Say where they live instead of pretending.
+    graphics.items.push_back(Meter(L"Anti-aliasing", []() {
+        MeterInfo m; m.max = 0; m.band = BAND_INFO;
+        m.note = L"Set $gesAA in Launch-GESVR.ps1, not in the game's options.";
+        return m;
+    }));
+    graphics.items.push_back(Meter(L"Texture detail", []() {
+        MeterInfo m; m.max = 0; m.band = BAND_INFO;
+        m.note = L"GE:S Options > Video > Advanced. Medium is the safe setting.";
+        return m;
+    }));
+
+    // Live address space. hl2.exe is 32-bit, so this 2047 MB is the whole
+    // world: the game, the map, every texture and everything the graphics
+    // layer keeps while handing them to the card. The bands are not guesses --
+    // they are where this build has been measured to live and die. Loads that
+    // succeeded sat at 1802 and 1872 MB; the two that crashed were at 1968 and
+    // 2011, with the largest free block down to 33 and 24 MB.
+    graphics.items.push_back(Meter(L"Address space", []() {
+        MeterInfo m;
+        const unsigned used = GESVRMem::g_usedMB.load();
+        const unsigned total = GESVRMem::g_totalMB.load();
+        m.value = (int)used;
+        m.max = (int)(total ? total : 2047);
+        m.text = FmtN(L"%u of %u MB", used, total);
+        if (used >= 1850)      { m.band = BAND_BAD;   m.note = L"Danger. Loads fail near 1970 MB -- quit and relaunch."; }
+        else if (used >= 1500) { m.band = BAND_TIGHT; m.note = L"Normal for a loaded map. A second one may not fit."; }
+        else                   { m.band = BAND_GOOD;  m.note = L"Room to spare."; }
+        return m;
+    }));
+
+    // The total above is only half of it: a texture needs ONE unbroken block,
+    // and both crashes had space left in total but nowhere to put anything.
+    // Scaled to 512 MB because past that the number stops mattering.
+    graphics.items.push_back(Meter(L"Largest free block", []() {
+        MeterInfo m;
+        const unsigned hole = GESVRMem::g_holeMB.load();
+        m.value = (int)(hole > 512 ? 512 : hole);
+        m.max = 512;
+        m.text = hole ? FmtN(L"%u MB in one piece", hole) : std::wstring(L"measuring...");
+        if (!hole)             { m.band = BAND_INFO;  m.note = L"Sampled once a second while this panel is open."; }
+        else if (hole < 64)    { m.band = BAND_BAD;   m.note = L"Too broken up for a map's big textures."; }
+        else if (hole < 192)   { m.band = BAND_TIGHT; m.note = L"Enough to load. 4x MSAA alone wants 59 MB of it."; }
+        else                   { m.band = BAND_GOOD;  m.note = L"Plenty for a map load."; }
+        return m;
+    }));
     g_tabs.push_back(graphics);
 }
 
@@ -436,6 +518,8 @@ static void Layout(int tab, std::vector<Hit> &out)
         case Kind::Button:
             out.push_back({ base + PART_MAIN, { kCtrlR - 300, ct, kCtrlR, cb } });
             break;
+        case Kind::Meter:
+            break;   // read-only: nothing for the laser to land on
         }
     }
     out.push_back({ ID_CLOSE, { W - kMargin - 200, kFooterTop + 4, W - kMargin, kFooterTop + 58 } });
@@ -464,6 +548,20 @@ static const COLORREF C_HINT    = RGB(140, 146, 158);
 static const COLORREF C_CTRL    = RGB(38, 42, 50);
 static const COLORREF C_HOVER   = RGB(62, 68, 82);
 static const COLORREF C_LINE    = RGB(34, 37, 44);
+// Meter bands. Kept distinguishable by brightness as well as hue, so the bar
+// still reads as "filling up" to anyone who cannot separate the red from the
+// green.
+static const COLORREF C_GOOD    = RGB(104, 190, 108);
+static const COLORREF C_TIGHT   = RGB(226, 172, 62);
+static const COLORREF C_BAD     = RGB(214, 78, 70);
+
+static COLORREF BandColor(int band)
+{
+    return band == BAND_BAD   ? C_BAD
+         : band == BAND_TIGHT ? C_TIGHT
+         : band == BAND_INFO  ? C_HINT
+                              : C_GOOD;
+}
 static const COLORREF C_OFF     = RGB(70, 74, 84);
 
 struct Fonts { HFONT title, tab, label, hint, value; };
@@ -519,14 +617,22 @@ static void DrawPanel(Canvas &c, const Fonts &f, int tab, int hover)
         const Item &it = items[r];
         const int top = kRowTop + r * pitch;
         const int base = ID_ROW + r * 4;
-        const bool hasHint = !it.hint.empty();
+        // A meter's second line is live, so it replaces the static hint rather
+        // than competing with it for the one line there is room for.
+        MeterInfo mi;
+        const bool isMeter = (it.kind == Kind::Meter) && it.meter;
+        if (isMeter)
+            mi = it.meter();
+        const std::wstring &hintText = isMeter ? mi.note : it.hint;
+        const bool hasHint = !hintText.empty();
         // Label over hint, the pair centred in the row (14 and 58 at full pitch).
         const int pad = (pitch - 76) / 2 > 2 ? (pitch - 76) / 2 : 2;
         c.Text(f.label, C_TEXT, it.label,
              { kMargin, top + (hasHint ? pad : 0), kCtrlL - 20, hasHint ? top + pad + 44 : top + pitch },
              DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
         if (hasHint)
-            c.Text(f.hint, C_HINT, it.hint, { kMargin, top + pad + 44, kCtrlL - 20, top + pad + 76 },
+            c.Text(f.hint, isMeter ? BandColor(mi.band) : C_HINT, hintText,
+                 { kMargin, top + pad + 44, kCtrlL - 20, top + pad + 76 },
                  DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 
         const int cur = it.get ? it.get() : 0;
@@ -570,6 +676,26 @@ static void DrawPanel(Canvas &c, const Fonts &f, int tab, int hover)
             c.Round({ m.left, m.bottom - 4, m.right, m.bottom }, 2, C_GOLD);
             c.Text(f.value, C_TEXT, it.names.empty() ? it.label : it.names[0], m,
                  DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+            break;
+        }
+        case Kind::Meter:
+        {
+            const int bh = 30;
+            const int bt = top + (pitch - bh) / 2, bb = bt + bh;
+            const RECT track = { kCtrlL, bt, kCtrlR, bb };
+            if (mi.max <= 0)
+                break;              // max 0 means a plain info line, no bar
+            c.Round(track, bh / 2, C_CTRL);
+            if (mi.value > 0)
+            {
+                int w = (int)((long long)(kCtrlR - kCtrlL) * mi.value / mi.max);
+                if (w > kCtrlR - kCtrlL) w = kCtrlR - kCtrlL;
+                if (w < bh) w = bh;                  // a sliver still reads as a bar
+                c.Round({ kCtrlL, bt, kCtrlL + w, bb }, bh / 2, BandColor(mi.band));
+            }
+            // Over the bar, not beside it: at this pitch there is no room for
+            // both, and the number is what the colour is a shorthand for.
+            c.Text(f.hint, C_TEXT, mi.text, track, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             break;
         }
         }
@@ -774,6 +900,8 @@ void Close()
 {
     if (!g_open.exchange(false))
         return;
+    // Stop the watchdog walking the address space now nobody is watching it.
+    GESVRMem::g_wantHole.store(false);
     if (g_vr && g_vr->m_Overlay)
     {
         g_panel.Hide(g_vr->m_Overlay);
@@ -900,6 +1028,32 @@ void Frame()
     g_vr->EffectiveMenuGeometry(menuW, menuD);
     if (!g_placed || fabsf(menuD - g_placedMenuDist) > 0.01f)
         Place();
+
+    // A meter has to redraw on its own -- nothing the player does changes it.
+    // Twice a second: fast enough to watch a map load climb, slow enough that
+    // the PNG write and overlay reload are nothing. It also tells the watchdog
+    // to start walking the address space for the largest free block, which is
+    // the expensive half and is wanted only while someone is looking at it.
+    {
+        int tab = 0;
+        { std::lock_guard<std::mutex> lk(g_mtx); tab = g_tab; }
+        bool live = false;
+        if (tab >= 0 && tab < (int)g_tabs.size())
+            for (const Item &it : g_tabs[tab].items)
+                if (it.kind == Kind::Meter && it.meter)
+                    { live = true; break; }
+        GESVRMem::g_wantHole.store(live);
+        if (live)
+        {
+            static ULONGLONG s_lastTick = 0;
+            const ULONGLONG now = GetTickCount64();
+            if (now - s_lastTick >= 500)
+            {
+                s_lastTick = now;
+                MarkDirty();
+            }
+        }
+    }
 
     std::string image;
     {

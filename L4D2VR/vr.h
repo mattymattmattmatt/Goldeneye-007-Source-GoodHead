@@ -1,9 +1,30 @@
 #pragma once
 #include "openvr.h"
 #include "vector.h"
+#include <atomic>
 #include <chrono>
 
 #define MAX_STR_LEN 256
+
+// Address space, published once a second by the watchdog thread for the
+// settings panel's memory meter. This is the number that decides whether a map
+// will load: hl2.exe is 32-bit, so everything lives in 2047 MB, and loads die
+// somewhere around 1970 with the largest free block down to ~30.
+//
+// g_usedMB is free -- the watchdog already reads it every second. g_holeMB is
+// NOT: finding the largest free block walks the whole address space with
+// VirtualQuery, which takes the process address-space lock, and putting that on
+// a timer is what made the game hitch once already. So it is only sampled while
+// g_wantHole is set, which the panel does while it is open and showing the
+// meter: the player is standing still in a menu, where a stall costs nothing.
+namespace GESVRMem
+{
+    extern std::atomic<unsigned> g_usedMB;
+    extern std::atomic<unsigned> g_totalMB;
+    extern std::atomic<unsigned> g_holeMB;
+    extern std::atomic<unsigned> g_peakMB;
+    extern std::atomic<bool>     g_wantHole;
+}
 
 class Game;
 struct WatchStats;
