@@ -1573,6 +1573,7 @@ void VR::AfterPresent()
     // Log the in-map transition once: the whole map-load window used to be a
     // blind spot in the log.
     static int s_wasInMap = -1;
+    static int s_eyeReleaseIn = -1;
     if ((int)inMap != s_wasInMap)
     {
         Game::logMsg("=== inMap %d -> %d (haveEyes=%d) ===", s_wasInMap, (int)inMap, (int)haveEyes);
@@ -1582,8 +1583,32 @@ void VR::AfterPresent()
         // (no leftover in-game tilt) and stop compositor submits -- that is
         // what deadlocked Present after the 12:09:10 disconnect click.
         if (!inMap)
+        {
             g_menuPlaced = false;
+            // Give the eye render targets back for the duration. ~30 MB of a
+            // 2 GB address space, unused outside a map, and the next map load
+            // is where that space is worth most: the log has loads dying with
+            // 75 MB free and a largest hole of 32 MB.
+            //
+            // Zero the holders NOW, so nothing downstream can hand OpenVR a
+            // handle whose image is about to go. The surfaces themselves go a
+            // few frames later, by which time the compositor has finished with
+            // the last frame it was given -- we submit nothing out of a map.
+            m_VKLeftEye = SharedTextureHolder{};
+            m_VKRightEye = SharedTextureHolder{};
+            m_VKWorld = SharedTextureHolder{};
+            // 10 frames, ~140 ms: far longer than the compositor needs to be
+            // done with the last submitted frame, and nothing next to the
+            // seconds a map load takes, so the space is back long before it
+            // is wanted.
+            s_eyeReleaseIn = 10;
+        }
+        else
+            s_eyeReleaseIn = -1;     // back in a map before the release landed
     }
+
+    if (s_eyeReleaseIn > 0 && !inMap && --s_eyeReleaseIn == 0 && g_D3DVR9)
+        g_D3DVR9->ReleaseEyeSurfaces();
 
     // NOTE the condition: it is "have eyes", NOT "in map". Previously an in-map
     // frame with no captured eyes submitted NOTHING and never called

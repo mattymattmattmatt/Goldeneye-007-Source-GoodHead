@@ -5,6 +5,80 @@ Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in The
 
 ---
 
+## FRAME PHASES, AND TWO SHOTS AT THE MAP-LOAD WALL (2026-09-27)
+
+### The frame is pinned exactly on the deadline
+
+Ten minutes in a map, from the PACING lines of 2026-09-26:
+
+```
+mean 71.3 fps      mean frame time 13.82 ms
+Quest 3 / Link     budget at 72 Hz  13.89 ms
+1.07% of frames over 22 ms -- about one judder every 1.3 s
+```
+
+Not slow. **Pinned at 99.5% of budget**, which is a different problem: nothing
+absorbs a spike, so every small extra cost becomes a reprojected frame. That is
+the nausea, and it is why average fps looked fine.
+
+### PHASE: which part of the frame
+
+PACING now has a PHASE line beside it. From `D3D9DeviceEx::PresentEx` the frame
+is `eng -> upd -> pres -> wait -> sub`, each accumulated as mean/worst over the
+same 10 s window.
+
+**Read `wait` first.** `WaitGetPoses` blocks until the compositor wants the next
+frame, so time in it is HEADROOM, NOT COST. A healthy wait means the frame is
+already finishing early and the late ones are stalls rather than load -- tuning
+`eng` or `upd` then buys nothing at all. A wait near zero means we are the
+bottleneck and the largest other column is the target.
+
+Five clock reads a frame, arithmetic only. The previous round of instrumentation
+*caused* the hitching it was added to find (a per-second `VirtualQuery` walk and
+120 traces a frame). Do not add anything to this path that allocates, logs per
+frame, or takes a lock.
+
+### Two attempts at the 2 GB wall, neither yet confirmed
+
+**1. Tell the game it has less video memory.** `d3d9.maxAvailableMemory = 512`
+in dxvk.conf. DXVK reports 4096 MB by default; Source asks once through
+`GetAvailableTextureMem` (`D3D9DeviceEx::DetermineInitialTextureMemory`) and
+budgets from the answer, so inside a 2 GB process it is being told it has twice
+the room that exists.
+
+`d3d9.memoryTrackTest` is deliberately **off**. It makes DXVK enforce that
+number instead of merely reporting it -- `D3D9CommonTexture` throws
+"Reporting out of memory from tracking" once the budget is gone -- and Source
+has no graceful answer to a texture that will not allocate. That moves the crash
+from 2 GB to a number we invented, which is not an improvement.
+
+**2. Give the eye render targets back while out of a map.**
+`IDirect3DVR9::ReleaseEyeSurfaces()` drops `m_left`, `m_right` and `m_sbs`:
+2560x1440 A8R8G8B8 is 14.7 MB each, and they were held from the first map until
+the process exited even though nothing uses them outside a map. The log has
+loads dying with 75 MB free and a largest hole of 32 MB, so ~30 MB of
+contiguous space handed back before the next load is not nothing.
+
+Order matters and is the whole safety argument:
+
+1. On `inMap 1 -> 0`, zero `m_VKLeftEye` / `m_VKRightEye` / `m_VKWorld`
+   immediately. `TextureReady` then fails, so nothing can hand OpenVR a handle
+   whose image is about to be destroyed.
+2. Release the surfaces **10 frames later**, not on the transition, so the
+   compositor is finished with the last frame it was given. We submit nothing
+   while out of a map, so there is no traffic in between.
+3. Never `WaitDeviceIdle` for this. Waiting for the GPU from inside `PresentEx`
+   is the shape of every deadlock this mod has had; DXVK already defers the real
+   destruction until the images are idle.
+
+`EnsureStereoSurfaces` rebuilds them on the next capture because the pointers
+are null, and `m_sbsW/m_sbsH` are zeroed so the SBS buffer rebuilds too.
+
+If leaving a map ever crashes in the compositor, this is the first thing to
+revert -- and raising the 10 is the first thing to try.
+
+---
+
 ## SKINNING THE MAIN MENU: BACKGROUND AND MUSIC (2026-09-25)
 
 Matty wanted the GoodHead key art behind the menu and his own title track over
