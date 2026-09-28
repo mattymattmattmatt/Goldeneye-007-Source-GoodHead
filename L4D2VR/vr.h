@@ -93,6 +93,11 @@ public:
 	vr::VRTextureBounds_t m_TextureBounds[2] = { { 0.0f, 0.0f, 1.0f, 1.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } };
 	bool m_HaveTextureBounds = false;
 	vr::TrackedDevicePose_t m_Poses[vr::k_unMaxTrackedDeviceCount]{};
+	// The HMD pose the current eye images were rendered with (set where the
+	// eye views are built), handed to the compositor with them -- see
+	// AfterPresent. Cleared when the eye images go.
+	vr::HmdMatrix34_t m_RenderedHmdPose{};
+	bool m_HaveRenderedHmdPose = false;
 
 	Vector m_EyeToHeadTransformPosLeft = { 0,0,0 };
 	Vector m_EyeToHeadTransformPosRight = { 0,0,0 };
@@ -300,6 +305,10 @@ public:
 	// Per-eye path: the window (and so every in-map menu) shows a crop of the
 	// left eye; false fills it black instead (hooks.cpp, HUD pass).
 	bool m_WindowFromEye = true;
+	// Head-tracking latency fix (AfterPresent): submit each frame BEFORE
+	// waiting for the next poses, and tell the compositor the pose it was
+	// rendered with. false restores the old order, for comparing in the headset.
+	bool m_HeadPoseFix = true;
 	// Eye-pass diagnostics (vr_eyediag.h). EyeDiagDelaySec after the first
 	// stereo frame, two consecutive frames are traced at the D3D9 device and
 	// both eye images are written to %TEMP%\gesvr_eye_*.bmp. EyeDiagQuit then

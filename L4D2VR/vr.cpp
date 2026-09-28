@@ -1361,6 +1361,31 @@ void VR::Update()
                              g_phWait.mean(), g_phWait.worst,
                              g_phSubmit.mean(), g_phSubmit.worst,
                              g_phEngine.n, g_phWait.n);
+                // The compositor's own view of the last frames: how many
+                // refreshes from the pose to first display (latency the late
+                // warp has to cover), and how many were late, re-shown or
+                // reprojected. See HeadPoseFix in AfterPresent.
+                if (vr::VRCompositor())
+                {
+                    static vr::Compositor_FrameTiming s_t[64];
+                    for (auto &t : s_t)
+                        t.m_nSize = sizeof(vr::Compositor_FrameTiming);
+                    const uint32_t got = vr::VRCompositor()->GetFrameTimings(s_t, 64);
+                    uint32_t mis = 0, dropped = 0, reproj = 0, toFirst = 0, ready = 0;
+                    for (uint32_t i = 0; i < got; ++i)
+                    {
+                        mis += s_t[i].m_nNumMisPresented;
+                        dropped += s_t[i].m_nNumDroppedFrames;
+                        reproj += s_t[i].m_nReprojectionFlags ? 1 : 0;
+                        toFirst += s_t[i].m_nNumVSyncsToFirstView;
+                        ready += s_t[i].m_nNumVSyncsReadyForUse;
+                    }
+                    if (got)
+                        Game::logMsg("TIMING last %u frames: vsyncs pose->display %.2f, ready %.2f, mispresented %u, "
+                                     "dropped %u, reprojected %u (poseFix=%d)",
+                                     got, toFirst / float(got), ready / float(got), mis, dropped, reproj,
+                                     (int)m_HeadPoseFix);
+                }
                 ResetPhases();
                 s_worst = s_sum = 0.0f;
                 s_count = s_over = 0;
@@ -1879,6 +1904,7 @@ void VR::AfterPresent()
             m_VKLeftEye = SharedTextureHolder{};
             m_VKRightEye = SharedTextureHolder{};
             m_VKWorld = SharedTextureHolder{};
+            m_HaveRenderedHmdPose = false;
             // 10 frames, ~140 ms: far longer than the compositor needs to be
             // done with the last submitted frame, and nothing next to the
             // seconds a map load takes, so the space is back long before it
@@ -1916,12 +1942,31 @@ void VR::AfterPresent()
     if (!VRSubmit::g_useThread.load() && vr::VRCompositor() && inMap && !pauseUi)
     {
         auto *comp = vr::VRCompositor();
-        const auto tWait0 = vrclock::now();
-        werr = comp->WaitGetPoses(m_Poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
-        const auto tWait1 = vrclock::now();
-        // Headroom, not cost: this blocks until the compositor wants the frame.
-        g_phWait.add(MsSince(tWait0, tWait1));
-        GetPoses();
+
+        // ORDER MATTERS: submit the frame just rendered, THEN wait for the next
+        // poses (Matty, 2026-09-29: "i turn my head and there is like a few
+        // milliseconds of delay until the camera moves").
+        //
+        // A frame is rendered with the poses of the WaitGetPoses before it (the
+        // Render hook reads m_Poses), and the compositor takes a Submit to have
+        // been rendered at the pose of the most recent WaitGetPoses. This used
+        // to wait first and submit after, so every frame reached SteamVR paired
+        // with the NEXT frame's pose and one display slot late: its late warp
+        // then under-corrected by a frame of head movement, and the world lagged
+        // the head by ~14 ms at 72 Hz. Submit-then-wait is OpenVR's documented
+        // order; Submit_TextureWithPose also names the render pose outright,
+        // which keeps a re-submitted frame right too. HeadPoseFix=false puts the
+        // old order back for comparison.
+        auto waitForPoses = [&]() {
+            const auto tWait0 = vrclock::now();
+            werr = comp->WaitGetPoses(m_Poses, vr::k_unMaxTrackedDeviceCount, nullptr, 0);
+            // Headroom, not cost: this blocks until the compositor wants the frame.
+            g_phWait.add(MsSince(tWait0, vrclock::now()));
+            GetPoses();
+        };
+        if (!m_HeadPoseFix)
+            waitForPoses();
+        const auto tSubmit0 = vrclock::now();
 
         const vr::VRTextureBounds_t full = { 0.0f, 0.0f, 1.0f, 1.0f };
         vr::EVRCompositorError el = vr::VRCompositorError_None;
@@ -1944,6 +1989,15 @@ void VR::AfterPresent()
         }
         else if (haveEyes && inMap)
         {
+            // Each eye with the pose it was rendered at, when that is known.
+            const vr::EVRSubmitFlags eyeFlags = (m_HeadPoseFix && m_HaveRenderedHmdPose)
+                ? vr::Submit_TextureWithPose : vr::Submit_Default;
+            auto posed = [&](const vr::Texture_t &t) {
+                vr::VRTextureWithPose_t p{};
+                static_cast<vr::Texture_t &>(p) = t;
+                p.mDeviceToAbsoluteTracking = m_RenderedHmdPose;
+                return p;
+            };
             const bool useBounds = m_UseTextureBounds && m_HaveTextureBounds;
             vr::VRTextureBounds_t lb = useBounds ? m_TextureBounds[0] : full;
             vr::VRTextureBounds_t rb = useBounds ? m_TextureBounds[1] : full;
@@ -1994,13 +2048,15 @@ void VR::AfterPresent()
                 // and the fault is in submitting two textures in one frame. If
                 // it is black in both eyes, the texture itself is empty.
                 SharedTextureHolder &src = (m_MonoEyeSource == 1) ? m_VKRightEye : m_VKLeftEye;
-                el = comp->Submit(vr::Eye_Left,  &src.m_VRTexture, &lb, vr::Submit_Default);
-                er = comp->Submit(vr::Eye_Right, &src.m_VRTexture, &rb, vr::Submit_Default);
+                vr::VRTextureWithPose_t lt = posed(src.m_VRTexture), rt = posed(src.m_VRTexture);
+                el = comp->Submit(vr::Eye_Left,  &lt, &lb, eyeFlags);
+                er = comp->Submit(vr::Eye_Right, &rt, &rb, eyeFlags);
             }
             else
             {
-                el = comp->Submit(vr::Eye_Left,  &m_VKLeftEye.m_VRTexture,  &lb, vr::Submit_Default);
-                er = comp->Submit(vr::Eye_Right, &m_VKRightEye.m_VRTexture, &rb, vr::Submit_Default);
+                vr::VRTextureWithPose_t lt = posed(m_VKLeftEye.m_VRTexture), rt = posed(m_VKRightEye.m_VRTexture);
+                el = comp->Submit(vr::Eye_Left,  &lt, &lb, eyeFlags);
+                er = comp->Submit(vr::Eye_Right, &rt, &rb, eyeFlags);
             }
             submitted = true;
         }
@@ -2011,14 +2067,17 @@ void VR::AfterPresent()
         if (g_D3DVR9)
             g_D3DVR9->UnlockSubmission();
 
-        g_phSubmit.add(MsSince(tWait1, vrclock::now()));
+        g_phSubmit.add(MsSince(tSubmit0, vrclock::now()));
+        if (m_HeadPoseFix)
+            waitForPoses();
 
         if (submitted)
         {
             const int n = VRSubmit::g_frames.fetch_add(1) + 1;
             if (n <= 5 || (n % 900) == 1 || el != vr::VRCompositorError_None || er != vr::VRCompositorError_None)
-                Game::logMsg("Submit(render thread) #%d waitErr=%d Lerr=%d Rerr=%d eyes=%d",
-                             n, (int)werr, (int)el, (int)er, (int)(haveEyes && inMap));
+                Game::logMsg("Submit(render thread) #%d waitErr=%d Lerr=%d Rerr=%d eyes=%d poseFix=%d withPose=%d",
+                             n, (int)werr, (int)el, (int)er, (int)(haveEyes && inMap),
+                             (int)m_HeadPoseFix, (int)(m_HeadPoseFix && m_HaveRenderedHmdPose));
         }
     }
 
@@ -4070,6 +4129,10 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     GetPoses();
 
     const bool poseValid = m_Poses[vr::k_unTrackedDeviceIndex_Hmd].bPoseIsValid;
+    // The pose these eyes are about to be rendered with, for the compositor.
+    m_HaveRenderedHmdPose = poseValid;
+    if (poseValid)
+        m_RenderedHmdPose = m_Poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
     QAngle hmdAng = poseValid ? m_HmdPose.TrackedDeviceAng : setup.angles;
     hmdAng.y += m_RotationOffset;
     hmdAng.y -= 360.0f * std::floor((hmdAng.y + 180.0f) / 360.0f);
@@ -6065,6 +6128,7 @@ void VR::ParseConfigFile()
     m_EyeDiagQuit = CfgBool(userConfig, "EyeDiagQuit", m_EyeDiagQuit);
     m_FakeSubmitOOM = CfgInt(userConfig, "FakeSubmitOOM", m_FakeSubmitOOM);
     m_WindowFromEye = CfgBool(userConfig, "WindowFromEye", m_WindowFromEye);
+    m_HeadPoseFix = CfgBool(userConfig, "HeadPoseFix", m_HeadPoseFix);
     m_EyeDiagDisconnect = CfgBool(userConfig, "EyeDiagDisconnect", m_EyeDiagDisconnect);
     m_EyeDiagMenuSec = CfgInt(userConfig, "EyeDiagMenuSec", m_EyeDiagMenuSec);
     {

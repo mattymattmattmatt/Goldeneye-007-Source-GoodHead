@@ -1,8 +1,36 @@
 # GESVR — GoldenEye: Source VR — Handoff
 
-Last updated: **2026-09-29**, menus after the per-eye change; map-load failures
-are driver resets (below).
+Last updated: **2026-09-29**, head-tracking latency fix (below).
 Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in Theater".
+
+---
+
+## HEAD TRACKING TRAILED THE HEAD BY A FRAME (2026-09-29)
+
+Matty: "i turn my head and the is like a few milliseconds of delay until the
+camera moves so its little mismatched and can be nauseating."
+
+**Cause (ours):** AfterPresent called `WaitGetPoses` and THEN submitted the
+frame just rendered. That frame was rendered with the poses of the PREVIOUS
+WaitGetPoses (the Render hook's `GetPoses()` reads `m_Poses`), while OpenVR
+pairs a Submit with the most recent WaitGetPoses. So every frame reached
+SteamVR one display slot late and labelled with the next frame's pose; the
+compositor's late warp corrected from the wrong pose and the world trailed
+head rotation by about a frame (~14 ms at 72 Hz). Rotation itself reaches the
+camera directly (eye angles = HMD angles + turn offset in ApplyHeadAndIpd), so
+nothing in the game's input path added to it. (UpdateTracking is dead code.)
+
+**Fix:** submit, THEN WaitGetPoses (OpenVR's documented order), and submit the
+eyes with `Submit_TextureWithPose` carrying `m_RenderedHmdPose`, recorded in
+ApplyHeadAndIpd from the exact pose the eye views were built from.
+`HeadPoseFix=false` restores the old order for A/B in the headset. Headless:
+submits return no errors with the pose attached, pacing unchanged -- but the
+null driver has no real vsync, so latency can only be judged in the headset.
+New log line every 10 s in a map: `TIMING last 64 frames: vsyncs pose->display
+X, ...` from GetFrameTimings -- compare X with HeadPoseFix on and off on the
+real headset; the fix should read about one lower.
+
+Not changed: the unused `VRSubmit::g_useThread` path has the same old order.
 
 ---
 

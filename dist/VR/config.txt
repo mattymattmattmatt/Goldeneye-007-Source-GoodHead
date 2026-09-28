@@ -71,6 +71,14 @@ MenuDistanceMeters=1.2
 # radar is the one thing that has nowhere to go. false = the old window path.
 EyeRenderTargets=true
 
+# Head-tracking latency fix. Each frame goes to SteamVR BEFORE the mod waits
+# for the next head pose, with the pose it was rendered at attached, so
+# SteamVR's last-moment correction lines the image up with your head. Before
+# this, every frame arrived one frame late and labelled with the wrong pose:
+# the world trailed your head by ~14 ms when you turned. false = the old order,
+# only for comparing the two.
+HeadPoseFix=true
+
 # IVModelRender vtable index of DrawModelExecute -- the hook that lets the mod
 # move the weapon onto your hand. This was NEVER hooked before: offsets.h has an
 # L4D2 byte signature that GE:S's engine does not match, which is why the gun
