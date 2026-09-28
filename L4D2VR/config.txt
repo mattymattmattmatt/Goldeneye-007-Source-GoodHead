@@ -313,6 +313,35 @@ WeaponTuning=false
 TextureFiltering=16
 # GE:S's bloom (the glow around bright lights). false looks crisper.
 Bloom=true
+
+# GE:S's own Advanced Video settings, mirrored into VR Settings > Graphics and
+# > Detail because its options dialog cannot be worked from inside a headset:
+# clicks never reach the Advanced sub-dialog, they fire the gun instead, and
+# there is no way back out of it without killing the game.
+#
+# -1 everywhere means "say nothing", which leaves GE:S exactly as you left it.
+#
+# TextureDetail is by far the biggest memory cost, and memory is what decides
+# whether a map loads at all -- watch the meter on the Graphics tab. It and
+# ModelDetail throw away and reload every texture / model when they change,
+# which is a crash with a map already up, so both are applied at the menu.
+# mat_picmip: 0 high, 1 medium, 2 low.
+TextureDetail=-1
+# r_rootlod: 0 high, 1 medium, 2 low.
+ModelDetail=-1
+# mat_reducefillrate: 0 high, 1 low.
+ShaderDetail=-1
+# 0 simple, 1 reflect the world, 2 reflect everything.
+WaterDetail=-1
+# r_shadowrendertotexture: 0 blobs, 1 shaped.
+ShadowDetail=-1
+# Anti-aliasing (mat_antialias): 0 off, 2 or 4 for MSAA, -1 to leave it alone.
+# The mod never applies this one -- changing it resets the D3D device under a
+# live compositor -- so Launch-GESVR reads it from here and passes it on the
+# command line. It takes effect the NEXT time you launch. At 2560x1440 the main
+# colour + depth pair costs 28 MB with no AA, 56 MB at 2x and 113 MB at 4x, so
+# 2 is the one that fits; if map loads start failing again, put it back to 0.
+AntiAliasing=-1
 # false = the normal death camera (sets GE:S's ge_fp_ragdoll 0) instead of the
 # first-person one riding the ragdoll's head.
 DeathCamFirstPerson=false
