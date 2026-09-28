@@ -1587,7 +1587,12 @@ void VR::Update()
         SyncHudCvars();
         VREvents::Update(this);
         ProcessTuneKeys();
-        VRWatch::Update();
+        // Both hands on a two-handed gun: the watch sits right in front of
+        // you and is only a distraction there (Matty, 2026-09-29).
+        if (m_TwoHanded)
+            VRWatch::Hide();
+        else
+            VRWatch::Update();
         UpdateHurtHUD();
     }
     else
@@ -4124,6 +4129,50 @@ Vector VR::GetViewOriginRight()
     return viewOriginRight;
 }
 
+// Zoomed in, the whole view is magnified, and so is every tremor of the gun
+// hand -- the scoped weapons were "hard to aim in vr when the view is so zoomed
+// in" (Matty, 2026-09-29). While zoomed, the gun's basis and aim angle ease
+// toward the hand instead of snapping to it. Everything downstream -- the
+// rendered gun, its muzzle ray (aim dot, shots) and the firing view angles --
+// reads these, so they stay in agreement. Strength scales with magnification:
+// per frame the gun closes `a` of the gap, a = zoomRatio / (1 + ScopeSmoothing
+// * 2): about 1/12 at 4x zoom (settles in ~0.1-0.15 s at 72 fps), nothing
+// unzoomed. The head is never smoothed; that would be sickening.
+void VR::SmoothGunWhileZoomed()
+{
+    const bool zoomed = m_ZoomRatio < 0.95f && m_ScopeSmoothing > 0.0f;
+    if (!zoomed || !m_HaveSmoothedGun)
+    {
+        m_SmoothGunFwd = m_ViewmodelForward;
+        m_SmoothGunUp = m_ViewmodelUp;
+        m_SmoothGunAng = m_RightControllerAngAbs;
+        m_HaveSmoothedGun = true;
+        if (!zoomed)
+            return;
+    }
+    const float a = std::clamp(m_ZoomRatio / (1.0f + m_ScopeSmoothing * 2.0f), 0.02f, 1.0f);
+    auto lerpVec = [a](const Vector &from, const Vector &to) {
+        Vector v = from + (to - from) * a;
+        VectorNormalize(v);
+        return v;
+    };
+    m_SmoothGunFwd = lerpVec(m_SmoothGunFwd, m_ViewmodelForward);
+    Vector up = lerpVec(m_SmoothGunUp, m_ViewmodelUp);
+    up = up - m_SmoothGunFwd * DotProduct(up, m_SmoothGunFwd);   // keep the basis square
+    VectorNormalize(up);
+    m_SmoothGunUp = up;
+    for (int i = 0; i < 3; ++i)
+    {
+        float d = m_RightControllerAngAbs[i] - m_SmoothGunAng[i];
+        d -= 360.0f * std::floor((d + 180.0f) / 360.0f);           // shortest way round
+        m_SmoothGunAng[i] += d * a;
+    }
+    m_ViewmodelForward = m_SmoothGunFwd;
+    m_ViewmodelUp = m_SmoothGunUp;
+    CrossProduct(m_SmoothGunFwd, m_SmoothGunUp, m_ViewmodelRight);   // Source: right = forward x up
+    m_RightControllerAngAbs = m_SmoothGunAng;
+}
+
 void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &setup)
 {
     GetPoses();
@@ -4215,6 +4264,7 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
         if (scopeRatio < 0.95f)
             eyeFov = 2.0f * atanf(tanf(m_Fov * 0.5f * d2r) * scopeRatio) / d2r;
     }
+    m_ZoomRatio = scopeRatio < 0.95f ? scopeRatio : 1.0f;
     static bool s_wasScoped = false;
     static float s_loggedRatio = 1.0f;
     if (scopeHeld != s_wasScoped || (scopeHeld && fabsf(scopeRatio - s_loggedRatio) > 0.1f))
@@ -4365,6 +4415,8 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
             ++s_wlog;
         }
     }
+
+    SmoothGunWhileZoomed();
 
     // Fire marker. The trigger is used as a delimiter between calibration
     // steps, so log its rising edge with the current hand state -- that turns a
@@ -6166,6 +6218,7 @@ void VR::ParseConfigFile()
     m_TwoHandedGrip = CfgBool(userConfig, "TwoHandedGrip", m_TwoHandedGrip);
     m_TwoHandedNeedsGrip = CfgBool(userConfig, "TwoHandedNeedsGrip", m_TwoHandedNeedsGrip);
     m_ScopeZoom = CfgBool(userConfig, "ScopeZoom", m_ScopeZoom);
+    m_ScopeSmoothing = CfgFloat(userConfig, "ScopeSmoothing", m_ScopeSmoothing);
     m_TrackedWeapon = CfgBool(userConfig, "TrackedWeapon", m_TrackedWeapon);
     m_FixViewmodelAspect = CfgBool(userConfig, "FixViewmodelAspect", m_FixViewmodelAspect);
     m_SwingMelee = CfgBool(userConfig, "SwingMelee", m_SwingMelee);

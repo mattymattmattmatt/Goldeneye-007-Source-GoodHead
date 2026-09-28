@@ -284,6 +284,11 @@ HeightOffsetMeters=0.0
 # and this carries the zoom into the headset by magnifying the whole view.
 # false = aim mode still works, but the view never zooms.
 ScopeZoom=true
+
+# Zoomed in, the gun eases toward your hand instead of copying every tremor,
+# so the magnified view is steady enough to aim. Stronger the more it zooms.
+# 0 = off, 1 = default, 2 = steadier but slower to follow.
+ScopeSmoothing=1.0
 # GE:S draws the first-person gun at the desktop window's shape, which in the
 # headset stretched it tall and skewed it. true corrects that for the gun at
 # your head (face aim) too; the gun in hand is always corrected.

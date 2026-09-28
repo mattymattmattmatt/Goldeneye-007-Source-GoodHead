@@ -570,6 +570,14 @@ public:
 	// the eyes ignore because they use the HMD's FOV; this carries the zoom
 	// ratio across. m_ScopeBaseFov is the engine FOV when not zoomed.
 	bool m_ScopeZoom = true;
+	// Zoomed in, the gun eases toward the hand instead of following it
+	// exactly, so hand shake is not magnified with the view. 0 = off; 1 = the
+	// default strength (at 4x zoom the gun settles over ~0.1 s); higher = more.
+	float m_ScopeSmoothing = 1.0f;
+	float m_ZoomRatio = 1.0f;          // this frame's tan-ratio, 1 = not zoomed
+	bool m_HaveSmoothedGun = false;
+	Vector m_SmoothGunFwd, m_SmoothGunUp;
+	QAngle m_SmoothGunAng;
 	float m_ScopeBaseFov = 0.0f;
 	int m_ScopeReleasedFrames = 0;
 
@@ -743,6 +751,7 @@ public:
 	void RepositionOverlays();
 	void CreateWristOverlays();
 	void UpdateHurtHUD();
+	void SmoothGunWhileZoomed();
 	void ResolvePlayerNetvars();
 	int ReadLocalHealth();
 	void ReadWatchStats(WatchStats &out);
