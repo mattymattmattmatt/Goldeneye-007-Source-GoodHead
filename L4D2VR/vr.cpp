@@ -2355,6 +2355,13 @@ void VR::CreateVRTextures()
 
     // SDK 2007 CMaterialSystem::m_bGameRunning is not at L4D2's 0x2AB8.
     // Try a normal runtime RT allocation; GE:S still accepts this on 2007.
+    // What these targets cost in the 2 GB, logged every time rather than argued
+    // about. Measured 2026-09-28 at 2957x3072: 1649 -> 1649 MB, largest free
+    // block unchanged -- render targets are GPU memory. (A Quest session had
+    // shown the process 96 MB fuller a few seconds after them; that was the map.)
+    unsigned memBefore = 0, memTotal = 0;
+    VirtualUsed(memBefore, memTotal);
+    const unsigned holeBefore = LargestFreeBlockMB();
     m_Game->m_MaterialSystem->BeginRenderTargetAllocation();
 
     m_CreatingTextureID = Texture_LeftEye;
@@ -2389,6 +2396,12 @@ void VR::CreateVRTextures()
     m_CreatingTextureID = Texture_None;
 
     m_Game->m_MaterialSystem->EndRenderTargetAllocation();
+    {
+        unsigned memAfter = 0;
+        VirtualUsed(memAfter, memTotal);
+        Game::logMsg("CreateVRTextures address space: %u -> %u MB (%+d), largest free block %u -> %u MB",
+                     memBefore, memAfter, (int)memAfter - (int)memBefore, holeBefore, LargestFreeBlockMB());
+    }
 
     m_CreatedVRTextures = (m_LeftEyeTexture && m_RightEyeTexture);
     Game::logMsg("CreateVRTextures left=%p right=%p hud=%p ok=%d size=%dx%d shared=%d",
@@ -5832,6 +5845,7 @@ void VR::ParseConfigFile()
     m_EyeDiag = CfgBool(userConfig, "EyeDiag", m_EyeDiag);
     m_EyeDiagDelaySec = CfgFloat(userConfig, "EyeDiagDelaySec", m_EyeDiagDelaySec);
     m_EyeDiagQuit = CfgBool(userConfig, "EyeDiagQuit", m_EyeDiagQuit);
+    m_FakeSubmitOOM = CfgInt(userConfig, "FakeSubmitOOM", m_FakeSubmitOOM);
     {
         auto it = userConfig.find("EyeDiagCommands");
         if (it != userConfig.end())

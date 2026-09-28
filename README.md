@@ -132,7 +132,7 @@ Notice the second number. It's not just that memory runs out — it gets **broke
 
 **The fix, in order:**
 
-1. **Set texture detail to Medium** in GE:S's own options (Options > Video > Advanced), from the main menu — not while a map is loaded. This is the single biggest win and costs little in a headset.
+1. **Set texture detail to Medium** in VR Settings > Graphics. It applies when you're back at the main menu, never with a map loaded. This is the single biggest win and costs little in a headset.
 2. If it still struggles, **Low**, or drop your desktop resolution before launching — the render buffers scale with it.
 3. Give it two or three attempts after either change, so the shader cache fills up.
 
@@ -154,6 +154,10 @@ Reinstalling into the *same* folder does not fix it. Your GE:S install and your 
 **There's no radar** — with per-eye rendering on, GE:S's own HUD is kept out of your view, because this version of the game can only draw it flat across the screen and in a headset that came out stretched 1.84× (the radar was an oval). The watch shows health, armour, ammo, the round time, your weapon and kills, so the radar is the one thing missing. **Hurt** under Display > Game HUD still flashes your health bars when you're hit. Turning per-eye rendering off (Detail) brings the stretched HUD back.
 
 **Quitting from the menu pauses for a few seconds** — a Steam hang on exit that the mod detects and ends for you.
+
+**The game closes by itself while loading a map** — the graphics driver reported an error it can't recover from. The game used to freeze on the spot until you killed it; now it closes, so you can launch again straight away. `vrmod_log.txt` has a `DXVK FATAL` line saying which error it was — worth sending along if it keeps happening.
+
+**The game window on your desktop is black, with only the HUD and menus** — with per-eye rendering on, the view in your headset isn't drawn in the game window at all. To record or stream, capture SteamVR's mirror window (SteamVR menu > Display VR View) instead.
 
 **Something else went wrong** — `…\Source SDK Base 2007\bin\vrmod_log.txt` records what happened, including memory use and frame pacing. It starts fresh once it passes 8 MB.
 

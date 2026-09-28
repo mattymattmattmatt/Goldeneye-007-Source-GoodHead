@@ -1,7 +1,77 @@
 # GESVR — GoldenEye: Source VR — Handoff
 
-Last updated: **2026-09-28**, per-eye render targets solved (below).
+Last updated: **2026-09-28**, first headset test of per-eye targets (below).
 Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in Theater".
+
+---
+
+## FIRST HEADSET TEST OF PER-EYE TARGETS: GUN, PAUSE MENU, FROZEN LOADS (2026-09-28)
+
+Matty: "it looks wayyy better, the scale is better too, it took three reboots
+to get it to load into the map though. the guns are all squished now ... the
+pause game menu was all white but i could still manage to highlight the text".
+
+**Squashed gun -- fixed.** GE:S's viewmodel pass takes its aspect from
+`engine->GetScreenAspectRatio()`, and engine+0x10A9D0 returns the aspect of the
+CURRENT render target (IMatRenderContext::GetRenderTargetDimensions), not the
+window's. The squash was measured at the top of dRenderView, before the eye
+target is bound, so it read 1.778 on both paths and squashed the gun to 54%
+height on the eye-target path. Now measured right after the left eye's target
+is bound (`MeasureFirstPersonSquash`): headless logs `eye aspect 1.000, pass
+aspect 1.000 -> squash 1.000`. The window path still gets its 0.542.
+
+**White pause menu -- fixed.** The HUD pass runs with VIEW_NO_DRAW, and the
+engine drops VIEW_CLEAR_COLOR whenever VIEW_NO_DRAW is set (traced: only the
+depth clear survives), but GE:S's bloom still runs over the backbuffer every
+frame. Additive, uncleared, so it climbed to white within frames, and every
+in-map menu is painted over that buffer and captured for the floating panel.
+Fix: `ColorFill` the backbuffer black before the HUD pass (changes no device
+state, so the material system's cached target/viewport stay valid). The dump
+now includes the overlay (O) and backbuffer (B): 0% white, was 100%.
+Consequence: **the desktop window shows black plus HUD/menus** on this path.
+Record footage from the SteamVR mirror, not the game window.
+
+**Frozen map loads -- the freeze fixed, the cause now logged.** Both failed
+launches froze a few frames into the map (stereo pass 34 and 9) at 1923 MB /
+83 MB hole and 1847 MB / 135 MB hole. Resolved against the exact build he ran
+(`git show fdfd6cf:dist/d3d9.dll`, return addresses remapped to the current
+map by byte matching -- scratchpad remap.py):
+* dxvk-submit thread: `submitCmdLists` -> `DxvkDevice::waitForIdle` ->
+  `DxvkSubmissionQueue::synchronize` -> AcquireSRWLockExclusive on m_mutex.
+* dxvk-cs thread: `DxvkSubmissionQueue::submit` -> the same lock.
+* main thread: spinning in `D3D9Query::GetData` -> FlushImplicit.
+
+So a vkQueueSubmit returned an error, and DXVK's error path called
+waitForIdle while HOLDING m_mutex; synchronize() takes m_mutex again and would
+wait for a queue only that thread drains. Any submit error was a guaranteed
+freeze. (The 09-26 hang had the same main-thread signature.) hl2_d3d9.log is
+truncated at every launch, so which VkResult it was is gone. Changes, in the
+DXVK fork:
+* `DxvkCommandList::submitToQueue`: OUT_OF_HOST/DEVICE_MEMORY is retried
+  (40 tries, ~1.6 s) per vkQueueSubmit. The spec guarantees a failed submit
+  with those codes touched nothing; retrying per call, not per command list,
+  never re-sends the transfer half of a two-queue submission.
+* `dxvk_queue.cpp`: on a failure that remains, `GESVR_DxvkFatal` logs
+  `DXVK FATAL: ... VkResult N ...` with address space and largest free block,
+  then TerminateProcess. A dropped command list hangs the game anyway (its
+  queries are never signalled), so a clean exit beats a frozen headset.
+* `util/log/log.cpp`: every DXVK warn/err line is copied into vrmod_log.txt as
+  `DXVK warn:` / `DXVK err:` (capped at 300 per launch).
+* Test hook `FakeSubmitOOM=N` (with EyeDiag): the next N submits fail without
+  reaching the driver. N=3: `succeeded on retry 3`, run completes. N=100: DXVK
+  FATAL and the process gone ~1.5 s later, not a freeze.
+
+**Next time a load fails, read the `DXVK` lines.** `-1` (host memory) that the
+retry could not absorb = the 2 GB ceiling; the levers are the usual ones
+(texture detail, window size). `-4` (device lost) is the driver giving up;
+worth checking what else is on the GPU then.
+
+**Eye brightness, watched.** One spawned run of nine had the right eye 35%
+brighter (lamp blown, blacks lifted); the rerun with the same build and
+settings was 1.6% apart, and the regression run 0.2%. Auto-exposure is per
+RenderView, so a transient could catch the eyes on different values. Not
+reproducible so far; if it shows in the headset, try `mat_dynamic_tonemapping 0`
+in eye-target mode, or copy the tonemap scale from the left pass to the right.
 
 ---
 
@@ -156,6 +226,7 @@ could be judged headless:
 
 1. The weapon in the hand: the viewmodel "squash" is unchanged and reads the
    window aspect, which should still be right -- but look at it.
+   (It was not right: squashed. Fixed, see the section above.)
 2. The aim dot lands on the barrel's line; the reticle and throw guide are
    round and the right size.
 3. The Quest's asymmetric crop at this size (crop < 1, so the targets come out

@@ -33,3 +33,8 @@ namespace dxvk
     // module+offset, and optionally a filtered stack scan (Source modules only).
     void GESVR_EyeTraceNote(const char *text, const void *caller, bool withStack);
 }
+
+// Test hook for the GPU error path (config FakeSubmitOOM, see vr.h): the next
+// n vkQueueSubmit calls report VK_ERROR_OUT_OF_HOST_MEMORY without reaching
+// the driver. Defined in d3d9_vr.cpp, consumed in dxvk_cmdlist.cpp.
+void GESVR_FakeSubmitOOM(int n);

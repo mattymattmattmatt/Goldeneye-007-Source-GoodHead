@@ -304,6 +304,11 @@ public:
 	bool m_EyeDiag = false;
 	float m_EyeDiagDelaySec = 15.0f;
 	bool m_EyeDiagQuit = false;
+	// Test only: when EyeDiag tracing starts, the next N vkQueueSubmit calls
+	// report out of memory without reaching the driver. 3 exercises the retry
+	// in DxvkCommandList::submitToQueue; 100 outlasts it and must end the
+	// process with a DXVK FATAL line, not freeze it.
+	int m_FakeSubmitOOM = 0;
 	// Console commands the diagnostics issue 4 s after the first stereo frame,
 	// ';'-separated -- "joingame; joinclass bond" gets a headless test past
 	// the join screen, which ExtraCvars cannot (it waits for menus to close).

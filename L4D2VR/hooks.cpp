@@ -291,6 +291,36 @@ static bool g_eyeValid = false;
 static Vector g_eyeOrigin;
 static QAngle g_eyeAngles;
 static float g_squash = 1.0f;   // eyeAspect / passAspect for this frame
+
+// The viewmodel pass takes its aspect from engine->GetScreenAspectRatio(), and
+// that is NOT the window's: engine+0x10A9D0 returns an override if one is set,
+// else pRenderContext->GetRenderTargetDimensions() w/h -- the CURRENT render
+// target. So it has to be measured with the eye's target already bound:
+//   window path:      eye pass draws into the 16:9 backbuffer -> 1.778, and
+//                     the gun needs squashing by 0.964/1.778 = 0.542;
+//   eye-target path:  eye pass draws into a 2961x3072 target -> 0.964 already,
+//                     and the right squash is 1.0.
+// It used to be measured at the top of dRenderView, before the eye target was
+// bound, which read 1.778 on BOTH paths and squashed the gun to 54% height the
+// first time anyone held one with per-eye rendering on (2026-09-28 headset test).
+static void MeasureFirstPersonSquash(VR *vr)
+{
+	g_squash = 1.0f;
+	if (!vr || !(vr->m_TrackedWeapon || vr->m_FixViewmodelAspect) || vr->m_Aspect <= 0.1f)
+		return;
+	const float pass = FirstPersonPassAspect();
+	g_squash = vr->m_Aspect / pass;
+	static int s_logged = 0;
+	static float s_lastPass = 0.0f;
+	if (s_logged < 3 || fabsf(pass - s_lastPass) > 0.01f)
+	{
+		Game::logMsg("FIRST-PERSON PASS: eye aspect %.3f, pass aspect %.3f -> squash %.3f",
+		             vr->m_Aspect, pass, g_squash);
+		++s_logged;
+		s_lastPass = pass;
+	}
+}
+
 // The game's own view this frame (the flat-screen camera): its FOV and its
 // viewmodel FOV. GE:S's attachment FOV correction works from these.
 static float g_gameFov = 0.0f, g_gameFovVM = 0.0f;
@@ -783,22 +813,18 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 			Game::logMsg("EYEDIAG memory now %u of %u MB (peak %u), largest free block %u MB",
 			             GESVRMem::g_usedMB.load(), GESVRMem::g_totalMB.load(),
 			             GESVRMem::g_peakMB.load(), GESVRMem::g_holeMB.load());
+			if (m_VR->m_FakeSubmitOOM > 0)
+			{
+				Game::logMsg("EYEDIAG: the next %d vkQueueSubmit calls will report out of memory (FakeSubmitOOM)",
+				             m_VR->m_FakeSubmitOOM);
+				GESVR_FakeSubmitOOM(m_VR->m_FakeSubmitOOM);
+			}
 		}
 	}
 	dxvk::g_GESVR_EyeTrace = (s_diagState == 1 || s_diagState == 2);
+	// g_squash is measured further down, AFTER the eye's render target is bound
+	// -- see MeasureFirstPersonSquash.
 	g_squash = 1.0f;
-	if (m_VR && (m_VR->m_TrackedWeapon || m_VR->m_FixViewmodelAspect) && m_VR->m_Aspect > 0.1f)
-	{
-		const float pass = FirstPersonPassAspect();
-		g_squash = m_VR->m_Aspect / pass;
-		static int s_logged = 0;
-		if (s_logged < 3)
-		{
-			Game::logMsg("FIRST-PERSON PASS: eye aspect %.3f, pass aspect %.3f -> squash %.3f",
-			             m_VR->m_Aspect, pass, g_squash);
-			++s_logged;
-		}
-	}
 
 	// VGUI is kept out of the eyes by the g_inStereoPass guard in dVGui_Paint.
 	const bool overlayMenu = m_VR && m_VR->IsMenuMode();
@@ -881,6 +907,10 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 		rndrContext->SetRenderTarget(nullptr);
 		rndrContext->SetRenderTarget(m_VR->m_LeftEyeTexture);
 	}
+	// Now that the target the eye will draw into is bound (the backbuffer on the
+	// window path), the engine's screen aspect is the one its viewmodel pass
+	// will actually use. Both eye targets are the same size, so once is enough.
+	MeasureFirstPersonSquash(m_VR);
 	// Keep the 2D HUD out of the eye targets.
 	//
 	// The HUD is laid out in WINDOW pixels, and the eye targets are a different
@@ -991,6 +1021,27 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	{
 		if (traceStereo) Game::logMsg("stereo pass #%d HUD pass to backbuffer", pass);
 		dxvk::GESVR_EyeTraceBeginPass(3, 0, 0);
+		// Clear the backbuffer to black FIRST. With VIEW_NO_DRAW this pass never
+		// clears or redraws the world colour -- the engine drops VIEW_CLEAR_COLOR
+		// when VIEW_NO_DRAW is set; only the depth clear survives (traced) -- yet
+		// GE:S still runs its bloom over the buffer every frame. Bloom is
+		// additive, so each frame brightened the last until it saturated white.
+		// Every menu in a map is painted over this buffer and captured for the
+		// floating panel: that was the all-white pause menu of the first headset
+		// test (2026-09-28). The window path never saw it, because its eye
+		// passes draw into the backbuffer with full clears.
+		//
+		// ColorFill, straight on the surface: it changes no device state, so
+		// the material system's cached render target and viewport stay true.
+		if (IDirect3DDevice9 *dev = g_D3DVR9->GetD3DDevice())
+		{
+			IDirect3DSurface9 *bb = nullptr;
+			if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb)
+			{
+				dev->ColorFill(bb, nullptr, D3DCOLOR_ARGB(255, 0, 0, 0));
+				bb->Release();
+			}
+		}
 		hkRenderView.fOriginal(ecx, setup, VIEW_NO_DRAW, whatToDraw | RENDERVIEW_DRAWHUD);
 		dxvk::GESVR_EyeTraceEndPass(3);
 	}
