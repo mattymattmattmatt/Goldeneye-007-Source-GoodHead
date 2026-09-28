@@ -429,17 +429,16 @@ $gesForceGraphics = $false
 $gesPicmip = 0      # 0 = high, 1 = medium, 2 = low. -1 is beyond High: avoid.
 $gesAniso  = 8      # anisotropic filtering.
 
-# Anti-aliasing, on its own, because it is the one of the three worth having and
-# it must NOT drag mat_picmip along with it.
+# Anti-aliasing. Normally you set this in VR Settings > Graphics, in the
+# headset: the panel saves it to config.txt and it is applied HERE, on the
+# command line. That is the whole point -- changing mat_antialias while the game
+# is running resets the D3D device underneath a live compositor, so the mod
+# never touches it and the value only takes effect on the next launch.
 #
-#   0  leave the game's own Anti-Aliasing setting alone (default)
-#   2  2x MSAA
-#   4  4x MSAA
-#
-# Set it here rather than in GE:S's video options. Changing it in-game restarts
-# the material system mid-session, which re-creates every render target while
-# the mod is holding surfaces of its own; setting the cvar before the device
-# exists avoids all of that.
+#   -1  use whatever VR Settings last saved (default)
+#    0  force it off
+#    2  2x MSAA
+#    4  4x MSAA
 #
 # The cost is memory, not frames. Measured 2026-09-27, in-map frames were 4-6 ms
 # of real work against a 13.9 ms budget at 72 Hz, with 8-9 ms sitting idle in
@@ -449,7 +448,7 @@ $gesAniso  = 8      # anisotropic filtering.
 # 2047 MB with a largest free block of 135 MB. So 2 is the safe try and 4 is the
 # one that may well put map loads back over the edge. If loads start failing
 # again, this is the first thing to put back to 0.
-$gesAA = 0
+$gesAA = -1
 
 # Window size: the largest 16:9 that fits the primary desktop, capped at
 # 2560x1440. On a 1080p desktop that is exactly 1920x1080, as before. It only
@@ -496,11 +495,20 @@ $vrArgs = "-insecure -window -novid +mat_motion_blur_percent_of_screen_max 0 +cr
 if ($gesForceGraphics) {
     $vrArgs += " +mat_forceaniso $gesAniso +mat_picmip $gesPicmip"
 }
-# Independent of the block above: 0 means "say nothing", so the game's own
-# Anti-Aliasing setting stands.
-if ($gesAA -gt 0) {
-    $vrArgs += " +mat_antialias $gesAA"
-    Write-Host "Forcing ${gesAA}x MSAA (set `$gesAA = 0 in this script to stop)"
+# Independent of the block above. -1 here means "ask config.txt", which is where
+# VR Settings > Graphics saves it. The parser in the mod keeps the LAST of any
+# duplicate keys, so match that and take the last one too.
+if ($gesAA -lt 0) {
+    $vrCfg = Join-Path $sdk "bin\VR\config.txt"
+    if (Test-Path $vrCfg) {
+        $hit = Select-String -Path $vrCfg -Pattern '^\s*AntiAliasing\s*=\s*(-?\d+)' | Select-Object -Last 1
+        if ($hit) { $gesAA = [int]$hit.Matches[0].Groups[1].Value }
+    }
+}
+if ($gesAA -ge 0) {
+    $vrArgs += " +mat_antialias $gesAA +mat_aaquality 0"
+    if ($gesAA -eq 0) { Write-Host "Anti-aliasing off" }
+    else { Write-Host "Anti-aliasing ${gesAA}x MSAA (set in VR Settings > Graphics)" }
 }
 
 # Must go through Steam so SDK 2007 mounts its VPKs (startup_loading.vtf lives there).

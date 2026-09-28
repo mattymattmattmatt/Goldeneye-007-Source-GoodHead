@@ -123,6 +123,7 @@ struct MeterInfo
 {
     int value = 0;
     int max = 1;
+    int projected = 0;      // 0 = none; drawn dim behind value, and it sets the band
     std::wstring text;      // the number, drawn over the bar
     std::wstring note;      // what the colour means right now
     int band = BAND_GOOD;
@@ -393,7 +394,29 @@ static void BuildModel(VR *vr)
         "GameHUD", { "off", "hurt", "always" }));
     g_tabs.push_back(display);
 
+    // Split in two because the panel does not scroll: ten rows at the minimum
+    // pitch run 86 px past the footer. Graphics holds what costs memory, next
+    // to the meters that say whether there is any; Detail holds the rest.
     Tab graphics{ L"Graphics" };
+    // GE:S's own Advanced Video settings are mirrored here because its options
+    // dialog cannot be worked from inside a headset -- clicks never reach the
+    // Advanced sub-dialog, they fire the gun instead, and there is no way back
+    // out without killing the game. "Game setting" leaves each one alone, so a
+    // config without these lines changes nothing.
+    graphics.items.push_back(Named(L"Texture detail", L"The biggest memory cost by far. Applies at the menu, not mid-map.",
+        { L"Game setting", L"High", L"Medium", L"Low" },
+        [vr]() { return vr->m_TextureDetail < 0 ? 0 : vr->m_TextureDetail + 1; },
+        [vr](int i) { vr->m_TextureDetail = i - 1; vr->m_GraphicsDirty = true; },
+        "TextureDetail", { "-1", "0", "1", "2" }));
+    // AA is the one thing here the mod will not touch while running: changing
+    // mat_antialias resets the D3D device underneath a live compositor. Saved
+    // here, read out of config.txt by the launcher, passed on the command line
+    // before the device exists.
+    graphics.items.push_back(Named(L"Anti-aliasing", L"Saved now, applied next launch. 2x is the one that fits.",
+        { L"Game setting", L"Off", L"2x", L"4x" },
+        [vr]() { const int a = vr->m_AntiAliasing; return a < 0 ? 0 : a == 0 ? 1 : a <= 2 ? 2 : 3; },
+        [vr](int i) { static const int v[] = { -1, 0, 2, 4 }; vr->m_AntiAliasing = v[i]; },
+        "AntiAliasing", { "-1", "0", "2", "4" }));
     graphics.items.push_back(Named(L"Texture filtering", L"Sharper floors and walls at an angle. 16x costs very little.",
         { L"Game setting", L"4x", L"8x", L"16x" },
         [vr]() { const int f = vr->m_TextureFiltering; return f >= 16 ? 3 : f >= 8 ? 2 : f >= 4 ? 1 : 0; },
@@ -405,38 +428,53 @@ static void BuildModel(VR *vr)
         [vr](int i) { vr->m_Bloom = (i != 0); vr->m_GraphicsDirty = true; },
         "Bloom", { "false", "true" }));
 
-    // The two that matter most for sharpness are not ours to set: the mod has
-    // no cvar READ path, only ClientCmd_Unrestricted, so a control here could
-    // change them but never show their real value -- and changing either one
-    // mid-session restarts the material system, which is what crashes map loads
-    // after the player touches them. Say where they live instead of pretending.
-    graphics.items.push_back(Meter(L"Anti-aliasing", []() {
-        MeterInfo m; m.max = 0; m.band = BAND_INFO;
-        m.note = L"Set $gesAA in Launch-GESVR.ps1, not in the game's options.";
-        return m;
-    }));
-    graphics.items.push_back(Meter(L"Texture detail", []() {
-        MeterInfo m; m.max = 0; m.band = BAND_INFO;
-        m.note = L"GE:S Options > Video > Advanced. Medium is the safe setting.";
-        return m;
-    }));
-
     // Live address space. hl2.exe is 32-bit, so this 2047 MB is the whole
     // world: the game, the map, every texture and everything the graphics
     // layer keeps while handing them to the card. The bands are not guesses --
     // they are where this build has been measured to live and die. Loads that
     // succeeded sat at 1802 and 1872 MB; the two that crashed were at 1968 and
     // 2011, with the largest free block down to 33 and 24 MB.
+    //
+    // AT THE MENU THE NUMBER ON ITS OWN LIES. 1050 MB of 2047 looks like half
+    // the world free, but a map costs ~750 MB on top, so the honest question is
+    // not "how full is it now" but "how full will it be once a map is in". Out
+    // of a map the meter projects, using this session's own measured cost once
+    // there has been a map to measure.
     graphics.items.push_back(Meter(L"Address space", []() {
         MeterInfo m;
         const unsigned used = GESVRMem::g_usedMB.load();
         const unsigned total = GESVRMem::g_totalMB.load();
-        m.value = (int)used;
+        const bool inMap = GESVRMem::g_inMap.load();
+        const unsigned cost = GESVRMem::g_mapCostMB.load();
         m.max = (int)(total ? total : 2047);
-        m.text = FmtN(L"%u of %u MB", used, total);
-        if (used >= 1850)      { m.band = BAND_BAD;   m.note = L"Danger. Loads fail near 1970 MB -- quit and relaunch."; }
-        else if (used >= 1500) { m.band = BAND_TIGHT; m.note = L"Normal for a loaded map. A second one may not fit."; }
-        else                   { m.band = BAND_GOOD;  m.note = L"Room to spare."; }
+        m.value = (int)used;
+        unsigned judge = used;
+        if (!inMap)
+        {
+            judge = used + cost;
+            if (judge > (unsigned)m.max) judge = (unsigned)m.max;
+            m.projected = (int)judge;
+            m.text = FmtN(L"%u MB now, ~%u with a map", used, judge);
+        }
+        else
+            m.text = FmtN(L"%u of %u MB", used, total);
+        if (judge >= 1850)
+        {
+            m.band = BAND_BAD;
+            m.note = inMap ? L"Danger. Loads fail near 1970 MB -- quit and relaunch."
+                           : L"A map will not fit. Drop texture detail, or relaunch.";
+        }
+        else if (judge >= 1500)
+        {
+            m.band = BAND_TIGHT;
+            m.note = inMap ? L"Normal for a loaded map. A second one may not fit."
+                           : L"A map should fit, with little to spare.";
+        }
+        else
+        {
+            m.band = BAND_GOOD;
+            m.note = inMap ? L"Room to spare." : L"Room for a map and then some.";
+        }
         return m;
     }));
 
@@ -449,13 +487,36 @@ static void BuildModel(VR *vr)
         m.value = (int)(hole > 512 ? 512 : hole);
         m.max = 512;
         m.text = hole ? FmtN(L"%u MB in one piece", hole) : std::wstring(L"measuring...");
-        if (!hole)             { m.band = BAND_INFO;  m.note = L"Sampled once a second while this panel is open."; }
-        else if (hole < 64)    { m.band = BAND_BAD;   m.note = L"Too broken up for a map's big textures."; }
-        else if (hole < 192)   { m.band = BAND_TIGHT; m.note = L"Enough to load. 4x MSAA alone wants 59 MB of it."; }
-        else                   { m.band = BAND_GOOD;  m.note = L"Plenty for a map load."; }
+        if (!hole)           { m.band = BAND_INFO;  m.note = L"Sampled once a second while this panel is open."; }
+        else if (hole < 64)  { m.band = BAND_BAD;   m.note = L"Too broken up for a map's big textures."; }
+        else if (hole < 192) { m.band = BAND_TIGHT; m.note = L"Enough to load. 4x MSAA alone wants 59 MB of it."; }
+        else                 { m.band = BAND_GOOD;  m.note = L"Plenty for a map load."; }
         return m;
     }));
     g_tabs.push_back(graphics);
+
+    Tab detail{ L"Detail" };
+    detail.items.push_back(Named(L"Model detail", L"Reloads every model, so this one waits for the menu too.",
+        { L"Game setting", L"High", L"Medium", L"Low" },
+        [vr]() { return vr->m_ModelDetail < 0 ? 0 : vr->m_ModelDetail + 1; },
+        [vr](int i) { vr->m_ModelDetail = i - 1; vr->m_GraphicsDirty = true; },
+        "ModelDetail", { "-1", "0", "1", "2" }));
+    detail.items.push_back(Named(L"Shader detail", L"Low simplifies the shaders. Cheap to change at any time.",
+        { L"Game setting", L"High", L"Low" },
+        [vr]() { return vr->m_ShaderDetail < 0 ? 0 : vr->m_ShaderDetail + 1; },
+        [vr](int i) { vr->m_ShaderDetail = i - 1; vr->m_GraphicsDirty = true; },
+        "ShaderDetail", { "-1", "0", "1" }));
+    detail.items.push_back(Named(L"Water detail", L"Reflections cost a second render pass of the world.",
+        { L"Game setting", L"Simple", L"Reflect world", L"Reflect all" },
+        [vr]() { return vr->m_WaterDetail < 0 ? 0 : vr->m_WaterDetail + 1; },
+        [vr](int i) { vr->m_WaterDetail = i - 1; vr->m_GraphicsDirty = true; },
+        "WaterDetail", { "-1", "0", "1", "2" }));
+    detail.items.push_back(Named(L"Shadow detail", L"Detailed shadows are shaped; simple ones are blobs.",
+        { L"Game setting", L"Simple", L"Detailed" },
+        [vr]() { return vr->m_ShadowDetail < 0 ? 0 : vr->m_ShadowDetail + 1; },
+        [vr](int i) { vr->m_ShadowDetail = i - 1; vr->m_GraphicsDirty = true; },
+        "ShadowDetail", { "-1", "0", "1" }));
+    g_tabs.push_back(detail);
 }
 
 // ---------------------------------------------------------------------------
@@ -686,13 +747,22 @@ static void DrawPanel(Canvas &c, const Fonts &f, int tab, int hover)
             if (mi.max <= 0)
                 break;              // max 0 means a plain info line, no bar
             c.Round(track, bh / 2, C_CTRL);
-            if (mi.value > 0)
-            {
-                int w = (int)((long long)(kCtrlR - kCtrlL) * mi.value / mi.max);
+            auto barWidth = [&](int v) {
+                int w = (int)((long long)(kCtrlR - kCtrlL) * v / mi.max);
                 if (w > kCtrlR - kCtrlL) w = kCtrlR - kCtrlL;
                 if (w < bh) w = bh;                  // a sliver still reads as a bar
-                c.Round({ kCtrlL, bt, kCtrlL + w, bb }, bh / 2, BandColor(mi.band));
+                return w;
+            };
+            // The projection goes down first, dimmed, so the solid part still
+            // reads as "now" and the ghost as "once a map is in".
+            if (mi.projected > mi.value)
+            {
+                const COLORREF b = BandColor(mi.band);
+                const COLORREF dim = RGB(GetRValue(b) / 2, GetGValue(b) / 2, GetBValue(b) / 2);
+                c.Round({ kCtrlL, bt, kCtrlL + barWidth(mi.projected), bb }, bh / 2, dim);
             }
+            if (mi.value > 0)
+                c.Round({ kCtrlL, bt, kCtrlL + barWidth(mi.value), bb }, bh / 2, BandColor(mi.band));
             // Over the bar, not beside it: at this pitch there is no room for
             // both, and the number is what the colour is a shorthand for.
             c.Text(f.hint, C_TEXT, mi.text, track, DT_CENTER | DT_VCENTER | DT_SINGLELINE);

@@ -374,6 +374,8 @@ namespace GESVRMem
     std::atomic<unsigned> g_holeMB{ 0 };
     std::atomic<unsigned> g_peakMB{ 0 };
     std::atomic<bool>     g_wantHole{ false };
+    std::atomic<unsigned> g_mapCostMB{ 750 };
+    std::atomic<bool>     g_inMap{ false };
 }
 
 static void GESVR_WatchdogThread()
@@ -400,6 +402,37 @@ static void GESVR_WatchdogThread()
             GESVRMem::g_peakMB.store(memPeak);
             if (GESVRMem::g_wantHole.load())
                 GESVRMem::g_holeMB.store(LargestFreeBlockMB());
+
+            // Learn what a map costs, so the meter can project it at the menu.
+            // The floor is the lowest reading since the last map was left; the
+            // ceiling is the highest while one is up. Only the first crossing
+            // of each pair is worth anything, so the cost only ever grows
+            // within a session and never reports less than it has seen.
+            {
+                const bool inMap = g_watchInMap.load() > 0;
+                static unsigned s_menuFloor = 0;
+                static unsigned s_mapPeak = 0;
+                static bool s_wasInMap = false;
+                GESVRMem::g_inMap.store(inMap);
+                if (!inMap)
+                {
+                    if (s_wasInMap || s_menuFloor == 0 || used < s_menuFloor)
+                        s_menuFloor = used;     // a fresh floor each time we come back out
+                    s_mapPeak = 0;
+                }
+                else
+                {
+                    if (used > s_mapPeak)
+                        s_mapPeak = used;
+                    if (s_menuFloor > 0 && s_mapPeak > s_menuFloor)
+                    {
+                        const unsigned cost = s_mapPeak - s_menuFloor;
+                        if (cost > GESVRMem::g_mapCostMB.load())
+                            GESVRMem::g_mapCostMB.store(cost);
+                    }
+                }
+                s_wasInMap = inMap;
+            }
 
             if (used + 256 < memLogged)
                 memLogged = used;
@@ -1452,6 +1485,14 @@ void VR::Update()
         m_ExtraCvarsDone = false;
         m_InMapSinceMs = 0;
         VRWatch::Hide();
+        // Back at the menu. Anything too expensive to change with a map up
+        // goes in now, and so does anything changed while standing here --
+        // which is where GE:S's own options dialog would have been used, if it
+        // were usable in a headset.
+        if (m_HeavyGraphicsPending)
+            m_GraphicsDirty = true;
+        if (m_GraphicsDirty && m_Game && m_Game->m_EngineClient)
+            ApplyGraphicsCvars();
     }
 
     const auto tBeforeInput = vrclock::now();
@@ -5451,18 +5492,73 @@ void VR::ApplyGraphicsCvars()
     m_GraphicsDirty = false;
     if (!m_Game)
         return;
+
+    char cmd[64];
     if (m_TextureFiltering > 0)
     {
-        char cmd[48];
         snprintf(cmd, sizeof(cmd), "mat_forceaniso %d", m_TextureFiltering);
         m_Game->ClientCmd_Unrestricted(cmd);
         m_Game->ClientCmd_Unrestricted("mat_trilinear 1");
     }
     m_Game->ClientCmd_Unrestricted(m_Bloom ? "mat_disable_bloom 0" : "mat_disable_bloom 1");
-    Game::logMsg("Graphics: texture filtering %s, bloom %s",
-                 m_TextureFiltering > 0 ? (std::to_string(m_TextureFiltering) + "x anisotropic + trilinear").c_str()
+
+    // Cheap cvars: a frame's worth of state, safe to change with a map up.
+    if (m_ShaderDetail >= 0)
+    {
+        snprintf(cmd, sizeof(cmd), "mat_reducefillrate %d", m_ShaderDetail);
+        m_Game->ClientCmd_Unrestricted(cmd);
+    }
+    if (m_ShadowDetail >= 0)
+    {
+        snprintf(cmd, sizeof(cmd), "r_shadowrendertotexture %d", m_ShadowDetail);
+        m_Game->ClientCmd_Unrestricted(cmd);
+    }
+    if (m_WaterDetail >= 0)
+    {
+        snprintf(cmd, sizeof(cmd), "r_waterforceexpensive %d", m_WaterDetail >= 1 ? 1 : 0);
+        m_Game->ClientCmd_Unrestricted(cmd);
+        snprintf(cmd, sizeof(cmd), "r_waterforcereflectentities %d", m_WaterDetail >= 2 ? 1 : 0);
+        m_Game->ClientCmd_Unrestricted(cmd);
+    }
+
+    // The expensive two. mat_picmip throws away every texture and reloads it,
+    // r_rootlod does the same for models. With a map resident in a 32-bit
+    // process that is the reload-time crash the player already hit from GE:S's
+    // own options, so they wait for the menu, where there is little to reload
+    // and 800 MB more room to do it in.
+    const bool inMap = m_Game->IsInMap();
+    const bool heavy = (m_TextureDetail >= 0 || m_ModelDetail >= 0);
+    if (heavy && inMap)
+    {
+        m_HeavyGraphicsPending = true;
+    }
+    else
+    {
+        // Cleared on BOTH paths. Leaving it set when the player put these back
+        // to "Game setting" would have the menu re-arm m_GraphicsDirty every
+        // frame, and this function issues console commands.
+        if (heavy)
+        {
+            if (m_TextureDetail >= 0)
+            {
+                snprintf(cmd, sizeof(cmd), "mat_picmip %d", m_TextureDetail);
+                m_Game->ClientCmd_Unrestricted(cmd);
+            }
+            if (m_ModelDetail >= 0)
+            {
+                snprintf(cmd, sizeof(cmd), "r_rootlod %d", m_ModelDetail);
+                m_Game->ClientCmd_Unrestricted(cmd);
+            }
+            Game::logMsg("Graphics: texture detail %d, model detail %d (applied at the menu)",
+                         m_TextureDetail, m_ModelDetail);
+        }
+        m_HeavyGraphicsPending = false;
+    }
+
+    Game::logMsg("Graphics: filtering %s, bloom %s, shader %d, shadows %d, water %d, AA %d (launcher applies AA)",
+                 m_TextureFiltering > 0 ? (std::to_string(m_TextureFiltering) + "x aniso + trilinear").c_str()
                                         : "left to the game",
-                 m_Bloom ? "on" : "off");
+                 m_Bloom ? "on" : "off", m_ShaderDetail, m_ShadowDetail, m_WaterDetail, m_AntiAliasing);
 }
 
 // GE:S paints its HUD into the eye images as well as the 2D frame (the
@@ -5831,6 +5927,23 @@ void VR::ParseConfigFile()
     if (m_TextureFiltering < 0) m_TextureFiltering = 0;
     if (m_TextureFiltering > 16) m_TextureFiltering = 16;
     m_Bloom = CfgBool(userConfig, "Bloom", m_Bloom);
+
+    // GE:S's own Advanced Video settings. -1 everywhere means "say nothing",
+    // so a config without these lines leaves the game exactly as it was.
+    m_TextureDetail = CfgInt(userConfig, "TextureDetail", m_TextureDetail);
+    m_ModelDetail = CfgInt(userConfig, "ModelDetail", m_ModelDetail);
+    m_ShaderDetail = CfgInt(userConfig, "ShaderDetail", m_ShaderDetail);
+    m_WaterDetail = CfgInt(userConfig, "WaterDetail", m_WaterDetail);
+    m_ShadowDetail = CfgInt(userConfig, "ShadowDetail", m_ShadowDetail);
+    m_AntiAliasing = CfgInt(userConfig, "AntiAliasing", m_AntiAliasing);
+    auto clampCfg = [](int &v, int hi) { if (v < -1) v = -1; if (v > hi) v = hi; };
+    clampCfg(m_TextureDetail, 2);
+    clampCfg(m_ModelDetail, 2);
+    clampCfg(m_ShaderDetail, 1);
+    clampCfg(m_WaterDetail, 2);
+    clampCfg(m_ShadowDetail, 1);
+    clampCfg(m_AntiAliasing, 8);
+
     m_DeathCamFirstPerson = CfgBool(userConfig, "DeathCamFirstPerson", m_DeathCamFirstPerson);
 
     m_ShowWristHUD = CfgBool(userConfig, "ShowWristHUD", m_ShowWristHUD);

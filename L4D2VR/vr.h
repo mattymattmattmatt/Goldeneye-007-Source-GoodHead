@@ -24,6 +24,14 @@ namespace GESVRMem
     extern std::atomic<unsigned> g_holeMB;
     extern std::atomic<unsigned> g_peakMB;
     extern std::atomic<bool>     g_wantHole;
+
+    // What a map costs on top of the menu, so the meter can answer the
+    // question that actually matters while standing at the menu: not "how full
+    // is it now" but "how full once a map is in". Measured live as the peak
+    // while in a map minus the floor before it; 750 to start with, which is
+    // what the first measured load cost (1049 -> 1802 MB).
+    extern std::atomic<unsigned> g_mapCostMB;
+    extern std::atomic<bool>     g_inMap;
 }
 
 class Game;
@@ -565,8 +573,30 @@ public:
 	int m_TextureFiltering = 16;
 	// GE:S's bloom (mat_disable_bloom).
 	bool m_Bloom = true;
-	// Set when either changes in VR Settings; applied on the next in-map frame.
+
+	// GE:S's own Advanced Video settings, mirrored here because its options
+	// dialog cannot be used from inside a headset: clicks do not reach the
+	// Advanced sub-dialog, they fire the gun instead, and there is no way out
+	// of it without killing the game.
+	//
+	// -1 everywhere means "say nothing", so a default install still behaves
+	// exactly as GE:S was left. Values are the cvar values, not indices.
+	int m_TextureDetail = -1;    // mat_picmip            0 high, 1 medium, 2 low
+	int m_ModelDetail = -1;      // r_rootlod             0 high, 1 medium, 2 low
+	int m_ShaderDetail = -1;     // mat_reducefillrate    0 high, 1 low
+	int m_WaterDetail = -1;      // 0 simple, 1 reflect world, 2 reflect all
+	int m_ShadowDetail = -1;     // r_shadowrendertotexture 0 blobs, 1 detailed
+	// mat_antialias. NOT applied by the mod at all -- changing it resets the
+	// D3D device under a live compositor. The launcher reads it out of
+	// config.txt and passes it on the command line, before the device exists.
+	int m_AntiAliasing = -1;
+
+	// Set when any of the above changes in VR Settings.
 	bool m_GraphicsDirty = false;
+	// mat_picmip reloads every texture and r_rootlod every model, which is a
+	// crash on a 32-bit process with a map already resident. Both wait for the
+	// menu; this remembers that they are still owed.
+	bool m_HeavyGraphicsPending = false;
 	void ApplyGraphicsCvars();
 	void SyncHudCvars();
 	// GE:S's first-person death camera rides the ragdoll's head (ge_fp_ragdoll).
