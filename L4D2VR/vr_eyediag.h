@@ -18,6 +18,9 @@ namespace dxvk
     extern int  g_GESVR_EyePass;
     // True only for the frames being traced.
     extern bool g_GESVR_EyeTrace;
+    // Test: in a traced menu frame, re-upload each managed texture from its
+    // CPU copy before it is drawn (config EyeDiagForceUpload).
+    extern bool g_GESVR_DiagForceUpload;
 
     // Bracket one eye's RenderView. eyeW/eyeH is the target the pass is
     // meant to fill (0 when rendering straight to the backbuffer), so the
@@ -32,6 +35,10 @@ namespace dxvk
     // Free-form line for material-system hooks: text, the caller as
     // module+offset, and optionally a filtered stack scan (Source modules only).
     void GESVR_EyeTraceNote(const char *text, const void *caller, bool withStack);
+
+    // One line in vrmod_log with its caller and a filtered stack, whether or
+    // not a trace is running.
+    void GESVR_LogWithStack(const char *text, const void *caller);
 }
 
 // Test hook for the GPU error path (config FakeSubmitOOM, see vr.h): the next

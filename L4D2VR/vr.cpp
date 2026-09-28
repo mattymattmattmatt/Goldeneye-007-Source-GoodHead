@@ -6,6 +6,7 @@
 #include "trace.h"
 #include "weapons.h"
 #include "vr_guide.h"
+#include "vr_eyediag.h"
 #include <iostream>
 #include <fstream>
 #include <sstream>
@@ -1257,6 +1258,9 @@ void VR::InstallApplicationManifest(const char *fileName)
     vr::VRApplications()->AddApplicationManifest(path, true);
 }
 
+static void LogVguiTree(void *surface, const char *when);
+static void HideStrayViewportBackground(void *surface, const char *when);
+
 void VR::Update()
 {
     if (!m_IsInitialized || g_vrQuitting.load())
@@ -1390,6 +1394,82 @@ void VR::Update()
     } endStamp{ &s_lastEnd, &s_haveLast };
 
     HideWorldOverlay();
+
+    // A few times a second, whenever no menu can need GE:S's viewport backdrop:
+    // disconnected, or in a map with no pause menu and nothing wanting the
+    // mouse (the team and character menus own it while they are up; they
+    // always want the mouse). See HideStrayViewportBackground.
+    if (m_Game && (s_frames % 10) == 0)
+    {
+        if (!m_Game->IsConnected())
+            HideStrayViewportBackground(m_Game->m_VguiSurface, "after leaving the map");
+        else if (m_Game->IsInMap() && !m_Game->IsGameUIVisible() && m_VguiCursor == 0)
+            HideStrayViewportBackground(m_Game->m_VguiSurface, "in the map with no menu up");
+    }
+
+    // EyeDiagDisconnect (vr.h): the main-menu half of the test. Here, at the
+    // top of Present, the backbuffer holds the finished frame; the overlay
+    // (O) is last frame's capture, the same picture on a static menu.
+    if (m_DiagMenuPhase == 0 && m_EyeDiagMenuSec > 0)
+    {
+        m_DiagMenuPhase = 1;
+        m_DiagMenuAt = GetTickCount64() + (unsigned long long)m_EyeDiagMenuSec * 1000;
+    }
+    {
+        static bool s_menuCmdDone = false;
+        if (m_DiagMenuPhase == 1 && !s_menuCmdDone && !m_EyeDiagMenuCommand.empty() && m_Game
+            && !m_Game->IsInMap() && GetTickCount64() + 3000 >= m_DiagMenuAt)
+        {
+            s_menuCmdDone = true;
+            Game::logMsg("EYEDIAG: menu command: %s", m_EyeDiagMenuCommand.c_str());
+            m_Game->ClientCmd_Unrestricted(m_EyeDiagMenuCommand.c_str());
+        }
+    }
+    if (m_DiagMenuPhase == 1 && g_D3DVR9 && m_Game && !m_Game->IsInMap()
+        && GetTickCount64() >= m_DiagMenuAt)
+    {
+        // Trace one whole frame first: everything the engine draws between
+        // this Present and the next.
+        Game::logMsg("EYEDIAG: main menu capture (menu=%d gameui=%d), tracing one frame",
+                     (int)IsMenuMode(), (int)m_Game->IsGameUIVisible());
+        LogVguiTree(m_Game->m_VguiSurface, "main menu");
+        dxvk::g_GESVR_EyeTrace = true;
+        dxvk::GESVR_EyeTraceBeginPass(4, 0, 0);
+        m_DiagMenuPhase = 10;
+    }
+    else if (m_DiagMenuPhase == 10)
+    {
+        dxvk::GESVR_EyeTraceEndPass(4);
+        dxvk::g_GESVR_EyeTrace = false;
+        // Full size: small menu text (vgui_drawtree) has to stay readable.
+        g_D3DVR9->DiagEyeDumpIssue(0);
+        m_DiagMenuPhase = 2;
+        m_DiagMenuFrames = 0;
+    }
+    else if (m_DiagMenuPhase == 2 && ++m_DiagMenuFrames >= 45)
+    {
+        // Three captures, 6 / 15 / 30 s after the start of the wait, so a slow
+        // fade and a stuck one look different: gesvr_eye_menu1_*, menu2, menu3.
+        static int s_shot = 0;
+        ++s_shot;
+        char prefix[MAX_PATH] = {};
+        GetTempPathA(MAX_PATH, prefix);
+        char name[32];
+        sprintf_s(name, "gesvr_eye_menu%d", s_shot);
+        strcat_s(prefix, name);
+        g_D3DVR9->DiagEyeDumpWrite(prefix);
+        m_DiagMenuPhase = 3;
+        if (s_shot < 3)
+        {
+            m_DiagMenuPhase = 1;
+            m_DiagMenuAt = GetTickCount64() + (s_shot == 1 ? 9000 : 15000);
+        }
+        else if (m_EyeDiagQuit)
+        {
+            Game::logMsg("EYEDIAG done; EyeDiagQuit set, ending the process");
+            TerminateProcess(GetCurrentProcess(), 0);
+        }
+    }
 
     if (IsMenuMode())
     {
@@ -1555,6 +1635,144 @@ static int VguiCursorVisible(void *surface)
     if (s_state != 1)
         return -1;
     return reinterpret_cast<bool(__thiscall *)(void *)>(s_fn)(surface) ? 1 : 0;
+}
+
+// VGUI by vtable, for HideStrayViewportBackground and the EyeDiag menu dump.
+// Slots are this build's, not the SDK header's:
+// * vguimatsurface.dll CMatSystemSurface: 76 GetPopupCount (`mov eax,
+//   [ecx+25Ch] / ret`, checked before use), 77 GetPopup(i) (`mov eax,[ecx+
+//   250h]...`, checked). One slot off the header, like IsCursorVisible.
+// * vgui2.dll VPanelWrapper, "VGUI_Panel009", found through its RTTI: matches
+//   the header exactly with the destructor at 0 -- 5 GetSize, 14 SetVisible,
+//   15 IsVisible, 17 GetChildCount, 18 GetChild, 19 GetParent, 23 IsPopup,
+//   35 GetName, 36 GetClassName. Argument counts confirmed from each body.
+struct VguiApi
+{
+    void *surface = nullptr;
+    void *panel = nullptr;
+    int(__thiscall *popupCount)(void *) = nullptr;
+    unsigned(__thiscall *getPopup)(void *, int) = nullptr;
+    void(__thiscall *getSize)(void *, unsigned, int &, int &) = nullptr;
+    void(__thiscall *setVisible)(void *, unsigned, bool) = nullptr;
+    bool(__thiscall *isVisible)(void *, unsigned) = nullptr;
+    int(__thiscall *childCount)(void *, unsigned) = nullptr;
+    unsigned(__thiscall *getChild)(void *, unsigned, int) = nullptr;
+    unsigned(__thiscall *getParent)(void *, unsigned) = nullptr;
+    bool(__thiscall *isPopup)(void *, unsigned) = nullptr;
+    const char *(__thiscall *getName)(void *, unsigned) = nullptr;
+    const char *(__thiscall *getClass)(void *, unsigned) = nullptr;
+};
+
+static bool ResolveVgui(void *surface, VguiApi &v)
+{
+    static void *s_panel = nullptr;
+    if (!s_panel)
+    {
+        typedef void *(*CreateInterfaceFn)(const char *, int *);
+        HMODULE vgui2 = GetModuleHandleA("vgui2.dll");
+        auto ci = vgui2 ? reinterpret_cast<CreateInterfaceFn>(GetProcAddress(vgui2, "CreateInterface")) : nullptr;
+        s_panel = ci ? ci("VGUI_Panel009", nullptr) : nullptr;
+    }
+    void **svt = (surface && ReadablePtr(surface, sizeof(void *))) ? *reinterpret_cast<void ***>(surface) : nullptr;
+    const unsigned char *count = (svt && ReadablePtr(svt + 77, sizeof(void *))) ? static_cast<const unsigned char *>(svt[76]) : nullptr;
+    const unsigned char *get = count ? static_cast<const unsigned char *>(svt[77]) : nullptr;
+    if (!s_panel || !count || !get || !ReadablePtr(count, 7) || !ReadablePtr(get, 6)
+        || count[0] != 0x8B || count[1] != 0x81 || count[6] != 0xC3 || get[0] != 0x8B || get[1] != 0x81)
+        return false;
+    void **pvt = *reinterpret_cast<void ***>(s_panel);
+    v.surface = surface;
+    v.panel = s_panel;
+    v.popupCount = reinterpret_cast<decltype(v.popupCount)>(svt[76]);
+    v.getPopup = reinterpret_cast<decltype(v.getPopup)>(svt[77]);
+    v.getSize = reinterpret_cast<decltype(v.getSize)>(pvt[5]);
+    v.setVisible = reinterpret_cast<decltype(v.setVisible)>(pvt[14]);
+    v.isVisible = reinterpret_cast<decltype(v.isVisible)>(pvt[15]);
+    v.childCount = reinterpret_cast<decltype(v.childCount)>(pvt[17]);
+    v.getChild = reinterpret_cast<decltype(v.getChild)>(pvt[18]);
+    v.getParent = reinterpret_cast<decltype(v.getParent)>(pvt[19]);
+    v.isPopup = reinterpret_cast<decltype(v.isPopup)>(pvt[23]);
+    v.getName = reinterpret_cast<decltype(v.getName)>(pvt[35]);
+    v.getClass = reinterpret_cast<decltype(v.getClass)>(pvt[36]);
+    return true;
+}
+
+// The black main menu after leaving a map (Matty, 2026-09-28: "when i
+// disconnected and went back to the main menu it was also black and the title
+// screen image wasnt showing").
+//
+// It is the client's viewport backdrop, "ViewPortBackGround" (the SDK's
+// CBackGroundPanel): a full-screen popup frame painted 0 0 0 200 behind GE:S's
+// in-map team/MOTD panels. Those panels show it and hide it again, but it
+// outlives a disconnect -- measured headless: after "disconnect" it is the one
+// panel visible that a fresh launch does not have, and the menu frame gains a
+// single draw, a 2560x1440 quad in C8000000 (78% black) between the title image
+// and the menu text. Not GameUI's own darkening: its fill alpha (+0x208) and
+// "darkened" flag stay 0 either way.
+//
+// It also stays up IN the map after the join menus close, where it darkened
+// the pause menu (the menu panel shows the window image). So it is hidden
+// whenever nothing can need it -- the caller decides when that is. While
+// connecting the MOTD may legitimately be up, hence IsConnected, not IsInGame.
+static void HideStrayViewportBackground(void *surface, const char *when)
+{
+    VguiApi v;
+    if (!ResolveVgui(surface, v))
+        return;
+    const int n = v.popupCount(v.surface);
+    for (int i = 0; i < n && i < 256; ++i)
+    {
+        const unsigned vp = v.getPopup(v.surface, i);
+        if (!vp || !v.isVisible(v.panel, vp))
+            continue;
+        const char *name = v.getName(v.panel, vp);
+        if (name && !strcmp(name, "ViewPortBackGround"))
+        {
+            v.setVisible(v.panel, vp, false);
+            Game::logMsg("MENU: hid GE:S's viewport backdrop, left up %s", when);
+        }
+    }
+}
+
+// Diagnostics: the whole VISIBLE VGUI tree -- name, class, size, popup --
+// found by walking up from the first popup to the root. This is how the
+// viewport backdrop above was found.
+static void LogVguiTree(void *surface, const char *when)
+{
+    VguiApi v;
+    if (!ResolveVgui(surface, v) || v.popupCount(v.surface) <= 0)
+    {
+        Game::logMsg("VGUITREE %s: interfaces not recognised", when);
+        return;
+    }
+    unsigned root = v.getPopup(v.surface, 0);
+    for (int guard = 0; root && guard < 32; ++guard)
+    {
+        const unsigned up = v.getParent(v.panel, root);
+        if (!up)
+            break;
+        root = up;
+    }
+    Game::logMsg("VGUITREE %s (visible panels only):", when);
+    struct Walk
+    {
+        static void Go(const VguiApi &v, unsigned vp, int depth, int &lines)
+        {
+            if (!vp || lines >= 250 || depth > 12 || !v.isVisible(v.panel, vp))
+                return;
+            int w = 0, h = 0;
+            v.getSize(v.panel, vp, w, h);
+            const char *name = v.getName(v.panel, vp);
+            const char *cls = v.getClass(v.panel, vp);
+            Game::logMsg("VGUITREE %*s%s (%s) %dx%d%s", depth * 2, "", name ? name : "?", cls ? cls : "?",
+                         w, h, v.isPopup(v.panel, vp) ? " POPUP" : "");
+            ++lines;
+            const int n = v.childCount(v.panel, vp);
+            for (int i = 0; i < n && i < 200; ++i)
+                Go(v, v.getChild(v.panel, vp, i), depth + 1, lines);
+        }
+    };
+    int lines = 0;
+    Walk::Go(v, root, 0, lines);
 }
 
 bool VR::ComputeMenuMode()
@@ -5846,6 +6064,15 @@ void VR::ParseConfigFile()
     m_EyeDiagDelaySec = CfgFloat(userConfig, "EyeDiagDelaySec", m_EyeDiagDelaySec);
     m_EyeDiagQuit = CfgBool(userConfig, "EyeDiagQuit", m_EyeDiagQuit);
     m_FakeSubmitOOM = CfgInt(userConfig, "FakeSubmitOOM", m_FakeSubmitOOM);
+    m_WindowFromEye = CfgBool(userConfig, "WindowFromEye", m_WindowFromEye);
+    m_EyeDiagDisconnect = CfgBool(userConfig, "EyeDiagDisconnect", m_EyeDiagDisconnect);
+    m_EyeDiagMenuSec = CfgInt(userConfig, "EyeDiagMenuSec", m_EyeDiagMenuSec);
+    {
+        auto it = userConfig.find("EyeDiagMenuCommand");
+        if (it != userConfig.end())
+            m_EyeDiagMenuCommand = it->second;
+    }
+    dxvk::g_GESVR_DiagForceUpload = CfgBool(userConfig, "EyeDiagForceUpload", dxvk::g_GESVR_DiagForceUpload);
     {
         auto it = userConfig.find("EyeDiagCommands");
         if (it != userConfig.end())

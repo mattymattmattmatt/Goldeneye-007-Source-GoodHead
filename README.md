@@ -155,9 +155,9 @@ Reinstalling into the *same* folder does not fix it. Your GE:S install and your 
 
 **Quitting from the menu pauses for a few seconds** — a Steam hang on exit that the mod detects and ends for you.
 
-**The game closes by itself while loading a map** — the graphics driver reported an error it can't recover from. The game used to freeze on the spot until you killed it; now it closes, so you can launch again straight away. `vrmod_log.txt` has a `DXVK FATAL` line saying which error it was — worth sending along if it keeps happening.
+**The game closes by itself while loading a map** — the graphics driver reset itself (Windows' Event Viewer, System log, shows "Display driver nvlddmkm stopped responding and has successfully recovered" at that moment). The game used to freeze on the spot until you killed it; now it closes, so you can launch again straight away, and `vrmod_log.txt` has a `DXVK FATAL` line. If it happens often: put any GPU overclock back to stock, close other GPU-heavy programs, and try a clean reinstall of the NVIDIA driver.
 
-**The game window on your desktop is black, with only the HUD and menus** — with per-eye rendering on, the view in your headset isn't drawn in the game window at all. To record or stream, capture SteamVR's mirror window (SteamVR menu > Display VR View) instead.
+**The game window on your desktop shows a wide, cropped view** — with per-eye rendering on, the window shows a slice of the left eye's picture (the pause menu sits on the same picture). For recording or streaming, SteamVR's mirror window (SteamVR menu > Display VR View) shows exactly what the headset does.
 
 **Something else went wrong** — `…\Source SDK Base 2007\bin\vrmod_log.txt` records what happened, including memory use and frame pacing. It starts fresh once it passes 8 MB.
 

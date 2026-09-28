@@ -991,7 +991,15 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 			strcat_s(prefix, "gesvr_eye");
 			g_D3DVR9->DiagEyeDumpWrite(prefix);
 			s_diagState = 4;
-			if (m_VR->m_EyeDiagQuit)
+			if (m_VR->m_EyeDiagDisconnect)
+			{
+				// VR::Update takes it from here: the main menu has no RenderView.
+				Game::logMsg("EYEDIAG: disconnecting to capture the main menu");
+				m_Game->ClientCmd_Unrestricted("disconnect");
+				m_VR->m_DiagMenuPhase = 1;
+				m_VR->m_DiagMenuAt = GetTickCount64() + 6000;
+			}
+			else if (m_VR->m_EyeDiagQuit)
 			{
 				Game::logMsg("EYEDIAG done; EyeDiagQuit set, ending the process");
 				TerminateProcess(GetCurrentProcess(), 0);
@@ -1021,28 +1029,48 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	{
 		if (traceStereo) Game::logMsg("stereo pass #%d HUD pass to backbuffer", pass);
 		dxvk::GESVR_EyeTraceBeginPass(3, 0, 0);
-		// Clear the backbuffer to black FIRST. With VIEW_NO_DRAW this pass never
+		// Give the backbuffer a picture FIRST. With VIEW_NO_DRAW this pass never
 		// clears or redraws the world colour -- the engine drops VIEW_CLEAR_COLOR
-		// when VIEW_NO_DRAW is set; only the depth clear survives (traced) -- yet
-		// GE:S still runs its bloom over the buffer every frame. Bloom is
-		// additive, so each frame brightened the last until it saturated white.
-		// Every menu in a map is painted over this buffer and captured for the
-		// floating panel: that was the all-white pause menu of the first headset
-		// test (2026-09-28). The window path never saw it, because its eye
-		// passes draw into the backbuffer with full clears.
+		// when VIEW_NO_DRAW is set; only the depth clear survives (traced) -- so
+		// whatever is in it stays, and every menu in a map is painted over it and
+		// captured for the floating panel. Left alone, GE:S's additive bloom ran
+		// over the same uncleared buffer every frame until it was white: the
+		// all-white pause menu of the first headset test (2026-09-28). A black
+		// fill fixed that but made the pause menu and the desktop window black.
 		//
-		// ColorFill, straight on the surface: it changes no device state, so
-		// the material system's cached render target and viewport stay true.
-		if (IDirect3DDevice9 *dev = g_D3DVR9->GetD3DDevice())
+		// So: the left eye's picture, cropped to the window's shape (Matty:
+		// "just show the game world as its not actually paused"). Both are GPU
+		// copies straight on the surface and change no device state, so the
+		// material system's cached render target and viewport stay true. Black
+		// only if there is no eye picture yet.
 		{
-			IDirect3DSurface9 *bb = nullptr;
-			if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb)
+			const bool useBounds = m_VR->m_UseTextureBounds && m_VR->m_HaveTextureBounds;
+			vr::VRTextureBounds_t b = useBounds ? m_VR->m_TextureBounds[0] : vr::VRTextureBounds_t{ 0.0f, 0.0f, 1.0f, 1.0f };
+			if (!m_VR->m_UseVerticalCrop)
 			{
-				dev->ColorFill(bb, nullptr, D3DCOLOR_ARGB(255, 0, 0, 0));
-				bb->Release();
+				b.vMin = 0.0f;
+				b.vMax = 1.0f;
+			}
+			if (!m_VR->m_WindowFromEye || FAILED(g_D3DVR9->FillBackBufferFromEye(b.uMin, b.vMin, b.uMax, b.vMax)))
+			{
+				if (IDirect3DDevice9 *dev = g_D3DVR9->GetD3DDevice())
+				{
+					IDirect3DSurface9 *bb = nullptr;
+					if (SUCCEEDED(dev->GetBackBuffer(0, 0, D3DBACKBUFFER_TYPE_MONO, &bb)) && bb)
+					{
+						dev->ColorFill(bb, nullptr, D3DCOLOR_ARGB(255, 0, 0, 0));
+						bb->Release();
+					}
+				}
 			}
 		}
-		hkRenderView.fOriginal(ecx, setup, VIEW_NO_DRAW, whatToDraw | RENDERVIEW_DRAWHUD);
+		// No bloom or auto-exposure in this pass. The picture above already has
+		// both; a second bloom over it would glow twice, and this pass's
+		// histogram would feed the window into the EYES' exposure.
+		CViewSetup hudView;
+		CopyViewSetup(hudView, setup);   // not '= setup': that reads our padding tail off the engine's object
+		hudView.m_bDoBloomAndToneMapping = false;
+		hkRenderView.fOriginal(ecx, hudView, VIEW_NO_DRAW, whatToDraw | RENDERVIEW_DRAWHUD);
 		dxvk::GESVR_EyeTraceEndPass(3);
 	}
 	g_inStereoPass = false;

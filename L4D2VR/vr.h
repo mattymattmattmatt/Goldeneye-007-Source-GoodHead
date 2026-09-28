@@ -297,6 +297,9 @@ public:
 	// both eyes 100%, cost no address space (they are GPU memory), ~1.4 ms a
 	// frame in a real scene including the HUD pass, and survive a map change.
 	bool m_UseEyeRenderTargets = true;
+	// Per-eye path: the window (and so every in-map menu) shows a crop of the
+	// left eye; false fills it black instead (hooks.cpp, HUD pass).
+	bool m_WindowFromEye = true;
 	// Eye-pass diagnostics (vr_eyediag.h). EyeDiagDelaySec after the first
 	// stereo frame, two consecutive frames are traced at the D3D9 device and
 	// both eye images are written to %TEMP%\gesvr_eye_*.bmp. EyeDiagQuit then
@@ -309,6 +312,19 @@ public:
 	// in DxvkCommandList::submitToQueue; 100 outlasts it and must end the
 	// process with a DXVK FATAL line, not freeze it.
 	int m_FakeSubmitOOM = 0;
+	// Test only: after the in-map dump, "disconnect", and 6 s into the main
+	// menu dump the menu panel and backbuffer as %TEMP%\gesvr_eye_menu_*.bmp
+	// (then EyeDiagQuit applies). EyeDiagMenuSec=N does the same N seconds
+	// after launch, for a run that never loads a map (EyeTest -Map "").
+	// m_DiagMenu* is that sequence's state; m_DiagMenuAt is a GetTickCount64
+	// deadline.
+	bool m_EyeDiagDisconnect = false;
+	int m_EyeDiagMenuSec = 0;
+	// Test only: a console command run at the main menu 3 s before the capture.
+	std::string m_EyeDiagMenuCommand;
+	int m_DiagMenuPhase = 0;
+	unsigned long long m_DiagMenuAt = 0;
+	int m_DiagMenuFrames = 0;
 	// Console commands the diagnostics issue 4 s after the first stereo frame,
 	// ';'-separated -- "joingame; joinclass bond" gets a headless test past
 	// the join screen, which ExtraCvars cannot (it waits for menus to close).

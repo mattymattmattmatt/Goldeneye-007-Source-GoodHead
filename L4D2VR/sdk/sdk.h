@@ -117,7 +117,7 @@ public:
 	virtual void *sub_1005D2C0() = 0;
 	virtual void *sub_1005D2D0() = 0;
 	virtual bool IsInGame() = 0;
-	virtual void *sub_1005F150() = 0;
+	virtual bool IsConnected() = 0;   // signon state >= 2 (engine+0xBA530, checked 2026-09-28)
 	virtual void *sub_1005D2F0() = 0;
 	virtual void *sub_1005D300() = 0;
 	virtual void *sub_1005D350() = 0;

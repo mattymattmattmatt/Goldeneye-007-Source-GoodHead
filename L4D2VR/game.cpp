@@ -262,6 +262,22 @@ bool Game::IsInMap()
     return ingame;
 }
 
+bool Game::IsConnected()
+{
+    if (!m_EngineClient)
+        return false;
+    bool connected = false;
+    __try
+    {
+        connected = m_EngineClient->IsConnected();
+    }
+    __except (EXCEPTION_EXECUTE_HANDLER)
+    {
+        connected = false;
+    }
+    return connected;
+}
+
 // === Entity Access ===
 CBaseEntity* Game::GetClientEntity(int entityIndex)
 {

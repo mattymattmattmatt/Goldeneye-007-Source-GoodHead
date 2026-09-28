@@ -1,7 +1,85 @@
 # GESVR — GoldenEye: Source VR — Handoff
 
-Last updated: **2026-09-28**, first headset test of per-eye targets (below).
+Last updated: **2026-09-29**, menus after the per-eye change; map-load failures
+are driver resets (below).
 Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in Theater".
+
+---
+
+## MENUS ON THE PER-EYE PATH, AND WHAT THE MAP-LOAD FAILURES ARE (2026-09-29)
+
+Matty: "the pause menu is black but the text is fine ... [use] our title menu
+image as the background there or just show the game world as its not actually
+paused ... when i disconnected and went back to the main menu it was also black
+and the title screen image wasnt showing."
+
+### Map-load failures: NVIDIA driver resets (TDR), not our freeze
+
+Windows' System log has `Display: nvlddmkm stopped responding and has
+successfully recovered` (4101, preceded by nvlddmkm 153) at **18:33:28 and
+18:34:19 on 09-28 -- the exact moments of Matty's two failed launches** -- and
+on 09-26 20:53 and 09-27 11:46, before per-eye rendering existed. The new
+DXVK FATAL path turns each into `VkResult -4, device lost` in vrmod_log and a
+clean exit (seen headless, 1687 MB used / 135 MB hole: not memory).
+Headless: 0 in ~40 map loads through the evening, then 5 of 7 once the PC had
+locked itself (Bubbles.scr running) -- with `WindowFromEye` both on AND off, so
+not the new window copy. The last one also logged nvlddmkm 13 "Graphics
+Exception: Class 0xc5c0 (Turing compute) Subchannel 0x0 Mismatch".
+Read with `Get-WinEvent -FilterHashtable @{LogName='System'} | ? ProviderName
+-match 'nvlddmkm|Display'`. Not solved; candidates: GPU clocks/driver state,
+something GPU-heavy in the first frames of a map (timeouts are > 2 s of GPU
+work), the SteamVR/Oculus runtimes sharing the GPU. Do not test on a locked PC.
+
+### Pause menu: the game world behind it
+
+The HUD pass used to ColorFill black (the white-menu fix). Now
+`IDirect3DVR9::FillBackBufferFromEye` StretchRects a window-shaped crop of the
+left eye (centred in its texture bounds) into the backbuffer first, so the
+pause menu, every in-map menu and the desktop window show the world. The HUD
+pass itself runs with `m_bDoBloomAndToneMapping = false` (the picture already
+has bloom; its histogram would feed the window into the eyes' exposure).
+`WindowFromEye=false` puts the black fill back. DXVK takes its shader blit
+path for this because the backbuffer is multisampled with `AntiAliasing=2`.
+
+### The black screen over the menus: GE:S's viewport backdrop
+
+`ViewPortBackGround` (the SDK's CBackGroundPanel, a full-screen popup Frame
+painted 0 0 0 200) is shown by the team/character/MOTD panels and outlives
+them -- in the map (it darkened the pause menu to ~22%) and after a disconnect
+(78% black over the title). `HideStrayViewportBackground` (vr.cpp) hides it
+every 10 frames when disconnected (`Game::IsConnected`, engine slot 27 =
+signon state >= 2, verified) or in a map with no pause menu and nothing wanting
+the mouse. Found with the new VGUI tree dump: it is the one visible panel a
+fresh launch does not have. GameUI's own darkening is NOT it (CBasePanel
++0x208 fill alpha and +0x1F8 flag are 0 either way).
+
+### Still open: the title image draws black after a map
+
+With the backdrop gone the menu text shows, but the title texture still comes
+out black -- on the window path too, so it predates per-eye rendering.
+Compared fresh launch vs after disconnect, same draw, and found IDENTICAL:
+texture (2048x1024 DXT1, CPU copy the same, re-upload forced from it: still
+black), texture coordinates, vertex colour, sampler/blend/sRGB/LOD state, the
+pixel shader (hash 266D9D6D, disassembled: output = texture x vertex colour,
+its fog resolves to none) and every constant it reads, fixed-function fog off.
+`$nofog` in the VMT changed nothing. Only in-map leftovers differ (VS c16
+fog params, lighting constants the shader does not read). Next: GPU memory
+aliasing -- the menu trace now logs `texmem`/`rtmem`/`dstmem` (VkDeviceMemory
++offset/length) for every draw and StretchRect; if the title's range overlaps a
+render target written each frame, that is it. Or try `EyeDiagMenuCommand=
+mat_reloadtextures` (that run hit a driver reset before it got there).
+
+### New headless tools (EyeTest.ps1 / config)
+
+* `-MainMenu` with `EyeDiagMenuSec=N`: capture the main menu N s after launch.
+* `EyeDiagDisconnect=true`: after the in-map capture, `disconnect`, then
+  capture the main menu at 6, 15 and 30 s (`gesvr_eye_menu1..3_O/B.bmp`), each
+  with a one-frame device trace (pass `M`: per-draw texture, rect, colour, UVs,
+  shader constants, sampler/fog state, shader bytecode to %TEMP%) and the whole
+  visible VGUI tree (`VGUITREE`).
+* `EyeDiagMenuCommand=<cmd>`: console command at the menu 3 s before capture.
+* `EyeDiagForceUpload=true`: re-upload managed textures in the traced frame.
+* Every D3D9 device Reset is logged with its caller.
 
 ---
 

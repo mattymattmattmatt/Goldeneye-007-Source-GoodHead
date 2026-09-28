@@ -107,6 +107,7 @@ public:
 
     bool IsGameUIVisible();
     bool IsInMap();
+    bool IsConnected();   // signed on to a server at all, map loaded or not
 
     // === Logging ===
     static void InitModPaths(HMODULE hModule);

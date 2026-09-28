@@ -3,6 +3,8 @@
 #
 #   EyeTest.ps1 -Name eyert -Set "EyeRenderTargets=true|AntiAliasing=0"
 #   EyeTest.ps1 -Name ingame -DelaySec 30 -Set "EyeDiagCommands=jointeam 0; joinclass bond"
+#   EyeTest.ps1 -Name menu -MainMenu -Set "EyeDiagMenuSec=25"          main menu images
+#   add "EyeDiagDisconnect=true" to an in-map run for the menu after leaving a map
 #
 # Needs VRNull.ps1 -Mode on first (or a headset on someone's head). Starts from
 # the player's own config.txt, backed up once and never overwritten, appends the
@@ -20,6 +22,7 @@ param(
     [Parameter(Mandatory)][string]$Name,
     [string[]]$Set = @(),
     [string]$Map = "ge_archives",
+    [switch]$MainMenu,
     [int]$DelaySec = 20,
     [int]$TimeoutSec = 300
 )
@@ -44,8 +47,12 @@ Get-ChildItem $env:TEMP -Filter "gesvr_eye_*.bmp" -ErrorAction SilentlyContinue 
 $logStart = if (Test-Path $log) { (Get-Item $log).Length } else { 0 }
 
 try {
-    Write-Host "[$Name] launching into $Map with: $($Set -join ', ')"
-    & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $GesvrRepo "Launch-GESVR.ps1") -ExtraArgs "+map $Map" | Out-Null
+    # -MainMenu stays at the main menu (pair it with EyeDiagMenuSec=N). An empty
+    # -ExtraArgs would reach the launcher as a bare switch, so it is left out.
+    $launch = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", (Join-Path $GesvrRepo "Launch-GESVR.ps1"))
+    if (-not $MainMenu) { $launch += @("-ExtraArgs", "+map $Map") }
+    Write-Host "[$Name] launching into $(if ($MainMenu) { 'the main menu' } else { $Map }) with: $($Set -join ', ')"
+    & powershell @launch | Out-Null
 
     $t0 = Get-Date
     $started = $false
