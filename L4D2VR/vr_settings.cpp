@@ -412,7 +412,7 @@ static void BuildModel(VR *vr)
     // mat_antialias resets the D3D device underneath a live compositor. Saved
     // here, read out of config.txt by the launcher, passed on the command line
     // before the device exists.
-    graphics.items.push_back(Named(L"Anti-aliasing", L"Saved now, applied next launch. 2x is the one that fits.",
+    graphics.items.push_back(Named(L"Anti-aliasing", L"Next launch. With per-eye rendering on, desktop window only.",
         { L"Game setting", L"Off", L"2x", L"4x" },
         [vr]() { const int a = vr->m_AntiAliasing; return a < 0 ? 0 : a == 0 ? 1 : a <= 2 ? 2 : 3; },
         [vr](int i) { static const int v[] = { -1, 0, 2, 4 }; vr->m_AntiAliasing = v[i]; },
@@ -496,6 +496,12 @@ static void BuildModel(VR *vr)
     g_tabs.push_back(graphics);
 
     Tab detail{ L"Detail" };
+    // First because it is the biggest quality switch in the mod. Live, so the
+    // two paths can be compared without taking the headset off: turning it on
+    // creates the eye targets on the next frame, exactly as at map start.
+    detail.items.push_back(Toggle(L"Per-eye rendering",
+        L"Each eye at the headset's own resolution. Off = the old window path.",
+        &vr->m_UseEyeRenderTargets, "EyeRenderTargets"));
     detail.items.push_back(Named(L"Model detail", L"Reloads every model, so this one waits for the menu too.",
         { L"Game setting", L"High", L"Medium", L"Low" },
         [vr]() { return vr->m_ModelDetail < 0 ? 0 : vr->m_ModelDetail + 1; },

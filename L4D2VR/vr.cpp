@@ -1104,6 +1104,11 @@ VR::VR(Game *game)
     m_Aspect = tanHalfFov[0] / tanHalfFov[1];
     m_Fov = 2.0f * atan(tanHalfFov[0]) * 360 / (3.14159265358979323846 * 2);
     m_HaveTextureBounds = (tanHalfFov[0] > 0.01f && tanHalfFov[1] > 0.01f);
+    {
+        // The reticle and throw guide need it to draw round shapes round.
+        extern float GESVR_PublishEyeAspect(float);
+        GESVR_PublishEyeAspect(m_Aspect);
+    }
 
     InstallApplicationManifest("manifest.vrmanifest");
     SetActionManifest("action_manifest.json");
@@ -5824,6 +5829,14 @@ void VR::ParseConfigFile()
     }
     m_MenuScaleWithRes = CfgBool(userConfig, "MenuScaleWithRes", m_MenuScaleWithRes);
     m_UseEyeRenderTargets = CfgBool(userConfig, "EyeRenderTargets", m_UseEyeRenderTargets);
+    m_EyeDiag = CfgBool(userConfig, "EyeDiag", m_EyeDiag);
+    m_EyeDiagDelaySec = CfgFloat(userConfig, "EyeDiagDelaySec", m_EyeDiagDelaySec);
+    m_EyeDiagQuit = CfgBool(userConfig, "EyeDiagQuit", m_EyeDiagQuit);
+    {
+        auto it = userConfig.find("EyeDiagCommands");
+        if (it != userConfig.end())
+            m_EyeDiagCommands = it->second;
+    }
     m_EyeHudPass = CfgBool(userConfig, "EyeHudPass", m_EyeHudPass);
     m_MonoEye = CfgBool(userConfig, "MonoEye", m_MonoEye);
     m_EyeCropLegacyV = CfgBool(userConfig, "EyeCropLegacyV", m_EyeCropLegacyV);

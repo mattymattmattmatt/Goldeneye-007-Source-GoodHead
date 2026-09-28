@@ -8,6 +8,9 @@
 #include "weapons.h"
 #include "vrnet.h"
 #include "d3d9_vr.h"
+#include "vr_eyediag.h"
+#include "viewport_clamp.h"
+#include <intrin.h>
 #include <iostream>
 #include <string>
 #include <cstddef>
@@ -733,6 +736,56 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 
 	g_inStereoPass = true;
 	++g_stereoFrame;
+
+	// Eye-pass diagnostics (vr_eyediag.h). State: 0 waiting, 1-2 tracing two
+	// consecutive frames, 3 dump queued, 4 done.
+	static ULONGLONG s_diagFirst = 0;
+	static int s_diagState = 0, s_diagWait = 0;
+	static size_t s_diagCmdPos = 0;
+	static ULONGLONG s_diagCmdNext = 0;
+	if (m_VR->m_EyeDiag && s_diagState == 0)
+	{
+		const ULONGLONG now = GetTickCount64();
+		if (!s_diagFirst)
+		{
+			s_diagFirst = now;
+			s_diagCmdNext = now + 4000;
+		}
+		// One command every two seconds: the server has to act on one (open
+		// character select) before the next (pick a character) means anything.
+		const std::string &all = m_VR->m_EyeDiagCommands;
+		if (m_Game && s_diagCmdPos < all.size() && now >= s_diagCmdNext)
+		{
+			size_t end = all.find(';', s_diagCmdPos);
+			if (end == std::string::npos)
+				end = all.size();
+			std::string cmd = all.substr(s_diagCmdPos, end - s_diagCmdPos);
+			s_diagCmdPos = end + 1;
+			s_diagCmdNext = now + 2000;
+			const size_t b = cmd.find_first_not_of(" \t"), e = cmd.find_last_not_of(" \t\r\n");
+			if (b != std::string::npos)
+			{
+				cmd = cmd.substr(b, e - b + 1);
+				m_Game->ClientCmd_Unrestricted(cmd.c_str());
+				Game::logMsg("EYEDIAG command: %s", cmd.c_str());
+			}
+		}
+		// Ask the watchdog for the largest free block too, from a few seconds
+		// before tracing, so the number logged below is fresh.
+		if (now - s_diagFirst >= (ULONGLONG)(m_VR->m_EyeDiagDelaySec * 1000.0f) - 3000)
+			GESVRMem::g_wantHole.store(true);
+		if (now - s_diagFirst >= (ULONGLONG)(m_VR->m_EyeDiagDelaySec * 1000.0f))
+		{
+			s_diagState = 1;
+			Game::logMsg("EYEDIAG tracing starts: EyeRenderTargets=%d SharedEyeTarget=%d MonoEye=%d eyeRT=%ux%u window=%dx%d",
+			             (int)m_VR->m_UseEyeRenderTargets, (int)m_VR->m_SharedEyeTarget, (int)m_VR->m_MonoEye,
+			             m_VR->m_EyeRTWidth, m_VR->m_EyeRTHeight, setup.width, setup.height);
+			Game::logMsg("EYEDIAG memory now %u of %u MB (peak %u), largest free block %u MB",
+			             GESVRMem::g_usedMB.load(), GESVRMem::g_totalMB.load(),
+			             GESVRMem::g_peakMB.load(), GESVRMem::g_holeMB.load());
+		}
+	}
+	dxvk::g_GESVR_EyeTrace = (s_diagState == 1 || s_diagState == 2);
 	g_squash = 1.0f;
 	if (m_VR && (m_VR->m_TrackedWeapon || m_VR->m_FixViewmodelAspect) && m_VR->m_Aspect > 0.1f)
 	{
@@ -815,6 +868,14 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	// second pass then drew at the backbuffer's 1920x1080 inside a 1806x1873
 	// target: full width, top 58% only, black underneath, which is exactly what
 	// the right eye showed. Going via null forces a real rebind both times.
+	const unsigned traceW = rndrContext ? m_VR->m_EyeRTWidth : 0;
+	const unsigned traceH = rndrContext ? m_VR->m_EyeRTHeight : 0;
+	// The shader API clamps every viewport to the window's size, which is what
+	// cut eye targets bigger than the window down to their top-left corner.
+	// Lifted for the two eye passes only; see viewport_clamp.h.
+	if (rndrContext)
+		ViewportClamp::SetUnclamped(true);
+	dxvk::GESVR_EyeTraceBeginPass(1, traceW, traceH);
 	if (rndrContext)
 	{
 		rndrContext->SetRenderTarget(nullptr);
@@ -839,7 +900,10 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	                              pass, leftEyeView.width, leftEyeView.height,
 	                              (void*)m_VR->m_LeftEyeTexture, eyeClear, eyeDraw);
 	g_eyeOrigin = leftEyeView.origin; g_eyeAngles = leftEyeView.angles; g_eyeValid = true;
+	dxvk::GESVR_EyeTraceSnapshot("entering RenderView");
 	hkRenderView.fOriginal(ecx, leftEyeView, eyeClear, eyeDraw);
+	dxvk::GESVR_EyeTraceSnapshot("leaving RenderView");
+	dxvk::GESVR_EyeTraceEndPass(1);
 	if (traceStereo) Game::logMsg("stereo pass #%d L rendered, capturing", pass);
 	// Force the material system to submit its queued work before we capture.
 	//
@@ -852,6 +916,7 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	HRESULT hl = g_D3DVR9->CaptureCurrentRT(0, &m_VR->m_VKLeftEye);
 	if (traceStereo) Game::logMsg("stereo pass #%d L ok hr=0x%08X", pass, (unsigned)hl);
 
+	dxvk::GESVR_EyeTraceBeginPass(2, traceW, traceH);
 	if (rndrContext)
 	{
 		rndrContext->SetRenderTarget(nullptr);
@@ -861,7 +926,10 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	                              pass, rightEyeView.width, rightEyeView.height,
 	                              (void*)m_VR->m_RightEyeTexture);
 	g_eyeOrigin = rightEyeView.origin; g_eyeAngles = rightEyeView.angles; g_eyeValid = true;
+	dxvk::GESVR_EyeTraceSnapshot("entering RenderView");
 	hkRenderView.fOriginal(ecx, rightEyeView, eyeClear, eyeDraw);
+	dxvk::GESVR_EyeTraceSnapshot("leaving RenderView");
+	dxvk::GESVR_EyeTraceEndPass(2);
 	g_eyeValid = false;
 	if (traceStereo) Game::logMsg("stereo pass #%d R rendered, capturing", pass);
 	if (rndrContext) rndrContext->Flush(true);
@@ -872,11 +940,43 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 		&& m_VR->m_VKLeftEye.m_VRTexture.handle
 		&& m_VR->m_VKRightEye.m_VRTexture.handle;
 
+	// Eye diagnostics: after the second traced frame, snapshot both eyes as
+	// they are about to go to the compositor. The copy is queued now and read
+	// back 45 frames later, never in the same frame -- see DiagEyeDumpIssue.
+	if (m_VR->m_EyeDiag && s_diagState >= 1 && s_diagState <= 3)
+	{
+		if (s_diagState == 1)
+			s_diagState = 2;
+		else if (s_diagState == 2)
+		{
+			dxvk::g_GESVR_EyeTrace = false;
+			g_D3DVR9->DiagEyeDumpIssue(1024);
+			s_diagState = 3;
+			s_diagWait = 0;
+		}
+		else if (++s_diagWait >= 45)
+		{
+			char prefix[MAX_PATH] = {};
+			GetTempPathA(MAX_PATH, prefix);
+			strcat_s(prefix, "gesvr_eye");
+			g_D3DVR9->DiagEyeDumpWrite(prefix);
+			s_diagState = 4;
+			if (m_VR->m_EyeDiagQuit)
+			{
+				Game::logMsg("EYEDIAG done; EyeDiagQuit set, ending the process");
+				TerminateProcess(GetCurrentProcess(), 0);
+			}
+		}
+	}
+
 	if (traceStereo)
 		Game::logMsg("RenderView stereo capture L=0x%08X R=0x%08X ok=%d Lorig=(%.1f,%.1f,%.1f) Rorig=(%.1f,%.1f,%.1f)",
 		             (unsigned)hl, (unsigned)hr, (int)m_VR->m_RenderedNewFrame,
 		             leftEyeView.origin.x, leftEyeView.origin.y, leftEyeView.origin.z,
 		             rightEyeView.origin.x, rightEyeView.origin.y, rightEyeView.origin.z);
+
+	// Clamp back on before anything draws to the backbuffer again.
+	ViewportClamp::SetUnclamped(false);
 
 	// Hand the backbuffer back, or the HUD/menu would draw into the eye
 	// texture and the desktop window would go black.
@@ -890,7 +990,9 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	if (rndrContext && (overlayMenu || (m_VR->m_EyeHudPass && (whatToDraw & RENDERVIEW_DRAWHUD))))
 	{
 		if (traceStereo) Game::logMsg("stereo pass #%d HUD pass to backbuffer", pass);
+		dxvk::GESVR_EyeTraceBeginPass(3, 0, 0);
 		hkRenderView.fOriginal(ecx, setup, VIEW_NO_DRAW, whatToDraw | RENDERVIEW_DRAWHUD);
+		dxvk::GESVR_EyeTraceEndPass(3);
 	}
 	g_inStereoPass = false;
 }
@@ -1182,6 +1284,12 @@ void Hooks::dAdjustEngineViewport(int &x, int &y, int &width, int &height)
 
 void Hooks::dViewport(void *ecx, void *edx, int x, int y, int width, int height)
 {
+	if (dxvk::g_GESVR_EyeTrace && dxvk::g_GESVR_EyePass)
+	{
+		char t[160];
+		_snprintf_s(t, sizeof(t), _TRUNCATE, "MatSys Viewport(%d,%d %dx%d)", x, y, width, height);
+		dxvk::GESVR_EyeTraceNote(t, _ReturnAddress(), true);
+	}
 	hkViewport.fOriginal(ecx, x, y, width, height);
 }
 
@@ -2433,6 +2541,15 @@ void Hooks::dDrawModelExecute(void *ecx, void *edx, void *state, const ModelRend
 
 void Hooks::dPushRenderTargetAndViewport(void *ecx, void *edx, ITexture *pTexture, ITexture *pDepthTexture, int nViewX, int nViewY, int nViewW, int nViewH)
 {
+	// Eye-pass trace: what the engine pushes, at what size, from where.
+	if (dxvk::g_GESVR_EyeTrace && dxvk::g_GESVR_EyePass)
+	{
+		char t[240];
+		_snprintf_s(t, sizeof(t), _TRUNCATE, "MatSys PushRenderTargetAndViewport tex=%s depth=%s view=(%d,%d %dx%d)",
+		            pTexture ? pTexture->GetName() : "(null: keep current)",
+		            pDepthTexture ? pDepthTexture->GetName() : "-", nViewX, nViewY, nViewW, nViewH);
+		dxvk::GESVR_EyeTraceNote(t, _ReturnAddress(), true);
+	}
 	if (!m_VR->m_CreatedVRTextures)
 		return hkPushRenderTargetAndViewport.fOriginal(ecx, pTexture, pDepthTexture, nViewX, nViewY, nViewW, nViewH);
 
@@ -2468,6 +2585,8 @@ void Hooks::dPushRenderTargetAndViewport(void *ecx, void *edx, ITexture *pTextur
 
 void Hooks::dPopRenderTargetAndViewport(void *ecx, void *edx)
 {
+	if (dxvk::g_GESVR_EyeTrace && dxvk::g_GESVR_EyePass)
+		dxvk::GESVR_EyeTraceNote("MatSys PopRenderTargetAndViewport", _ReturnAddress(), false);
 	if (!m_VR->m_CreatedVRTextures)
 		return hkPopRenderTargetAndViewport.fOriginal(ecx);
 

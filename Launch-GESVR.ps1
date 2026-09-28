@@ -1,6 +1,11 @@
 # GoldenEye: Source VR launcher
 # Installs d3d9.dll next to hl2.exe, then starts GE:S *through Steam*
 # (SDK 2007 will not find VPK materials if you run hl2.exe by itself).
+#
+#   -ExtraArgs "+map ge_archives"   appended to the game's command line, e.g.
+#                                   to go straight into a map
+
+param([string]$ExtraArgs = "")
 
 $ErrorActionPreference = "Stop"
 
@@ -440,14 +445,14 @@ $gesAniso  = 8      # anisotropic filtering.
 #    2  2x MSAA
 #    4  4x MSAA
 #
-# The cost is memory, not frames. Measured 2026-09-27, in-map frames were 4-6 ms
-# of real work against a 13.9 ms budget at 72 Hz, with 8-9 ms sitting idle in
-# WaitGetPoses -- there is room for the GPU work. What there is not much room for
-# is address space: at 2560x1440 the primary colour + depth pair costs 28 MB with
-# no AA, 56 MB at 2x and 113 MB at 4x, and the peak that session was 1802 of
-# 2047 MB with a largest free block of 135 MB. So 2 is the safe try and 4 is the
-# one that may well put map loads back over the edge. If loads start failing
-# again, this is the first thing to put back to 0.
+# With per-eye render targets on (EyeRenderTargets, the default since
+# 2026-09-28) MSAA never reaches the headset: the eyes render into textures,
+# which D3D9 cannot multisample, so this only smooths the desktop window and the
+# menus. Measured, not assumed -- see HANDOFF. 0 is the sensible choice there.
+#
+# An earlier version of this note costed MSAA in address space (28 / 56 / 113 MB
+# at 2560x1440). That was wrong: render targets live in GPU memory. Eye targets
+# up to 3072x3072 measured no change at all in the 2 GB.
 $gesAA = -1
 
 # Window size: the largest 16:9 that fits the primary desktop, capped at
@@ -509,6 +514,11 @@ if ($gesAA -ge 0) {
     $vrArgs += " +mat_antialias $gesAA +mat_aaquality 0"
     if ($gesAA -eq 0) { Write-Host "Anti-aliasing off" }
     else { Write-Host "Anti-aliasing ${gesAA}x MSAA (set in VR Settings > Graphics)" }
+}
+
+if ($ExtraArgs) {
+    $vrArgs += " $ExtraArgs"
+    Write-Host "Extra arguments: $ExtraArgs"
 }
 
 # Must go through Steam so SDK 2007 mounts its VPKs (startup_loading.vtf lives there).

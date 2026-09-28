@@ -24,7 +24,7 @@ That's it. The launcher finds Steam, the SDK and GE:S, copies the mod next to `h
 
 **Before your first match**, in GE:S's own options set **texture detail to Medium** (Options > Video > Advanced). GE:S is a 32-bit game and High can run it out of memory while a map loads — see [If it crashes while loading a map](#if-it-crashes-while-loading-a-map), which explains exactly why.
 
-If your monitor allows it, set the Windows desktop to **2560×1440 or higher** before playing. Each eye is rendered at the game window's size and the window can't exceed the desktop, so a bigger desktop means a sharper headset image. 1920×1080 works, just softer.
+Each eye is rendered at your headset's own resolution, so your desktop resolution doesn't limit how sharp it looks. (It still sets how sharp the menus are, since those are captured from the game window.)
 
 ---
 
@@ -84,9 +84,11 @@ The **reticle** on or off, with five styles (dot, cross, ring, ring + dot, and *
 The **wrist watch**, and whether it shows always or only when you look at it. **Watch notices** put kills, round start and round end on the watch face instead of the HUD. **Watch on model** sits the watch where the grenade hand's own watch is. **Menu distance** and **menu size** are independent: distance moves the game's menus deeper without resizing them. **Game HUD** — off, only when hurt, or always.
 
 ### Graphics and Detail
-**GE:S's own video settings live here**, because its options dialog can't be used from inside a headset — clicks never reach the Advanced sub-dialog, they fire your gun instead, and there's no way back out without killing the game. Graphics has **texture detail**, **anti-aliasing**, **texture filtering** and **bloom**; Detail has **model**, **shader**, **water** and **shadow** detail. Every one starts on *Game setting*, which changes nothing.
+**GE:S's own video settings live here**, because its options dialog can't be used from inside a headset — clicks never reach the Advanced sub-dialog, they fire your gun instead, and there's no way back out without killing the game. Graphics has **texture detail**, **anti-aliasing**, **texture filtering** and **bloom**; Detail has **per-eye rendering** plus **model**, **shader**, **water** and **shadow** detail. Every game setting starts on *Game setting*, which changes nothing.
 
-Two of them wait for the right moment. **Texture detail** and **model detail** throw away and reload every texture or model, which is a crash with a map already loaded, so they apply when you're back at the menu. **Anti-aliasing** is saved now and applied the next time you launch — changing it while the game runs resets the graphics device underneath SteamVR, which is exactly the crash people hit changing it in GE:S's own menu.
+**Per-eye rendering** (on by default) draws each eye at the headset's own resolution and shape. Turn it off for the old path, which draws each eye into the 16:9 game window: softer, and the game's HUD comes back into your view, stretched. It switches live, so you can compare them without taking the headset off.
+
+Two of them wait for the right moment. **Texture detail** and **model detail** throw away and reload every texture or model, which is a crash with a map already loaded, so they apply when you're back at the menu. **Anti-aliasing** is saved now and applied the next time you launch — changing it while the game runs resets the graphics device underneath SteamVR, which is exactly the crash people hit changing it in GE:S's own menu. With per-eye rendering on it only smooths the desktop window, not the headset — the eyes are drawn in a way the game's anti-aliasing can't reach — so leave it off there. Their sharpness comes from resolution instead.
 
 Underneath sits a live **address space** meter, the number that decides whether your next map loads. GE:S is 32-bit, so 2047 MB is the whole world — game, map, every texture, and the copies the graphics layer keeps. **Green** means room to spare, **amber** means it will fit with little left, **red** means it won't. At the menu it shows both what's in use now and what it will be once a map is in, because 1050 MB of 2047 looks like half the world free right up until you load a map and it isn't. The **largest free block** below matters just as much: a texture needs one unbroken piece, and a load can fail with plenty free in total but nowhere to put it. Both update twice a second while the tab is open, so you can watch a map load climb.
 
@@ -149,7 +151,7 @@ Reinstalling into the *same* folder does not fix it. Your GE:S install and your 
 
 **The game shows on a flat screen in SteamVR (Theater) instead of in VR** — the launcher turns Theater off, but if it comes back: SteamVR > Settings > Dashboard > "Present non-VR applications on theater screen" = Off.
 
-**The game's own HUD looks vertically stretched** — its radar is an oval. Each eye is rendered into a widescreen buffer and then un-squashed for the headset, which is right for the world but stretches anything drawn flat on the screen. The wrist watch and the VR menus are drawn separately and look correct. Turning the HUD off (Display > Game HUD) and using the watch avoids it.
+**There's no radar** — with per-eye rendering on, GE:S's own HUD is kept out of your view, because this version of the game can only draw it flat across the screen and in a headset that came out stretched 1.84× (the radar was an oval). The watch shows health, armour, ammo, the round time, your weapon and kills, so the radar is the one thing missing. **Hurt** under Display > Game HUD still flashes your health bars when you're hit. Turning per-eye rendering off (Detail) brings the stretched HUD back.
 
 **Quitting from the menu pauses for a few seconds** — a Steam hang on exit that the mod detects and ends for you.
 
@@ -165,7 +167,7 @@ Reinstalling into the *same* folder does not fix it. Your GE:S install and your 
   ```
   hud_fastswitch 0; ge_fp_ragdoll 1; cl_ge_show_timer 1; cl_ge_show_ammocount 1; cl_ge_hud_noswitchlist 0; cl_ge_drawkillfeed 1
   ```
-* **Resolution** follows your desktop, capped at 2560×1440. A 4K window was tried and crashed at character select, hence the cap. To pin a size, set `$gesResolution` near the graphics section of `Launch-GESVR.ps1`.
+* **The game window** follows your desktop, capped at 2560×1440 — it's what the menus are captured from, and with per-eye rendering off it's also the resolution of each eye. A 4K window was tried and crashed at character select, hence the cap. To pin a size, set `$gesResolution` near the graphics section of `Launch-GESVR.ps1`.
 * **Death is done for VR**: the red blood curtain drops over your view and the camera stays steady instead of riding the ragdoll.
 
 ---

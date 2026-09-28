@@ -1,7 +1,178 @@
 # GESVR — GoldenEye: Source VR — Handoff
 
-Last updated: **2026-09-25**, after v1.0 and the main-menu skin (below).
+Last updated: **2026-09-28**, per-eye render targets solved (below).
 Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in Theater".
+
+---
+
+## PER-EYE RENDER TARGETS: SOLVED (2026-09-28)
+
+**`EyeRenderTargets` works and is now on by default.** Each eye renders into its
+own target at roughly the headset's native resolution and shape, instead of into
+the 16:9 window. Tested headless on SteamVR's null driver -- nobody was in the
+headset for any of this; see "Not yet verified" below.
+
+### The cause: shaderapidx9 clamps every viewport to the WINDOW
+
+`CShaderAPIDx8::SetViewports`, shaderapidx9.dll (SDK 2007):
+
+```
++0x1A750  sub esp,28 / cmp [esp+2C],1          SetViewports(nCount, pViewports)
++0x1A7A8  call [edi-210]->vtable[0C](&w, &h)   get BACKBUFFER dimensions
++0x1A819  cmp width,w  / jbe skip / width = w  clamp
++0x1A825  cmp height,h / jbe skip / height = h clamp
++0x1A835  (the same pair again, on the other branch, against [edi+2B5C/2B60])
+```
+
+So a target bigger than the window was only ever drawn in its top-left
+window-sized corner. A 2688x2688 target under a 2560x1440 window got a
+2560x1440 viewport; the old 1806x1873 target under 1920x1080 got 1806x1080 --
+"full width, top 58%", which is exactly the symptom recorded below and in
+vr.h. **It was never about the second eye.** With the old ordering quirks gone
+both eyes clip identically.
+
+The material system is innocent: `CommitRenderTargetAndViewport`
+(materialsystem+0x24F40, vtable slot 215 of the real CMatRenderContext at
+rva 0x8D16C) hands SetViewports the pushed 2688x2688 untouched.
+
+### The fix: viewport_clamp.cpp
+
+The four `jbe` (0x76) that skip the clamp become `jmp` (0xEB) for the two eye
+passes only, and go straight back afterwards (hooks.cpp, around the eye passes;
+back on before the HUD pass). Safe because:
+
+* under DXVK a viewport larger than its target is harmless -- Vulkan clips it;
+* rendering is single-threaded (`mat_queue_mode 0`), so nothing else can be
+  inside SetViewports while the bytes are flipped;
+* the code is found by a 48-byte signature and every patched byte is checked
+  against 0x76 first; any mismatch disables the patch permanently and the eye
+  targets just stay window-sized. Page made RWX once, so each toggle is four
+  plain stores.
+
+### How it was found -- use this method next time
+
+Every earlier attempt reasoned about Source from outside. This one asked the
+D3D9 device, which is our own code (DXVK):
+
+* **`vr_eyediag.h`** -- with `EyeDiag=true`, two consecutive frames are traced.
+  DXVK logs every SetRenderTarget / SetViewport / SetScissorRect /
+  scissor-enable / Clear / StretchRect during each eye pass with the live
+  target size and the CALLER as module+offset, flags anything that does not
+  cover the eye target, and aggregates every draw by the state it ran under.
+  The material-system Push/Pop/Viewport hooks log their arguments and callers.
+  A filtered stack scan (Source modules only) prints under anything suspect.
+  Both eye images are dumped to `%TEMP%\gesvr_eye_L/R.bmp`.
+* **The dump is two-phase on purpose**: the GPU copy is queued one frame and
+  read back 45 frames later. The old synchronous readback froze the game.
+* **`tools\headless\`** -- `VRNull.ps1 -Mode on` puts SteamVR on its null
+  headset (backing up steamvr.vrsettings), `EyeTest.ps1` launches straight into
+  a map with config overrides, waits for EyeDiag to trace, dump and quit, and
+  collects the log slice and images; `Summarise.py` prints memory, eye size,
+  clipped-draw count, fill and PHASE timing per run. **`VRNull.ps1 -Mode off`
+  when done**, or the real headset will not be found.
+
+The line that ended a month of guessing:
+
+```
+EYETRACE L SetViewport  rt=2688x2688[EYE] vp=(0,0 2560x1440) ... by shaderapidx9.dll+0x13710
+          <-- does not cover the eye target
+EYETRACE L draws x68    rt=2688x2688[EYE] vp=(0,0 2560x1440)   <-- 68 of 73 draws
+```
+
+### Why the old notes went wrong
+
+* **"Both targets render FULLY -- read back and checked."** The engine clears
+  the target at full size (`Clear f=0x3` at 2688x2688) *before* the clamp takes
+  effect. A readback that counts non-empty pixels sees clear colour below the
+  scene and calls it drawn. **Look at the picture, not a pixel count.**
+* **"The SECOND RenderView draws at the backbuffer's viewport."** Both did.
+* The confirming test was simple: an eye target that FITS inside the window
+  (`EyeRenderScale=0.535`, 1438x1438) came out whole in both eyes.
+
+### Measured (null driver, 2688x2880 recommended, symmetric frustum)
+
+| | address space | largest hole | engine ms |
+|---|---|---|---|
+| window path | 1788 MB | 135 MB | 3.3 (join screen) / **5.7 in game** |
+| eye targets 2688² | 1787 MB | 135 MB | 4.0 / **7.1 in game** (same spawn) |
+| eye targets 2688², shared target | 1803 MB | 135 MB | 4.0 |
+| eye targets 3072² | 1788 MB | 135 MB | 4.2 |
+
+* **Render targets cost NO address space.** They are GPU memory, never mapped
+  into the 32-bit process. This also means the earlier MSAA note (28 / 56 / 113
+  MB of the 2 GB) was wrong; corrected in the launcher and config.txt.
+* **+1.4 ms a frame** in a real scene (333-340 draws per eye), same spawn point.
+* **Survives a map change**: our copies released on leaving map 1, recreated on
+  map 2; Source's targets persist; 1768 MB on map 2, same 135 MB hole.
+* Both eyes 100% filled, 0 clipped draws, at 1438², 2688² and 3072²; shared and
+  separate targets; ge_archives and ge_facility_classic.
+
+### MSAA does not reach the eyes on this path
+
+The eyes render into texture targets, which D3D9 cannot multisample. Measured:
+2x MSAA vs none, brightness normalised, the eye images have no fewer hard edges
+(the raw difference was auto-exposure landing 13% darker between runs). With
+eye targets on, `AntiAliasing` only smooths the desktop window and menus -- set
+it to 0. The eyes' anti-aliasing is their resolution; `EyeRenderScale` above 1
+supersamples, and pixel cost here is small (2688² -> 3072² cost 0.2 ms).
+
+### The HUD on this path
+
+* GE:S's 2D HUD is **kept out of the eyes** (`EyeHudPass=true`): it can only be
+  drawn at the view's size, and the in-eye copy is what used to be 1.84x
+  stretched.
+* The floating full-HUD panel (`GameHUD=always`) **still shows nothing**: it
+  needs `m_RenderedHud`, which only the VGUI-paint hook sets, and that hook's
+  signature is not found on this build (engine.dll). On the window path the HUD
+  reached the player only because it was painted into the eyes.
+* So on this path the watch carries health, armour, ammo, time, weapon and
+  kills. **The radar has nowhere to go.** The hurt flash (`GameHUD=hurt`)
+  still works -- it crops `m_VKHUD`, which the HUD pass fills.
+* **The HUD pass is a full third world render** -- 385 draws in game, more than
+  an eye -- just to put the HUD and a world picture in the backbuffer for the
+  desktop window, the menu overlay and the hurt crops. The obvious next
+  optimisation. Ideas, untested: render that pass from a camera in solid space
+  (the client's RenderView clears to black there and the PVS is empty, so the
+  world costs ~nothing and the HUD still paints); or send the HUD to a cleared
+  transparent target like L4D2VR does.
+* `EyeHudPass=false` (HUD painted into each eye pass at eye size, no third
+  pass) ran once with a material-system teardown seconds after spawning and
+  once cleanly. Not reproducible, not understood, not recommended.
+
+### Also fixed on the way
+
+* Reticle and throw-guide circles used the image's width/height as the
+  un-squash factor; the right one is (W/H) / eye aspect. They were ~4% narrow
+  on BOTH paths. `g_GESVR_EyeAspect` is published from VR::Init.
+* Guide-dot radius clamps were raw pixels tuned on 1440-row eyes; now scaled
+  by rows / 1440 so the guide looks the same at any eye resolution.
+* `Launch-GESVR.ps1 -ExtraArgs "..."` appends to the game's command line.
+* VR Settings > Detail > **Per-eye rendering** toggles the path live.
+
+### Not yet verified -- first things to check in the headset
+
+The null headset has no controllers and a symmetric lens, so none of this
+could be judged headless:
+
+1. The weapon in the hand: the viewmodel "squash" is unchanged and reads the
+   window aspect, which should still be right -- but look at it.
+2. The aim dot lands on the barrel's line; the reticle and throw guide are
+   round and the right size.
+3. The Quest's asymmetric crop at this size (crop < 1, so the targets come out
+   around 2900x3000, not square).
+4. Brightness between eyes: 2.3% apart here (0.4% on the window path) --
+   auto-exposure moving between the two passes. Bright windows clip in one eye
+   first. Probably invisible; watch for it.
+5. The PHASE line on a busy map, to see what the HUD pass really costs.
+
+### Harness gotchas that cost time today
+
+* `powershell -File script.ps1 -Set "a","b"` passes ONE string "a,b" -- split it.
+* Don't split overrides on `;` -- ExtraCvars / EyeDiagCommands use it.
+* `ExtraCvars` cannot get past the join screen (it waits for menus to close).
+  `EyeDiagCommands` issues one command every 2 s from the first stereo frame;
+  `jointeam 0; joinclass bond` spawns you. `joingame` does nothing in 5.0.
+* A script named `dis.py` shadows Python's `dis` and breaks capstone.
 
 ---
 

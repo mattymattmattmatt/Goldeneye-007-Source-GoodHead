@@ -274,45 +274,40 @@ public:
 	// crashes. Only applies when EyeRenderTargets is on.
 	float m_EyeRenderScale = 1.5f;
 
-	// Render each eye into its own engine render target instead of drawing both
-	// into the backbuffer one on top of the other. The backbuffer approach is
-	// what produces "a stereoscopic view with another wonky frame on top": the
-	// second eye overwrites the first in the same buffer. The l4d2vr reference
-	// does SetRenderTarget(m_LeftEyeTexture) around each eye pass, and its
-	// IMatRenderContext vtable is byte-identical to ours, so the call is as safe
-	// here as there. Also renders at HMD resolution rather than window size,
-	// which is where the softness comes from.
-	// ON by default now. Every log has shown eyeRT=0 size=1280x720: each eye
-	// captured from the window backbuffer and upscaled to a ~2496x2688 panel,
-	// which is the jaggies. Renders each eye into its own RT at true HMD
-	// resolution instead. Costs performance; EyeRenderTargets=false reverts.
-	// OFF: this path renders sharply but the RIGHT eye is only ~60% drawn.
+	// Render each eye into its own render target at the headset's resolution and
+	// shape, instead of into the 16:9 window. ON by default since 2026-09-28.
 	//
-	// The old note here blamed the sliver on using the HMD's recommended size.
-	// That was WRONG and it cost real time. What actually happened:
-	//   - the textures were allocated at one size and the viewport set from
-	//     another, so the scene drew into a rectangle that did not match its
-	//     target. Size was never the problem.
-	//   - RT_SIZE_NO_CHANGE clamps a target to the framebuffer, and the SDK
-	//     says it is only valid for targets with no depth buffer. RT_SIZE_LITERAL
-	//     is the one that means what it says.
-	//   - the 2D path is handled: the HUD draws in its own backbuffer pass.
+	// SOLVED, after a month of being written off as "the right eye only draws
+	// 58%": shaderapidx9's CShaderAPIDx8::SetViewports clamps every viewport to
+	// the BACKBUFFER's size, so a target bigger than the window was only drawn in
+	// its top-left window-sized corner. It was never about the second eye --
+	// measured with both eyes identically clipped once the old ordering quirks
+	// were gone. viewport_clamp.h has the disassembly; the clamp is lifted for
+	// the eye passes only. Found by tracing the D3D9 device during an eye pass
+	// (vr_eyediag.h), which is the method to reach for next time.
 	//
-	// Measured, not assumed:
-	//   - both eye targets render FULLY (read back and checked, 2565x2661 of
-	//     2565x2661), so the engine honours a target larger than the framebuffer
-	//   - both texture handles are valid, distinct and correctly sized
-	//   - the crop bounds and compositor path are correct, which mono proves by
-	//     submitting ONE texture with each eye's own bounds and looking right
-	//   - the material system must be flushed before capturing or the capture
-	//     reads an unfinished target; that took the right eye 20% -> 60%
+	// Why the old notes went wrong, so nobody repeats it:
+	//   - "both targets render FULLY, read back and checked" was a readback of a
+	//     target the engine had CLEARED at full size before the clamped scene
+	//     drew. A cleared target is not an empty one. Look at the picture.
+	//   - "the SECOND RenderView draws at the backbuffer's viewport" -- the first
+	//     one did too; the symptom just depended on ordering.
 	//
-	// What remains: the SECOND RenderView of a frame draws at the BACKBUFFER's
-	// viewport instead of the target's (1080 of 1873 rows = the 60%). Neither a
-	// forced rebind through null nor separate targets changed that. The next
-	// thing to try is asking the engine directly -- GetRenderTargetDimensions is
-	// slot 10 of IMatRenderContext -- rather than reasoning about it again.
-	bool m_UseEyeRenderTargets = false;
+	// Measured, headless, on the null driver: 2688 and 3072 square targets fill
+	// both eyes 100%, cost no address space (they are GPU memory), ~1.4 ms a
+	// frame in a real scene including the HUD pass, and survive a map change.
+	bool m_UseEyeRenderTargets = true;
+	// Eye-pass diagnostics (vr_eyediag.h). EyeDiagDelaySec after the first
+	// stereo frame, two consecutive frames are traced at the D3D9 device and
+	// both eye images are written to %TEMP%\gesvr_eye_*.bmp. EyeDiagQuit then
+	// ends the process, so a test run needs nobody in the headset.
+	bool m_EyeDiag = false;
+	float m_EyeDiagDelaySec = 15.0f;
+	bool m_EyeDiagQuit = false;
+	// Console commands the diagnostics issue 4 s after the first stereo frame,
+	// ';'-separated -- "joingame; joinclass bond" gets a headless test past
+	// the join screen, which ExtraCvars cannot (it waits for menus to close).
+	std::string m_EyeDiagCommands;
 	// Size of the superset-frustum eye render targets. Computed in Init from the
 	// HMD's recommended per-eye size divided by how much of the superset image
 	// each eye actually uses, so that AFTER the texture-bounds crop each eye

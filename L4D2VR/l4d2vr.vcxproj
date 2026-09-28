@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="utf-8"?>
+﻿<?xml version="1.0" encoding="utf-8"?>
 <Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
   <ItemGroup Label="ProjectConfigurations">
     <ProjectConfiguration Include="Debug|Win32">
@@ -463,6 +463,8 @@ copy /Y "$(ProjectDir)manifest.vrmanifest" "$(SolutionDir)dist\VR\manifest.vrman
     <ClInclude Include="sigscanner.h" />
     <ClInclude Include="vr.h" />
     <ClInclude Include="vr_settings.h" />
+    <ClInclude Include="viewport_clamp.h" />
+    <ClInclude Include="vr_eyediag.h" />
     <ClInclude Include="vr_canvas.h" />
     <ClInclude Include="vr_watch.h" />
     <ClInclude Include="vr_flipoverlay.h" />
@@ -611,6 +613,7 @@ copy /Y "$(ProjectDir)manifest.vrmanifest" "$(SolutionDir)dist\VR\manifest.vrman
     <ClCompile Include="sdk\checksum_crc.cpp" />
     <ClCompile Include="vr.cpp" />
     <ClCompile Include="vr_settings.cpp" />
+    <ClCompile Include="viewport_clamp.cpp" />
     <ClCompile Include="vr_canvas.cpp" />
     <ClCompile Include="vr_watch.cpp" />
     <ClCompile Include="vr_toast.cpp" />
