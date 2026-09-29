@@ -30,6 +30,12 @@ namespace dxvk
     extern float g_GESVR_ScopeU[2];
     extern float g_GESVR_ScopeV[2];
     extern float g_GESVR_ScopeR[2];
+    // The lens disc's two axes in the eye image, as offsets from its centre in
+    // U,V units: A = the scope's right edge, B = its top edge. Together they
+    // make the ellipse the disc projects to; texture (0.5+0.5s, 0.5-0.5t)
+    // lands at centre + s*A + t*B.
+    extern float g_GESVR_ScopeA[2][2];
+    extern float g_GESVR_ScopeB[2][2];
 
     // Bracket one eye's RenderView. eyeW/eyeH is the target the pass is
     // meant to fill (0 when rendering straight to the backbuffer), so the

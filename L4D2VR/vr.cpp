@@ -5338,12 +5338,22 @@ void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
                     ny = DotProduct(v, eu) * aspect / (zc * t);
                     return true;
                 };
-                float cx, cy, ex, ey;
-                if (!project(lens, cx, cy) || !project(lens + eu * m_ScopeLensRadius, ex, ey))
+                // A disc across the scope's end, square to the barrel -- not
+                // turned to face the eye -- so it looks like glass in the tube
+                // from any angle (Matty: "act like a proper scope lens").
+                Vector sr;
+                CrossProduct(fwd, up, sr);   // the scope camera's right
+                float cx, cy, rx, ry, ux, uy;
+                if (!project(lens, cx, cy) || !project(lens + sr * m_ScopeLensRadius, rx, ry)
+                    || !project(lens + up * m_ScopeLensRadius, ux, uy))
                     continue;
                 dxvk::g_GESVR_ScopeU[e] = 0.5f + 0.5f * cx;
                 dxvk::g_GESVR_ScopeV[e] = 0.5f - 0.5f * cy;
-                dxvk::g_GESVR_ScopeR[e] = 0.5f * fabsf(ey - cy);   // radius as a fraction of image height
+                dxvk::g_GESVR_ScopeA[e][0] = 0.5f * (rx - cx);
+                dxvk::g_GESVR_ScopeA[e][1] = -0.5f * (ry - cy);
+                dxvk::g_GESVR_ScopeB[e][0] = 0.5f * (ux - cx);
+                dxvk::g_GESVR_ScopeB[e][1] = -0.5f * (uy - cy);
+                dxvk::g_GESVR_ScopeR[e] = 0.5f * fabsf(uy - cy);   // for the log
                 dxvk::g_GESVR_ScopeValid[e] = fabsf(cx) < 1.0f && fabsf(cy) < 1.0f;
             }
         }
