@@ -1575,7 +1575,13 @@ void VR::Update()
     // the gate was true every frame; turning the HUD off silently stopped it,
     // and the menu went see-through/blurry again at the same time. Decoupled
     // so HUD settings cannot switch the alpha fix off as a side effect.
-    if (g_D3DVR9 && m_AlwaysCaptureOverlay)
+    //
+    // It must also run whenever something crops it: the hurt flash and the
+    // radar on the watch. Gated on AlwaysCaptureOverlay alone (false by
+    // default, and in Matty's config), both were cropping a stale menu frame
+    // -- no flash when shot, a blank radar (2026-09-29).
+    const bool hudCropped = m_Game && m_Game->IsInMap() && (m_GameHudMode >= 1 || m_WatchRadar);
+    if (g_D3DVR9 && (m_AlwaysCaptureOverlay || hudCropped))
         g_D3DVR9->CaptureForOverlay(&m_VKHUD, -1, -1);
 
     // Only runs in map.
