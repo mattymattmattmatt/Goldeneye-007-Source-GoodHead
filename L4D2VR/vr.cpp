@@ -4290,8 +4290,9 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     static float s_loggedRatio = 1.0f;
     if (scopeHeld != s_wasScoped || (scopeHeld && fabsf(scopeRatio - s_loggedRatio) > 0.1f))
     {
-        Game::logMsg("Scope held=%d engineFov=%.1f baseFov=%.1f ratio=%.2f eyeFov=%.1f",
-                     (int)scopeHeld, setup.fov, m_ScopeBaseFov, scopeRatio, eyeFov);
+        Game::logMsg("Scope held=%d engineFov=%.1f baseFov=%.1f ratio=%.2f eyeFov=%.1f kind=%d twoHand=%d offTrigger=%d lens=%d",
+                     (int)scopeHeld, setup.fov, m_ScopeBaseFov, scopeRatio, eyeFov,
+                     ZoomWeaponKind(), (int)TwoHandHeld(), (int)OffHandTriggerDown(), (int)m_ScopeLensActive);
         s_wasScoped = scopeHeld;
         s_loggedRatio = scopeRatio;
     }
@@ -4538,10 +4539,15 @@ bool VR::TwoHandHeld()
     return m_ScopeTest || m_TwoHanded || (!m_TwoHandedGrip && PressedDigitalAction(m_ActionTwoHand));
 }
 
-// Off-hand trigger, straight off the device like LegacyTriggerDown, so it
-// does not depend on the player's (possibly cached) SteamVR bindings.
+// Off-hand trigger. Through the action it is bound to (SecondaryAttack, the
+// left trigger in the Touch bindings) first: on Matty's setup the direct
+// device read returns nothing at all (MenuHealth's LEGACY=0 always), which is
+// why the AR33 zoom never fired in the 2026-09-29 test. The device read stays
+// as a fallback for bindings that moved the action elsewhere.
 bool VR::OffHandTriggerDown()
 {
+    if (PressedDigitalAction(m_ActionSecondaryAttack))
+        return true;
     if (!m_System)
         return false;
     vr::TrackedDeviceIndex_t i = m_System->GetTrackedDeviceIndexForControllerRole(
