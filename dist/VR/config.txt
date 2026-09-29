@@ -301,9 +301,9 @@ ScopeSmoothing=1.0
 #   ScopeLensRadius how big the glass is
 # ScopeMagnification: 0 = the game's own sniper zoom, or e.g. 4 for 4x.
 SniperScope=true
-ScopeLensBack=24
-ScopeLensUp=3.4
-ScopeLensRadius=0.9
+ScopeLensBack=29
+ScopeLensUp=3.2
+ScopeLensRadius=1.4
 ScopeMagnification=0
 # GE:S draws the first-person gun at the desktop window's shape, which in the
 # headset stretched it tall and skewed it. true corrects that for the gun at

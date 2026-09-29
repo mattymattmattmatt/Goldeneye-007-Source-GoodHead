@@ -581,9 +581,9 @@ public:
 	// own sniper zoom. Tuned by eye in the headset.
 	bool m_SniperScope = true;
 	bool m_ScopeTest = false;   // test only: act as if both hands are on the gun
-	float m_ScopeLensBack = 24.0f;    // the scope's front end (headset screenshots, 2026-09-29)
-	float m_ScopeLensUp = 3.4f;
-	float m_ScopeLensRadius = 0.9f;
+	float m_ScopeLensBack = 29.0f;    // the scope's front end (headset screenshots, 2026-09-29)
+	float m_ScopeLensUp = 3.2f;
+	float m_ScopeLensRadius = 1.4f;
 	float m_ScopeMagnification = 0.0f;
 	// This frame's lens, from UpdateGunAim, for the scope pass in RenderView.
 	bool m_ScopeLensActive = false;    // sniper + both hands on it

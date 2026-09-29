@@ -36,6 +36,9 @@ namespace dxvk
     // lands at centre + s*A + t*B.
     extern float g_GESVR_ScopeA[2][2];
     extern float g_GESVR_ScopeB[2][2];
+    // Crosshair directions in the scope picture (+x right, +y down): gun up
+    // (x, y) then gun right (x, y). The picture is level with the head.
+    extern float g_GESVR_ScopeCross[4];
 
     // Bracket one eye's RenderView. eyeW/eyeH is the target the pass is
     // meant to fill (0 when rendering straight to the backbuffer), so the

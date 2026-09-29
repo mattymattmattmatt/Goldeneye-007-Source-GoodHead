@@ -5318,9 +5318,30 @@ void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
         {
             const float tanHalf = (m_ScopeLensRadius / dist) / (m_ScopeMag > 1.0f ? m_ScopeMag : 1.0f);
             m_ScopeRenderFov = std::clamp(2.0f * atanf(tanHalf) * 57.2957795f, 0.3f, 60.0f);
+            // The scope camera rolls with the HEAD, not the gun: the lens is
+            // drawn in screen-row strips, which cannot rotate a picture, so the
+            // picture itself must already be level on screen. The crosshair is
+            // the part that follows the gun -- drawn at the gun's roll within
+            // that level picture (CaptureScopeRT).
+            Vector hf, hr, hu;
+            QAngle::AngleVectors(left.angles, &hf, &hr, &hu);
+            Vector camUp = hu - fwd * DotProduct(hu, fwd);
+            if (VectorLength(camUp) < 0.1f)
+                camUp = up;                    // barrel straight along the head's up
+            VectorNormalize(camUp);
+            Vector camRight;
+            CrossProduct(fwd, camUp, camRight);
+            Vector gunRight;
+            CrossProduct(fwd, up, gunRight);
+            // Gun up and right in the picture (+x right, +y down).
+            dxvk::g_GESVR_ScopeCross[0] = DotProduct(up, camRight);
+            dxvk::g_GESVR_ScopeCross[1] = -DotProduct(up, camUp);
+            dxvk::g_GESVR_ScopeCross[2] = DotProduct(gunRight, camRight);
+            dxvk::g_GESVR_ScopeCross[3] = -DotProduct(gunRight, camUp);
             m_ScopeOrigin = start;
             m_ScopeFwd = fwd;
-            m_ScopeUp = up;
+            m_ScopeUp = camUp;
+            up = camUp;                        // the disc below uses the same basis
             m_ScopeLensValid = true;
             dxvk::g_GESVR_ScopeActive = true;
             for (int e = 0; e < 2; ++e)
@@ -5342,7 +5363,7 @@ void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
                 // turned to face the eye -- so it looks like glass in the tube
                 // from any angle (Matty: "act like a proper scope lens").
                 Vector sr;
-                CrossProduct(fwd, up, sr);   // the scope camera's right
+                CrossProduct(fwd, up, sr);   // the scope camera's right (up = camUp here)
                 float cx, cy, rx, ry, ux, uy;
                 if (!project(lens, cx, cy) || !project(lens + sr * m_ScopeLensRadius, rx, ry)
                     || !project(lens + up * m_ScopeLensRadius, ux, uy))
