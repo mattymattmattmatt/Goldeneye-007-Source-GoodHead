@@ -22,6 +22,15 @@ namespace dxvk
     // CPU copy before it is drawn (config EyeDiagForceUpload).
     extern bool g_GESVR_DiagForceUpload;
 
+    // Sniper scope lens (VR::UpdateGunAim -> d3d9_vr.cpp eye capture): per
+    // eye, the lens centre (U,V in 0..1) and radius as a fraction of the image
+    // height; Active when the scope view was rendered this frame.
+    extern bool  g_GESVR_ScopeActive;
+    extern bool  g_GESVR_ScopeValid[2];
+    extern float g_GESVR_ScopeU[2];
+    extern float g_GESVR_ScopeV[2];
+    extern float g_GESVR_ScopeR[2];
+
     // Bracket one eye's RenderView. eyeW/eyeH is the target the pass is
     // meant to fill (0 when rendering straight to the backbuffer), so the
     // device can flag any viewport or scissor that does not cover it.

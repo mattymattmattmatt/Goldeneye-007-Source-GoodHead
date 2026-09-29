@@ -894,6 +894,41 @@ void __fastcall Hooks::dRenderView(void *ecx, void *edx, CViewSetup &setup, int 
 	// second pass then drew at the backbuffer's 1920x1080 inside a 1806x1873
 	// target: full width, top 58% only, black underneath, which is exactly what
 	// the right eye showed. Going via null forces a real rebind both times.
+	// Sniper scope: the zoomed view for the lens, rendered before the eyes so
+	// the eye captures can paint it into the scope (d3d9_vr.cpp). From the
+	// muzzle along the barrel, no viewmodel and no HUD, and no bloom or
+	// auto-exposure (that stays the eyes' business). Only while the sniper is
+	// held with both hands -- see VR::UpdateGunAim.
+	if (rndrContext && m_VR->m_ScopeLensValid && m_VR->m_ScopeTexture)
+	{
+		CViewSetup scopeView;
+		CopyViewSetup(scopeView, setup);
+		scopeView.x = 0;
+		scopeView.y = 0;
+		scopeView.width = 1024;
+		scopeView.height = 1024;
+		scopeView.m_flAspectRatio = 1.0f;
+		scopeView.fov = m_VR->m_ScopeRenderFov;
+		scopeView.fovViewmodel = m_VR->m_ScopeRenderFov;
+		scopeView.origin = m_VR->m_ScopeOrigin;
+		QAngle::VectorAngles(m_VR->m_ScopeFwd, m_VR->m_ScopeUp, scopeView.angles);
+		scopeView.m_bDoBloomAndToneMapping = false;
+		rndrContext->SetRenderTarget(nullptr);
+		rndrContext->SetRenderTarget(m_VR->m_ScopeTexture);
+		hkRenderView.fOriginal(ecx, scopeView, VIEW_CLEAR_COLOR | VIEW_CLEAR_DEPTH | VIEW_CLEAR_FULL_TARGET, 0);
+		rndrContext->Flush(true);
+		g_D3DVR9->CaptureScopeRT();
+		static int s_logged = 0;
+		if (s_logged < 3)
+		{
+			++s_logged;
+			Game::logMsg("SCOPE pass: fov %.2f (x%.1f), lens L(%.3f,%.3f r%.3f %d) R(%.3f,%.3f r%.3f %d)",
+			             m_VR->m_ScopeRenderFov, m_VR->m_ScopeMag,
+			             dxvk::g_GESVR_ScopeU[0], dxvk::g_GESVR_ScopeV[0], dxvk::g_GESVR_ScopeR[0], (int)dxvk::g_GESVR_ScopeValid[0],
+			             dxvk::g_GESVR_ScopeU[1], dxvk::g_GESVR_ScopeV[1], dxvk::g_GESVR_ScopeR[1], (int)dxvk::g_GESVR_ScopeValid[1]);
+		}
+	}
+
 	const unsigned traceW = rndrContext ? m_VR->m_EyeRTWidth : 0;
 	const unsigned traceH = rndrContext ? m_VR->m_EyeRTHeight : 0;
 	// The shader API clamps every viewport to the window's size, which is what

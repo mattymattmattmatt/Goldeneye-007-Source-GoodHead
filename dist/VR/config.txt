@@ -289,6 +289,22 @@ ScopeZoom=true
 # so the magnified view is steady enough to aim. Stronger the more it zooms.
 # 0 = off, 1 = default, 2 = steadier but slower to follow.
 ScopeSmoothing=1.0
+
+# Zooming, with the gun in your hand:
+#   AR33 / KF7: hold them with both hands (off-hand grip), then pull the
+#     off-hand trigger to zoom. The whole view zooms, as before.
+#   Sniper rifle: hold it with both hands and its scope shows a zoomed picture
+#     inside the lens; your view does not zoom. SniperScope=false = old zoom.
+# Lining the lens up with the model's scope (game units, ~2.5 cm each):
+#   ScopeLensBack   how far back from the muzzle, along the barrel
+#   ScopeLensUp     how far above the barrel
+#   ScopeLensRadius how big the glass is
+# ScopeMagnification: 0 = the game's own sniper zoom, or e.g. 4 for 4x.
+SniperScope=true
+ScopeLensBack=16
+ScopeLensUp=2.6
+ScopeLensRadius=0.9
+ScopeMagnification=0
 # GE:S draws the first-person gun at the desktop window's shape, which in the
 # headset stretched it tall and skewed it. true corrects that for the gun at
 # your head (face aim) too; the gun in hand is always corrected.

@@ -1,7 +1,40 @@
 # GESVR — GoldenEye: Source VR — Handoff
 
-Last updated: **2026-09-29**, head-tracking latency fix (below).
+Last updated: **2026-09-29**, sniper lens scope and two-hand zoom (below).
 Owner: Matty. Headset: SteamVR. Target quality: HL2VR / HaloCEVR, not "2D in Theater".
+
+---
+
+## SNIPER SCOPE IN THE LENS; TWO-HAND ZOOM FOR AR33/KF7 (2026-09-29)
+
+Matty: sniper "scope ... in the models actual scope", only while held with the
+second hand; AR33/KF7 zoom only when held two-handed AND the trigger is pulled.
+Untested in the headset (no controllers on the null driver).
+
+* **Gating is `m_TrackedWeapon`, not `m_MotionControls`.** Matty's config is
+  `AimMode=head` + `TrackedWeapon=true`; MotionControls is false for him.
+* `ScopeHeld()` (drives `+aimmode`, the game's zoom): sniper -> `TwoHandHeld()`;
+  AR33/KF7 -> `TwoHandHeld() && OffHandTriggerDown()` (device read, like
+  LegacyTriggerDown); anything else unchanged. The off-hand trigger stops
+  sending +attack2 while it is the AR/KF7 zoom trigger.
+* Sniper lens: `UpdateGunAim` puts the eyepiece at muzzle - barrel *
+  `ScopeLensBack` + up * `ScopeLensUp` (the muzzle comes from the drawn model,
+  so it rides the gun), projects it into each eye (`g_GESVR_Scope*`), and picks
+  a render FOV so the glass shows `ScopeMag` x magnification from where the
+  eyes are (`ScopeMagnification`, 0 = game zoom, fallback 4). `dRenderView`
+  renders a 1024^2 view from the muzzle into `vrScope0` (no viewmodel, HUD or
+  bloom) before the eyes; `CaptureScopeRT` copies it and adds a crosshair; the
+  eye capture paints it into the lens square and blacks out the corners and a
+  6% rim. Eyes do not zoom; the gun steadying uses 1/ScopeMag.
+* Headless (`ScopeTest=true` fakes both hands; `give weapon_sniper_rifle`):
+  scope view renders with crosshair (`gesvr_eye_S.bmp` in the dump), lens is
+  drawn -- but the fake hand is at the floor, so alignment needs the headset.
+
+### Title image after a map: more ruled out
+
+GPU memory of the title texture does not overlap any render target drawn at
+the menu; `mat_reloadtextures` at the menu does not bring it back;
+`ForceMenuOpaque=false` (our per-frame state-block draw) does not either.
 
 ---
 

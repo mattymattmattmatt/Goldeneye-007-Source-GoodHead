@@ -857,6 +857,8 @@ namespace VRSubmit
     static std::atomic<bool> g_useThread{ false };
 }
 
+namespace dxvk { extern bool g_GESVR_ScopeActive; extern bool g_GESVR_ScopeValid[2];
+                extern float g_GESVR_ScopeU[2]; extern float g_GESVR_ScopeV[2]; extern float g_GESVR_ScopeR[2]; }
 namespace dxvk { extern bool g_GESVR_ReticleUseAim; extern bool g_GESVR_ReticleAimValid[2];
                 extern float g_GESVR_ReticleAimU[2]; extern float g_GESVR_ReticleAimV[2]; }
 extern bool GESVR_MuzzleWorld(Vector &out, Vector &dir);
@@ -2674,6 +2676,11 @@ void VR::CreateVRTextures()
     
     m_CreatingTextureID = Texture_Blank;
     m_BlankTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("blankTexture", 512, 512, RT_SIZE_NO_CHANGE, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SHARED, TEXTUREFLAGS_NOMIP);
+    // The sniper scope's zoomed view (see the scope pass in Hooks::dRenderView).
+    // Smaller than the window, so the shader API's viewport clamp never bites;
+    // its own depth, like the eyes. GPU memory only.
+    if (!m_ScopeTexture)
+        m_ScopeTexture = m_Game->m_MaterialSystem->CreateNamedRenderTargetTextureEx("vrScope0", 1024, 1024, RT_SIZE_LITERAL, m_Game->m_MaterialSystem->GetBackBufferFormat(), MATERIAL_RT_DEPTH_SEPARATE, TEXTUREFLAGS_NOMIP);
     
     m_CreatingTextureID = Texture_None;
 
@@ -3713,7 +3720,10 @@ void VR::ProcessInput()
         MoveCmd("-reload");
     }
 
-    if (PressedDigitalAction(m_ActionSecondaryAttack))
+    // The off-hand trigger is the zoom on the AR33/KF7 while both hands are on
+    // it, so it does not also send the secondary attack then.
+    const bool triggerIsZoom = m_TrackedWeapon && ZoomWeaponKind() == 1 && TwoHandHeld();
+    if (!triggerIsZoom && PressedDigitalAction(m_ActionSecondaryAttack))
     {
         MoveCmd("+attack2");
     }
@@ -4257,14 +4267,25 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
         m_ScopeReleasedFrames = 0;
     }
     float scopeRatio = 1.0f;
-    if (m_ScopeZoom && scopeHeld && setup.fov > 1.0f && m_ScopeBaseFov > setup.fov)
+    // Sniper held with both hands: the zoom goes into the scope's lens (the
+    // scope pass in RenderView), the eyes stay unzoomed.
+    m_ScopeLensActive = m_TrackedWeapon && m_SniperScope && scopeHeld && ZoomWeaponKind() == 2;
+    if (scopeHeld && setup.fov > 1.0f && m_ScopeBaseFov > setup.fov)
     {
         const float d2r = 3.14159265f / 180.0f;
         scopeRatio = tanf(setup.fov * 0.5f * d2r) / tanf(m_ScopeBaseFov * 0.5f * d2r);
-        if (scopeRatio < 0.95f)
+        if (m_ScopeZoom && scopeRatio < 0.95f && !m_ScopeLensActive)
             eyeFov = 2.0f * atanf(tanf(m_Fov * 0.5f * d2r) * scopeRatio) / d2r;
     }
-    m_ZoomRatio = scopeRatio < 0.95f ? scopeRatio : 1.0f;
+    if (m_ScopeLensActive)
+    {
+        m_ScopeMag = m_ScopeMagnification > 1.0f ? m_ScopeMagnification
+                   : (scopeRatio < 0.95f ? 1.0f / scopeRatio : 4.0f);
+        m_ZoomRatio = 1.0f / m_ScopeMag;      // hand steadying scales with it
+        dxvk::g_GESVR_ReticleForce = false;   // the lens has its own crosshair
+    }
+    else
+        m_ZoomRatio = (m_ScopeZoom && scopeRatio < 0.95f) ? scopeRatio : 1.0f;
     static bool s_wasScoped = false;
     static float s_loggedRatio = 1.0f;
     if (scopeHeld != s_wasScoped || (scopeHeld && fabsf(scopeRatio - s_loggedRatio) > 0.1f))
@@ -4495,8 +4516,57 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
 // 21:11 run it never fired once. Those bindings already have the left grip on
 // TwoHand, which only means anything with motion controls on -- so in head-aim
 // mode it counts as the scope too.
+int VR::ZoomWeaponKind() const
+{
+    if (!m_Game)
+        return 0;
+    std::string w = m_Game->m_ActiveWeaponModel;
+    for (char &c : w)
+        c = (char)tolower((unsigned char)c);
+    if (w.find("sniper") != std::string::npos)
+        return 2;
+    if (w.find("ar33") != std::string::npos || w.find("kf7") != std::string::npos)
+        return 1;
+    return 0;
+}
+
+// Both hands on the gun: the two-handed grip engaged (off-hand grip held with
+// the hands a gun's length apart), or just the grip held if the two-handed
+// grip is switched off.
+bool VR::TwoHandHeld()
+{
+    return m_ScopeTest || m_TwoHanded || (!m_TwoHandedGrip && PressedDigitalAction(m_ActionTwoHand));
+}
+
+// Off-hand trigger, straight off the device like LegacyTriggerDown, so it
+// does not depend on the player's (possibly cached) SteamVR bindings.
+bool VR::OffHandTriggerDown()
+{
+    if (!m_System)
+        return false;
+    vr::TrackedDeviceIndex_t i = m_System->GetTrackedDeviceIndexForControllerRole(
+        m_LeftHanded ? vr::TrackedControllerRole_RightHand : vr::TrackedControllerRole_LeftHand);
+    vr::VRControllerState_t st{};
+    if (i == vr::k_unTrackedDeviceIndexInvalid || !m_System->GetControllerState(i, &st, sizeof(st)))
+        return false;
+    return (st.ulButtonPressed & vr::ButtonMaskFromId(vr::k_EButton_SteamVR_Trigger)) != 0 || st.rAxis[1].x > 0.6f;
+}
+
 bool VR::ScopeHeld()
 {
+    // Matty, 2026-09-29: the sniper shows its zoom INSIDE its scope while held
+    // with both hands; the AR33 and KF7 zoom only when held with both hands AND
+    // the off-hand trigger is pulled. Aim mode (the game's zoom) follows, so
+    // the game's own accuracy and zoom level still apply.
+    // Gun in hand = TrackedWeapon (Matty plays AimMode=head + TrackedWeapon).
+    if (m_TrackedWeapon)
+    {
+        const int kind = ZoomWeaponKind();
+        if (kind == 2 && m_SniperScope)
+            return TwoHandHeld();
+        if (kind == 1)
+            return TwoHandHeld() && OffHandTriggerDown();
+    }
     if (PressedDigitalAction(m_ActionScope))
         return true;
     if (!m_MotionControls && PressedDigitalAction(m_ActionTwoHand))
@@ -5217,6 +5287,60 @@ void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
         dxvk::g_GESVR_ReticleAimU[e] = 0.5f + 0.5f * nx;
         dxvk::g_GESVR_ReticleAimV[e] = 0.5f - 0.5f * ny;
         dxvk::g_GESVR_ReticleAimValid[e] = true;
+    }
+
+    // Sniper lens. The eyepiece is found from the muzzle of the gun as drawn
+    // (so it rides the model, two-handed swing included): ScopeLensBack units
+    // back along the barrel, ScopeLensUp up. Each eye gets the lens's centre
+    // and radius in its image; the scope pass renders from the muzzle along
+    // the barrel with a FOV that makes the lens show ScopeMag x magnification
+    // as seen from where the eyes are now.
+    m_ScopeLensValid = false;
+    dxvk::g_GESVR_ScopeActive = false;
+    dxvk::g_GESVR_ScopeValid[0] = dxvk::g_GESVR_ScopeValid[1] = false;
+    if (m_ScopeLensActive && gun)
+    {
+        Vector fwd = f;
+        VectorNormalize(fwd);
+        Vector up = m_ViewmodelUp - fwd * DotProduct(m_ViewmodelUp, fwd);
+        VectorNormalize(up);
+        const Vector lens = start - fwd * m_ScopeLensBack + up * m_ScopeLensUp;
+        const Vector mid = (left.origin + right.origin) * 0.5f;
+        const Vector toLens = lens - mid;
+        const float dist = VectorLength(toLens);
+        if (dist > 0.5f && DotProduct(toLens, fwd) > 0.0f)   // lens in front of the face
+        {
+            const float tanHalf = (m_ScopeLensRadius / dist) / (m_ScopeMag > 1.0f ? m_ScopeMag : 1.0f);
+            m_ScopeRenderFov = std::clamp(2.0f * atanf(tanHalf) * 57.2957795f, 0.3f, 60.0f);
+            m_ScopeOrigin = start;
+            m_ScopeFwd = fwd;
+            m_ScopeUp = up;
+            m_ScopeLensValid = true;
+            dxvk::g_GESVR_ScopeActive = true;
+            for (int e = 0; e < 2; ++e)
+            {
+                Vector ef, er, eu;
+                QAngle::AngleVectors(eyes[e]->angles, &ef, &er, &eu);
+                const float t = tanf(eyes[e]->fov * 0.5f * 3.14159265f / 180.0f);
+                const float aspect = eyes[e]->m_flAspectRatio > 0.1f ? eyes[e]->m_flAspectRatio : m_Aspect;
+                auto project = [&](const Vector &p, float &nx, float &ny) {
+                    const Vector v = p - eyes[e]->origin;
+                    const float zc = DotProduct(v, ef);
+                    if (zc < 0.5f)
+                        return false;
+                    nx = DotProduct(v, er) / (zc * t);
+                    ny = DotProduct(v, eu) * aspect / (zc * t);
+                    return true;
+                };
+                float cx, cy, ex, ey;
+                if (!project(lens, cx, cy) || !project(lens + eu * m_ScopeLensRadius, ex, ey))
+                    continue;
+                dxvk::g_GESVR_ScopeU[e] = 0.5f + 0.5f * cx;
+                dxvk::g_GESVR_ScopeV[e] = 0.5f - 0.5f * cy;
+                dxvk::g_GESVR_ScopeR[e] = 0.5f * fabsf(ey - cy);   // radius as a fraction of image height
+                dxvk::g_GESVR_ScopeValid[e] = fabsf(cx) < 1.0f && fabsf(cy) < 1.0f;
+            }
+        }
     }
 
     // Diagnostics for "the dot goes wonky and disappears until I shoot":
@@ -6219,6 +6343,12 @@ void VR::ParseConfigFile()
     m_TwoHandedNeedsGrip = CfgBool(userConfig, "TwoHandedNeedsGrip", m_TwoHandedNeedsGrip);
     m_ScopeZoom = CfgBool(userConfig, "ScopeZoom", m_ScopeZoom);
     m_ScopeSmoothing = CfgFloat(userConfig, "ScopeSmoothing", m_ScopeSmoothing);
+    m_SniperScope = CfgBool(userConfig, "SniperScope", m_SniperScope);
+    m_ScopeTest = CfgBool(userConfig, "ScopeTest", m_ScopeTest);
+    m_ScopeLensBack = CfgFloat(userConfig, "ScopeLensBack", m_ScopeLensBack);
+    m_ScopeLensUp = CfgFloat(userConfig, "ScopeLensUp", m_ScopeLensUp);
+    m_ScopeLensRadius = CfgFloat(userConfig, "ScopeLensRadius", m_ScopeLensRadius);
+    m_ScopeMagnification = CfgFloat(userConfig, "ScopeMagnification", m_ScopeMagnification);
     m_TrackedWeapon = CfgBool(userConfig, "TrackedWeapon", m_TrackedWeapon);
     m_FixViewmodelAspect = CfgBool(userConfig, "FixViewmodelAspect", m_FixViewmodelAspect);
     m_SwingMelee = CfgBool(userConfig, "SwingMelee", m_SwingMelee);

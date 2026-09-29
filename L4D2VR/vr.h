@@ -574,6 +574,24 @@ public:
 	// exactly, so hand shake is not magnified with the view. 0 = off; 1 = the
 	// default strength (at 4x zoom the gun settles over ~0.1 s); higher = more.
 	float m_ScopeSmoothing = 1.0f;
+	// Sniper rifle: a zoomed picture INSIDE the model's scope, shown while it
+	// is held with both hands, instead of zooming the whole view. The lens sits
+	// ScopeLensBack units behind the muzzle along the barrel and ScopeLensUp
+	// above it, ScopeLensRadius units across; ScopeMagnification 0 = the game's
+	// own sniper zoom. Tuned by eye in the headset.
+	bool m_SniperScope = true;
+	bool m_ScopeTest = false;   // test only: act as if both hands are on the gun
+	float m_ScopeLensBack = 16.0f;
+	float m_ScopeLensUp = 2.6f;
+	float m_ScopeLensRadius = 0.9f;
+	float m_ScopeMagnification = 0.0f;
+	// This frame's lens, from UpdateGunAim, for the scope pass in RenderView.
+	bool m_ScopeLensActive = false;    // sniper + both hands on it
+	bool m_ScopeLensValid = false;     // ... and the muzzle is known this frame
+	float m_ScopeMag = 4.0f;
+	float m_ScopeRenderFov = 10.0f;
+	Vector m_ScopeOrigin, m_ScopeFwd, m_ScopeUp;
+	ITexture *m_ScopeTexture = nullptr;
 	float m_ZoomRatio = 1.0f;          // this frame's tan-ratio, 1 = not zoomed
 	bool m_HaveSmoothedGun = false;
 	Vector m_SmoothGunFwd, m_SmoothGunUp;
@@ -752,6 +770,11 @@ public:
 	void CreateWristOverlays();
 	void UpdateHurtHUD();
 	void SmoothGunWhileZoomed();
+	// 0 = no special zoom, 1 = AR33/KF7 (zoom = both hands + off-hand trigger),
+	// 2 = sniper (lens while held with both hands).
+	int ZoomWeaponKind() const;
+	bool TwoHandHeld();
+	bool OffHandTriggerDown();
 	void ResolvePlayerNetvars();
 	int ReadLocalHealth();
 	void ReadWatchStats(WatchStats &out);
