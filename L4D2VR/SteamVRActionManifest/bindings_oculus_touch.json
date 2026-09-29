@@ -42,7 +42,7 @@
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/main/in/ResetPosition"
+                     "output": "/actions/main/in/ShowHUD"
                   },
                   "position": {
                      "output": "/actions/main/in/Walk"
@@ -57,7 +57,7 @@
             {
                "inputs": {
                   "click": {
-                     "output": "/actions/main/in/ShowHUD"
+                     "output": "/actions/main/in/ResetPosition"
                   },
                   "position": {
                      "output": "/actions/main/in/Turn"

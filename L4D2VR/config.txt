@@ -317,7 +317,7 @@ FaceAimGunSpread=1.0
 # or are low. hurt = on, off = never. (The watch always has them.)
 GameHUD=hurt
 
-# The watch shows GE:S's radar instead of its face. The right thumbstick click
+# The watch shows GE:S's radar instead of its face. The LEFT thumbstick click
 # switches between them in a game (bind "Watch: switch to radar" in SteamVR if
 # your bindings are older than this).
 WatchRadar=false

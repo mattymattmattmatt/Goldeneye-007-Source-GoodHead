@@ -376,7 +376,7 @@ static void BuildModel(VR *vr)
         [vr]() { return vr->m_WatchAlwaysVisible ? 1 : 0; },
         [vr](int i) { vr->m_WatchAlwaysVisible = (i != 0); },
         "WatchAlwaysVisible", { "false", "true" }));
-    display.items.push_back(Named(L"Watch face", L"Right thumbstick click switches it in a game too.",
+    display.items.push_back(Named(L"Watch face", L"Left thumbstick click switches it in a game too.",
         { L"Time and stats", L"Radar" },
         [vr]() { return vr->m_WatchRadar ? 1 : 0; },
         [vr](int i) { vr->m_WatchRadar = (i != 0); },

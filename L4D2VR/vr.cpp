@@ -4612,11 +4612,27 @@ void VR::UpdateWatchRadar()
         m_Overlay->HideOverlay(m_RadarHandle);
         return;
     }
+    // GE:S's radar can be switched off (cl_ge_showradar) and moved to six
+    // spots (cl_ge_radarpos, "clockwise from middle-bottom"); the first
+    // headset try cropped bare wall. Pin it on and at middle-bottom while the
+    // watch shows it, once a second in case the game or the player resets it.
+    {
+        static ULONGLONG s_next = 0;
+        const ULONGLONG now = GetTickCount64();
+        if (m_Game && now >= s_next)
+        {
+            s_next = now + 1000;
+            m_Game->ClientCmd_Unrestricted("cl_ge_showradar 1");
+            m_Game->ClientCmd_Unrestricted("cl_ge_radarpos 0");
+        }
+    }
     int w = 1280, h = 720;
     if (m_Game && m_Game->m_EngineClient)
         m_Game->m_EngineClient->GetScreenSize(w, h);
     const float s = (float)h / 480.0f;
-    const float x0 = 0.5f * (float)w - 40.0f * s, y0 = 378.0f * s, size = 64.0f * s;
+    // The layout box plus a margin all round, in case position 0 sits a
+    // little off the layout file's box.
+    const float x0 = 0.5f * (float)w - 48.0f * s, y0 = 370.0f * s, size = 80.0f * s;
     const vr::VRTextureBounds_t b = { x0 / (float)w, y0 / (float)h, (x0 + size) / (float)w, (y0 + size) / (float)h };
     m_Overlay->SetOverlayTextureBounds(m_RadarHandle, &b);
     m_Overlay->SetOverlayWidthInMeters(m_RadarHandle, m_WatchWidth);
