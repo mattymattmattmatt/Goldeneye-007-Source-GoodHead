@@ -1,36 +1,47 @@
 # GoodHead — GoldenEye: Source in VR
 
-**[GoldenEye: Source](https://www.geshl2.com/)** — the fan-made Source remake of GoldenEye 007's multiplayer — played in a SteamVR headset. Full 6DoF stereo, the gun in your hand, bullets down the barrel, and a Q-branch watch on your wrist. Online and with bots, on any server, alongside flat players.
+**[GoldenEye: Source](https://www.geshl2.com/)** — the fan-made remake of GoldenEye 007's multiplayer — played in a SteamVR headset.
 
-It installs as a `d3d9.dll` next to the game (DXVK plus the VR code, in the style of [L4D2VR](https://github.com/sd805/l4d2vr)). **Nothing in GoldenEye: Source is deleted or patched.** The launcher changes five of its files — the menu list, where that list sits on screen, the two menu background textures and the menu playlist — and keeps the untouched original of each one beside it as `.gesvr-orig`, so it all goes back. Your own settings are never overwritten.
+Full 6DoF stereo, the gun in your hand, a working sniper scope, two-handed rifles, and a Q-branch watch on your wrist that shows your health, ammo and the scoreboard. Play online or with bots, on any server, alongside flat players.
+
+## What's in v1.0
+
+* **Sharp, full-resolution picture** — each eye is rendered at your headset's own resolution.
+* **Tight head tracking** — no lag behind your head movements.
+* **Guns in your hands** — bullets go where the barrel points, with muzzle flash, tracers and shells coming from the gun you're holding.
+* **A real sniper scope** — grab the rifle with both hands and the zoomed view appears *inside the scope lens*, with its own crosshair.
+* **Two-handed rifles** — hold the AR33 or KF7 with both hands and pull the left trigger to zoom. Aim is steadied while zoomed.
+* **The wrist watch** — health, armour, ammo, round time, your weapon and kill notices. Click the right stick to flip it to the **scoreboard**, and click again to flip back.
+* **Reload by bringing your hands together** (or press B). You can switch the gesture off.
+* **Melee and throwing by motion** — chop with the slappers or knife, throw knives, cook and throw grenades, place mines exactly where you point.
+* **A VR settings panel** inside the game, including GoldenEye: Source's own video settings.
+* **The GoodHead title screen and theme** on the main menu.
 
 ---
 
 ## What you need
 
-* **Windows 10 or 11** and a SteamVR headset. Built and played on a Meta Quest 3 over Link; bindings ship for Quest/Touch, Valve Index and Vive Cosmos.
-* **[Source SDK Base 2007](steam://install/218)** — free on Steam. Search your library for it, or open `steam://install/218`.
+* **Windows 10 or 11** and a SteamVR headset. Made and played on a Meta Quest 3. Controls are included for Quest/Touch, Valve Index and Vive Cosmos.
+* **[Source SDK Base 2007](steam://install/218)** — free on Steam.
 * **GoldenEye: Source 5.0.x**, installed into `Steam\steamapps\sourcemods\gesource`.
-* A reasonably strong GPU. Developed on an RTX 2080 Ti.
+* A reasonably strong graphics card (made on an RTX 2080 Ti).
 
 ## Install
 
-1. Install Source SDK Base 2007 and GoldenEye: Source. **Run GE:S once without VR** and make sure it reaches the menu.
-2. Unzip this download anywhere — your desktop is fine. Keep the files together.
+1. Install Source SDK Base 2007 and GoldenEye: Source. **Run GoldenEye: Source once without VR** and make sure it reaches the menu.
+2. Download the zip from **Releases** and unzip it anywhere — your desktop is fine.
 3. Start SteamVR.
 4. Run **`Launch-GESVR.bat`**.
 
-That's it. The launcher finds Steam, the SDK and GE:S, copies the mod next to `hl2.exe`, adds **VR Settings** to the game's menus, and starts the game through Steam. Run it the same way every time.
+That's it. Use `Launch-GESVR.bat` to start the game every time.
 
-**Before your first match**, in GE:S's own options set **texture detail to Medium** (Options > Video > Advanced). GE:S is a 32-bit game and High can run it out of memory while a map loads — see [If it crashes while loading a map](#if-it-crashes-while-loading-a-map), which explains exactly why.
-
-Each eye is rendered at your headset's own resolution, so your desktop resolution doesn't limit how sharp it looks. (It still sets how sharp the menus are, since those are captured from the game window.)
+**Updating from an older version?** Just unzip the new one and run it. Your settings are kept.
 
 ---
 
 ## Controls
 
-Defaults for Quest/Touch. Rebind anything in SteamVR > Settings > Controllers > Manage Controller Bindings, where these appear as **"Default GoodHead bindings"**.
+These are the defaults for Quest/Touch controllers.
 
 | Action | Button |
 |---|---|
@@ -38,164 +49,86 @@ Defaults for Quest/Touch. Rebind anything in SteamVR > Settings > Controllers > 
 | Turn | Right stick left / right |
 | Next / previous weapon | Right stick down / up |
 | Fire | Right trigger |
-| Secondary attack (alt fire) | Left trigger |
-| Scope zoom / two-handed grip | Hold left grip |
-| Reload | **B** (shared with Use), or bring the controllers together |
+| Hold with both hands | Hold left grip near the gun |
+| Zoom (AR33, KF7) | Both hands on the gun, then left trigger |
+| Sniper scope | Both hands on the sniper rifle — the lens zooms by itself |
+| Reload | **B**, or bring your hands together |
 | Use — doors, buttons, pickups | **B** |
-| Jump | A |
+| Jump | **A** |
 | Crouch | Right grip |
-| Scoreboard | Hold X |
-| Pause menu | Y |
-| Recentre your view | Left stick click |
-| Open VR Settings | Click **VR Settings** in the main or pause menu |
-| Click in menus | Point with your right hand, right trigger |
+| Scoreboard on the watch | Click the right stick (click again to go back) |
+| Full scoreboard | Hold **X** |
+| Pause menu | **Y** |
+| Recentre your view | Click the left stick |
 | Look at the watch | Turn your left wrist towards you |
+| Click in menus | Point with your right hand and pull the right trigger |
 
-On Index controllers the left A and B are scoreboard and pause.
+**Throwing and melee:**
+* **Slappers or hunting knife** — chop with your right hand. The trigger works too.
+* **Throwing knife** — throw it like a real knife.
+* **Grenades** — squeeze the trigger to pull the pin, hold to cook, **let go to throw**.
+* **Mines** — press the trigger and the mine goes where you're pointing.
 
-**Melee and throwing** (free aim only):
-* **Slappers or hunting knife** — chop with your right hand. The trigger still works.
-* **Throwing knife** — throw it. It leaves your hand as the swing comes round, in the direction your hand is travelling.
-* **Grenades** — squeeze the trigger to pull the pin, hold to cook, **let go to throw**. That's how GE:S grenades work, and you can move normally while cooking.
-* **Mines** — press the trigger; the mine leaves a moment later, on the line you were pointing along.
-
----
-
-## The VR menu
-
-Bring up the game's menu (**Y** for pause), then click **VR Settings** in it. The panel is driven entirely by pointing with your right hand and clicking the trigger, including the **Close** button at the bottom -- the controller buttons do nothing while it is open, because SteamVR gives your hand to the panel while you are pointing at it. Everything applies and saves the moment you change it.
-
-### Comfort
-Smooth or snap turning, turn speed and snap angle, a **height offset** if you sit or if you feel too short, dominant hand for left-handers, and **world scale** — lower makes you feel taller and the world smaller; 40 is life size.
-
-### Aiming
-The **reticle** on or off, with five styles (dot, cross, ring, ring + dot, and **Classic** — GoldenEye's own crosshair), five colours and several sizes. **Scope zoom** on or off.
-
-**Aim mode** is the big one:
-* **Free aim** — the gun is in your hand and bullets go where the barrel points. A dot marks exactly what you'll hit. Muzzle flash, tracers and ejected shells come from the gun in your hand.
-* **Face aim** — you shoot where you look, gun held up by your face as in the original game.
-
-**Throw guide** draws a thin dotted path from your hand to where a grenade, knife or mine will land, with a dot at the landing point. Thrown things fly where your hand points, so what you see is where it goes — you can place mines exactly. Cook a grenade too long and the path stops where it will burst in mid-air; the end dot turns red if that blast would catch you.
-
-### Weapons
-**Swing to attack** for the melee gestures above. **Off hand** puts the left arm that grenades and mines carry onto your left controller, with the watch sitting on the Seamaster modelled on its wrist (guns have no left arm in the game's models, so they show none). **Adjust position** turns on numpad tuning — see below.
-
-### Display
-The **wrist watch**, and whether it shows always or only when you look at it. **Watch notices** put kills, round start and round end on the watch face instead of the HUD. **Watch on model** sits the watch where the grenade hand's own watch is. **Menu distance** and **menu size** are independent: distance moves the game's menus deeper without resizing them. **Game HUD** — off, only when hurt, or always.
-
-### Graphics and Detail
-**GE:S's own video settings live here**, because its options dialog can't be used from inside a headset — clicks never reach the Advanced sub-dialog, they fire your gun instead, and there's no way back out without killing the game. Graphics has **texture detail**, **anti-aliasing**, **texture filtering** and **bloom**; Detail has **per-eye rendering** plus **model**, **shader**, **water** and **shadow** detail. Every game setting starts on *Game setting*, which changes nothing.
-
-**Per-eye rendering** (on by default) draws each eye at the headset's own resolution and shape. Turn it off for the old path, which draws each eye into the 16:9 game window: softer, and the game's HUD comes back into your view, stretched. It switches live, so you can compare them without taking the headset off.
-
-Two of them wait for the right moment. **Texture detail** and **model detail** throw away and reload every texture or model, which is a crash with a map already loaded, so they apply when you're back at the menu. **Anti-aliasing** is saved now and applied the next time you launch — changing it while the game runs resets the graphics device underneath SteamVR, which is exactly the crash people hit changing it in GE:S's own menu. With per-eye rendering on it only smooths the desktop window, not the headset — the eyes are drawn in a way the game's anti-aliasing can't reach — so leave it off there. Their sharpness comes from resolution instead.
-
-Underneath sits a live **address space** meter, the number that decides whether your next map loads. GE:S is 32-bit, so 2047 MB is the whole world — game, map, every texture, and the copies the graphics layer keeps. **Green** means room to spare, **amber** means it will fit with little left, **red** means it won't. At the menu it shows both what's in use now and what it will be once a map is in, because 1050 MB of 2047 looks like half the world free right up until you load a map and it isn't. The **largest free block** below matters just as much: a texture needs one unbroken piece, and a load can fail with plenty free in total but nowhere to put it. Both update twice a second while the tab is open, so you can watch a map load climb.
-
-Everything here is also in `…\Source SDK Base 2007\bin\VR\config.txt`, one setting per line with a comment explaining each. The mod notices when that file is saved, **even mid-game**, so you can tune it on a second monitor while wearing the headset.
-
-### Putting a weapon in your hand exactly right
-
-Free aim only. Turn on **VR Settings > Weapons > Adjust position**, hold the weapon, and use the numpad with Num Lock on:
-
-| Key | Does |
-|---|---|
-| 8 / 2 | Move forward / back |
-| 4 / 6 | Move left / right |
-| 9 / 3 | Move up / down |
-| 5 | Switch between moving and rotating |
-| 7 | Switch between the weapon and your off hand |
-| + / − | Bigger or smaller steps |
-| 0 | Save |
-| . | Reset this weapon |
-
-Weapons save to `VR\weapons.txt`, the off hand to `config.txt`. Every weapon already ships tuned, so this is only if you want it different.
+**Controls not working?** If you've used an older version or changed your bindings, SteamVR may still be using your old ones. Go to **SteamVR > Settings > Controllers > Manage Controller Bindings**, pick **GoldenEye: Source**, and choose **Default GoodHead bindings**. Anything can be rebound there too.
 
 ---
 
-## If it crashes while loading a map
+## VR Settings
 
-**Try again first.** It very often loads on the second or third attempt, and there's a real reason for that, not just luck.
+Press **Y** for the pause menu (or use the main menu) and click **VR Settings**. Point and pull the trigger to change things; every change applies and saves straight away. Click **Close** at the bottom when you're done.
 
-**Why it happens.** GoldenEye: Source is a 32-bit program, so everything it uses must fit in **2 GB of address space** — the game, the map, every texture, and the copies the graphics layer keeps while handing them to your GPU. Loading a map is the worst moment: it's reading in textures *and* compiling shaders at the same time. Measured on a real crash here, at High texture detail:
+* **Comfort** — smooth or snap turning, turn speed, a height offset if you play seated, left-handed mode, and world scale.
+* **Aiming** — reticle style, colour and size, scope zoom, **aim mode** (free aim with the gun in your hand, or face aim where you shoot where you look), and a **throw guide** that shows where grenades, knives and mines will land.
+* **Weapons** — swing-to-attack melee, your off hand shown in the game, the reload gesture on or off, and fine-tuning of where each gun sits in your hand.
+* **Display** — the wrist watch, kill notices on the watch, and how far away and how big the menus are.
+* **Graphics and Detail** — texture detail, anti-aliasing, texture filtering, bloom and the other detail settings. GoldenEye: Source's own video options can't be used from inside a headset, so they're here instead.
 
-```
-1295 MB used, largest free block 430 MB
-1554 MB used, largest free block 165 MB
-1915 MB used, largest free block  18 MB
-1945 MB used, largest free block  10 MB   <- crash
-```
-
-Notice the second number. It's not just that memory runs out — it gets **broken into pieces**. A texture needs one unbroken block, and by the end the biggest gap left was 10 MB. That's why the failure looks random: it depends on how the pieces happen to fall.
-
-**Why trying again works.** Shaders your graphics driver compiles are saved to disk as it goes. A crashed attempt still keeps whatever it finished, so the next attempt has less to do and needs less memory. Each try genuinely gets further.
-
-**The fix, in order:**
-
-1. **Set texture detail to Medium** in VR Settings > Graphics. It applies when you're back at the main menu, never with a map loaded. This is the single biggest win and costs little in a headset.
-2. If it still struggles, **Low**, or drop your desktop resolution before launching — the render buffers scale with it.
-3. Give it two or three attempts after either change, so the shader cache fills up.
-
-**Never use a "4 GB patch" on `hl2.exe`** to raise the limit. It doesn't work and it breaks the game permanently: one launch with a patched exe makes Steam refuse to start that copy for good, *even after you put the original file back*. The launcher refuses to start a modified `hl2.exe` for this reason. If you've already done it, see the next section.
+**Tip:** set **Texture detail to Medium** before your first match. It makes map loading much more reliable and still looks great in a headset.
 
 ---
 
-## Other problems
+## Troubleshooting
 
-**"SteamStartup() failed: SteamAPI_Init_Internal failed"** — `hl2.exe` has been modified at some point (usually a 4 GB patch). Verifying the files isn't enough on its own. Fix it like this:
+**The game closes or crashes while loading a map** — just try again. It usually loads on the second or third go, because each attempt makes the next one easier. If it keeps happening, set **Texture detail** to **Medium** (or **Low**) in VR Settings > Graphics. GoldenEye: Source is an old 32-bit game with limited memory, and big maps can fill it up.
 
-1. Steam > Library > Source SDK Base 2007 > Properties > Installed Files > **Verify integrity**.
-2. If it still fails, same page > **Move install folder**, to any other Steam library. Seconds, no re-download.
+**Never use a "4 GB patch" on `hl2.exe`.** It breaks the game, and Steam will refuse to start it again even after you undo it. If you've already done this: in Steam, go to Source SDK Base 2007 > Properties > Installed Files, click **Verify integrity**, and if that doesn't help, use **Move install folder** to move it to another Steam library.
 
-Reinstalling into the *same* folder does not fix it. Your GE:S install and your VR settings are untouched by any of this.
+**The game shows on a flat screen in SteamVR instead of in VR** — go to SteamVR > Settings > Dashboard and turn **"Present non-VR applications on theater screen"** off.
 
-**The game shows on a flat screen in SteamVR (Theater) instead of in VR** — the launcher turns Theater off, but if it comes back: SteamVR > Settings > Dashboard > "Present non-VR applications on theater screen" = Off.
+**There's no radar** — the game's flat HUD doesn't work in a headset, so the watch shows what you need: health, armour, ammo, time, kills and the scoreboard.
 
-**There's no radar** — with per-eye rendering on, GE:S's own HUD is kept out of your view, because this version of the game can only draw it flat across the screen and in a headset that came out stretched 1.84× (the radar was an oval). The watch shows health, armour, ammo, the round time, your weapon and kills, so the radar is the one thing missing. **Hurt** under Display > Game HUD still flashes your health bars when you're hit. Turning per-eye rendering off (Detail) brings the stretched HUD back.
+**Recording or streaming** — the game window on your desktop doesn't show exactly what you see. Use SteamVR's mirror (SteamVR menu > Display VR View) or your headset's own recording instead.
 
-**Quitting from the menu pauses for a few seconds** — a Steam hang on exit that the mod detects and ends for you.
-
-**The game closes by itself while loading a map** — the graphics driver reset itself (Windows' Event Viewer, System log, shows "Display driver nvlddmkm stopped responding and has successfully recovered" at that moment). The game used to freeze on the spot until you killed it; now it closes, so you can launch again straight away, and `vrmod_log.txt` has a `DXVK FATAL` line. If it happens often: put any GPU overclock back to stock, close other GPU-heavy programs, and try a clean reinstall of the NVIDIA driver.
-
-**The game window on your desktop shows a wide, cropped view** — with per-eye rendering on, the window shows a slice of the left eye's picture (the pause menu sits on the same picture). For recording or streaming, SteamVR's mirror window (SteamVR menu > Display VR View) shows exactly what the headset does.
-
-**Something else went wrong** — `…\Source SDK Base 2007\bin\vrmod_log.txt` records what happened, including memory use and frame pacing. It starts fresh once it passes 8 MB.
+**Something else went wrong** — the file `Source SDK Base 2007\bin\vrmod_log.txt` records what happened. Attach it if you report a problem.
 
 ---
 
 ## Good to know
 
-* **Multiplayer works normally.** Aiming goes through the game's own input, so free aim and face aim work on any server, including ones that have never heard of this mod, and flat players can play alongside you.
-* **The main menu gets the GoodHead splash and title track**, and the menu list moves up the screen to clear the logo. GE:S's nine menu tunes, its own artwork and its menu position are kept as `.gesvr-orig` files next to the ones we install. To go back to them, open `Launch-GESVR.ps1`, change `$goodheadMenu = $true` to `$false`, and run the launcher once — it restores the originals exactly and removes our track. `$menuY` just below that moves the list: it is measured in the 640×480 space Source schemes use, so 115 means 24% down the screen and bigger numbers push it lower.
-* **The mod changes a few GE:S settings** and the game saves them in its own config: fast weapon switching, the standard death camera, and — while the watch is on — the round timer, ammo count, weapon list and kill feed come off the game's HUD, because the watch shows them. To go back for flat play, change them in GE:S's options, or paste into its console:
+* **Multiplayer works normally** on any server, with or without other VR players.
+* **The game's own files are safe.** The launcher changes a few of GoldenEye: Source's menu files for the GoodHead title screen and theme, and keeps the originals next to them (as `.gesvr-orig`) so they can go back.
+* **The mod changes a few game settings** that work better in VR, such as fast weapon switching. To put them back for flat play, paste this into the game's console:
   ```
   hud_fastswitch 0; ge_fp_ragdoll 1; cl_ge_show_timer 1; cl_ge_show_ammocount 1; cl_ge_hud_noswitchlist 0; cl_ge_drawkillfeed 1
   ```
-* **The game window** follows your desktop, capped at 2560×1440 — it's what the menus are captured from, and with per-eye rendering off it's also the resolution of each eye. A 4K window was tried and crashed at character select, hence the cap. To pin a size, set `$gesResolution` near the graphics section of `Launch-GESVR.ps1`.
-* **Death is done for VR**: the red blood curtain drops over your view and the camera stays steady instead of riding the ragdoll.
 
 ---
 
 ## Building it yourself
 
-Visual Studio 2022 (v143), Windows 10 SDK, **Release | Win32**. Clone with submodules:
+Visual Studio 2022, **Release | Win32**. Clone with submodules:
 
 ```
 git clone --recursive https://github.com/mattymattmattmatt/Goldeneye-007-Source-GoodHead.git
 ```
 
-Open `l4d2vr.sln` and build; the output lands in `dist\d3d9.dll`. DXVK is the `dxvk\` submodule — the VR reticle, the throw guide and the compositor fixes live there, so a clone without submodules will not link.
-
-`tools\Make-Release.ps1` builds the player download into `packages\`.
-
-**`HANDOFF.md`** is the engineering log: every engine function the mod calls and how each was verified, plus every wrong turn and what it cost. If you're porting a Source game to VR, that file is the useful part of this repository.
+Open `l4d2vr.sln` and build. The mod lands in `dist\d3d9.dll`, and `tools\Make-Release.ps1` builds the download zip. **`HANDOFF.md`** has the full technical notes.
 
 ## Credits
 
-* [L4D2VR](https://github.com/sd805/l4d2vr) — the architecture, stereo path and usercmd packing this grew from
-* [DXVK](https://github.com/doitsujin/dxvk) and [sd805's vr-dx9 fork](https://github.com/sd805/dxvk) — D3D9 to Vulkan, and the hand-off to the SteamVR compositor
-* [Portal2VR](https://github.com/Gistix/portal2vr) — Source porting notes
-* [MinHook](https://github.com/TsudaKageyu/minhook), [OpenVR](https://github.com/ValveSoftware/openvr)
+* [L4D2VR](https://github.com/sd805/l4d2vr) — the VR foundation this grew from
+* [DXVK](https://github.com/doitsujin/dxvk) and [sd805's VR fork](https://github.com/sd805/dxvk)
+* [Portal2VR](https://github.com/Gistix/portal2vr), [MinHook](https://github.com/TsudaKageyu/minhook), [OpenVR](https://github.com/ValveSoftware/openvr)
 * **Team GoldenEye: Source** — for the game itself. Go and play it flat too.
 
 GoldenEye 007 is a trademark of its owners. This is an unofficial, non-commercial fan project with no affiliation to them, to Team GoldenEye: Source, or to Valve.
