@@ -313,9 +313,9 @@ FixViewmodelAspect=true
 # it where GE:S fires its muzzle flash and tracers from; 0 is straight in
 # front of your face.
 FaceAimGunSpread=1.0
-# The game HUD in the headset: off, hurt (flash it when you take damage or are
-# low) or always. The Show HUD button works in every mode. Also in VR Settings.
-GameHUD=always
+# Hurt flash: your health bars flash up in front of you when you take damage
+# or are low. hurt = on, off = never. (The watch always has them.)
+GameHUD=hurt
 # Kills (yours called out: YOU KILLED / KILLED BY) and round start/end pop up
 # on the watch for a few seconds, and GE:S's own kill feed is kept off the view.
 # With the watch on, the round timer, ammo count and weapon list are also taken

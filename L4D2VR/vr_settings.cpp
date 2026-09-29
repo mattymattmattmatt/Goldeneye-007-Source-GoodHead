@@ -387,11 +387,15 @@ static void BuildModel(VR *vr)
     display.items.push_back(Numeric(L"Menu size", L"How big the game's menus look.",
         &vr->m_MenuWidthMeters, "MenuWidthMeters", Range(1.0f, 4.0f, 0.2f),
         [](float v) { return Fmt(L"%.0f%%", v * 50.0f); }, []() { GESVR_RequestMenuReplace(); }));
-    display.items.push_back(Named(L"Game HUD", L"The game's own HUD in front of you. The watch has the same.",
-        { L"Off", L"When hurt", L"Always" },
-        [vr]() { return vr->m_GameHudMode; },
+    // "Always" is gone: the full floating HUD needs an engine hook this build
+    // does not have (VGui_Paint, logged "Optional signature not found" on every
+    // launch), so it only ever showed an empty panel. "When hurt" works -- it
+    // crops the health bars out of the window image.
+    display.items.push_back(Named(L"Hurt flash", L"Your health bars flash up in front of you when you are hit.",
+        { L"Off", L"On" },
+        [vr]() { return vr->m_GameHudMode >= 1 ? 1 : 0; },
         [vr](int i) { vr->m_GameHudMode = i; },
-        "GameHUD", { "off", "hurt", "always" }));
+        "GameHUD", { "off", "hurt" }));
     g_tabs.push_back(display);
 
     // Split in two because the panel does not scroll: ten rows at the minimum

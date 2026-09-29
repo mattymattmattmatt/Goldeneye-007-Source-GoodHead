@@ -4256,7 +4256,7 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     float eyeFov = m_Fov;
     const bool scopeHeld = ScopeHeld();
     // Zoomed in: the reticle shows even with Reticle off.
-    dxvk::g_GESVR_ReticleForce = scopeHeld && m_ScopeBaseFov > 1.0f && setup.fov < m_ScopeBaseFov - 1.0f;
+    dxvk::g_GESVR_ReticleForce = false;   // the reticle follows its setting, zoomed or not
     if (!scopeHeld)
     {
         if (++m_ScopeReleasedFrames > 30 || m_ScopeBaseFov < 1.0f)
@@ -5717,11 +5717,14 @@ void VR::UpdateGameCrosshair()
     IMaterial *mat = s_find(m_Game->m_MaterialSystem, "sprites/crosshair", "VGUI textures", false, nullptr);
     if (!mat || mat->IsErrorMaterial())
         return;
-    const bool hide = m_TrackedWeapon;
+    // Hidden in every aim mode: the reticle in VR Settings is the one crosshair.
+    // With face aim it used to stay, and aim mode (left grip) brought GE:S's
+    // red crosshair up next to ours on every weapon (Matty, 2026-09-29).
+    const bool hide = true;
     if (mat->GetMaterialVarFlag(MATERIAL_VAR_NO_DRAW) != hide)
     {
         mat->SetMaterialVarFlag(MATERIAL_VAR_NO_DRAW, hide);
-        Game::logMsg("GE:S crosshair (sprites/crosshair) %s", hide ? "hidden: free aim is on" : "shown");
+        Game::logMsg("GE:S crosshair (sprites/crosshair) hidden: the VR reticle is the crosshair");
     }
 }
 
@@ -6446,16 +6449,13 @@ void VR::ParseConfigFile()
     m_HudDistance = CfgFloat(userConfig, "HudDistance", m_HudDistance);
     m_HudSize = CfgFloat(userConfig, "HudSize", m_HudSize);
     m_HudAlwaysVisible = CfgBool(userConfig, "HudAlwaysVisible", m_HudAlwaysVisible);
-    m_GameHudMode = m_HudAlwaysVisible ? 2 : 1;
+    // 0 off, 1 hurt flash. The old "always" (2) could only show an empty
+    // panel on this engine build, so it reads as the hurt flash now.
+    m_GameHudMode = 1;
     {
         auto it = userConfig.find("GameHUD");
-        if (it != userConfig.end())
-        {
-            const std::string &v = it->second;
-            m_GameHudMode = (v.find("always") != std::string::npos) ? 2 :
-                            (v.find("hurt") != std::string::npos) ? 1 :
-                            (v.find("off") != std::string::npos) ? 0 : m_GameHudMode;
-        }
+        if (it != userConfig.end() && it->second.find("off") != std::string::npos)
+            m_GameHudMode = 0;
     }
     m_FaceAimGunSpread = CfgFloat(userConfig, "FaceAimGunSpread", m_FaceAimGunSpread);
     m_BloodCurtainScale = CfgFloat(userConfig, "BloodCurtainScale", m_BloodCurtainScale);
