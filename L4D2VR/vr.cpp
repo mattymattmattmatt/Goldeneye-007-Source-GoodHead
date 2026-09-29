@@ -3780,6 +3780,16 @@ void VR::ProcessInput()
     // empty -- and the scoreboard button only worked through it, which is
     // why it did nothing. The scoreboard now goes straight to the game.
     MoveCmd(PressedDigitalAction(m_Scoreboard) ? "+showscores" : "-showscores");
+
+    // Right thumbstick click (the ShowHUD action): the watch flips between its
+    // face and the scoreboard page, and comes up for a few seconds so a click
+    // is enough to glance at it.
+    if (PressedDigitalAction(m_ShowHUD, true))
+    {
+        m_WatchScores = !m_WatchScores;
+        VRWatch::PopFor(4000);
+        Game::logMsg("Watch shows %s", m_WatchScores ? "the scoreboard" : "its face");
+    }
     vr::VROverlay()->HideOverlay(m_HUDHandle);
     m_RenderedHud = false;
 
@@ -4819,6 +4829,51 @@ static void LogTableProps(const char *className, RecvTableStub *table)
 // Round timer, if GE:S networks one. Found by class name and prop name, since
 // neither is known for certain; everything found is logged either way.
 static ClientClassStub *g_timerClass = nullptr;
+
+// The scoreboard's source: the player-resource entity (CPlayerResource and
+// GE:S's subclass), which networks one slot per player for score, deaths
+// and whether the slot is connected. Arrays: base offset and element stride.
+static ClientClassStub *g_resourceClass = nullptr;
+static int g_resScoreOff = -1, g_resScoreStride = 4;
+static int g_resDeathsOff = -1, g_resDeathsStride = 4;
+static int g_resConnOff = -1, g_resConnStride = 1;
+
+// An array netvar: where element 0 sits and how far apart the elements are,
+// from the array's own table ("000", "001", ...).
+static bool FindArrayNetvar(RecvTableStub *table, const char *wanted, int &base, int &stride, int extra = 0, int depth = 0)
+{
+    if (!table || depth > 8 || !ReadablePtr(table, sizeof(RecvTableStub)) || table->m_nProps <= 0 || table->m_nProps > 512
+        || !ReadablePtr(table->m_pProps, sizeof(RecvPropStub)))
+        return false;
+    for (int i = 0; i < table->m_nProps; ++i)
+    {
+        RecvPropStub *prop = &table->m_pProps[i];
+        if (!ReadablePtr(prop, sizeof(RecvPropStub)))
+            continue;
+        if (ReadableCString(prop->m_pVarName) && strcmp(prop->m_pVarName, wanted) == 0)
+        {
+            RecvTableStub *arr = reinterpret_cast<RecvTableStub *>(prop->m_pDataTable);
+            if (arr && ReadablePtr(arr, sizeof(RecvTableStub)) && arr->m_nProps >= 2 && arr->m_nProps <= 256
+                && ReadablePtr(arr->m_pProps, 2 * sizeof(RecvPropStub)))
+            {
+                base = extra + prop->m_Offset + arr->m_pProps[0].m_Offset;
+                stride = arr->m_pProps[1].m_Offset - arr->m_pProps[0].m_Offset;
+                return stride > 0 && stride <= 16;
+            }
+            if (prop->m_ElementStride > 0 && prop->m_ElementStride <= 16)
+            {
+                base = extra + prop->m_Offset;
+                stride = prop->m_ElementStride;
+                return true;
+            }
+            return false;
+        }
+        if (prop->m_pDataTable &&
+            FindArrayNetvar(reinterpret_cast<RecvTableStub *>(prop->m_pDataTable), wanted, base, stride, extra + prop->m_Offset, depth + 1))
+            return true;
+    }
+    return false;
+}
 static int g_timerEndOff = -1, g_timerRemainOff = -1, g_timerPausedOff = -1, g_timerDisabledOff = -1;
 static int g_timerEnabledOff = -1, g_timerStartedOff = -1;
 // The local player's m_flSimulationTime: server time of its last update,
@@ -4922,6 +4977,25 @@ void VR::ResolvePlayerNetvars()
                 m_ViewModelIndexNetvar = FindAnyNetvar(table, { "m_iViewModelIndex" });
                 Game::logMsg("Weapon netvars on %s: clip1=%d primaryAmmoType=%d viewModelIndex=%d",
                              name, clip, m_PrimaryAmmoTypeNetvar, m_ViewModelIndexNetvar);
+            }
+        }
+
+        if (NameHas(name, "PlayerResource"))
+        {
+            LogTableProps(name, table);
+            int b, st;
+            // The most derived class (GE:S's) comes last and wins.
+            // Kills: GE:S's m_iFrags (CGEPlayerResource) -- m_iScore is the game
+            // mode's score, which is not always kills. m_iScore where there is
+            // no m_iFrags (the base class, met first).
+            if (FindArrayNetvar(table, "m_iFrags", b, st) || FindArrayNetvar(table, "m_iScore", b, st))
+            {
+                g_resourceClass = cc;
+                g_resScoreOff = b; g_resScoreStride = st;
+                if (FindArrayNetvar(table, "m_iDeaths", b, st)) { g_resDeathsOff = b; g_resDeathsStride = st; }
+                if (FindArrayNetvar(table, "m_bConnected", b, st)) { g_resConnOff = b; g_resConnStride = st; }
+                Game::logMsg("Scoreboard netvars on %s: score=%d/%d deaths=%d/%d connected=%d/%d", name,
+                             g_resScoreOff, g_resScoreStride, g_resDeathsOff, g_resDeathsStride, g_resConnOff, g_resConnStride);
             }
         }
 
@@ -5911,11 +5985,93 @@ void VR::ProcessTuneKeys()
     VRToast::Show(title, detail);
 }
 
+// The scoreboard page: every connected player from the player-resource
+// entity (kills and deaths), names from the
+// engine, sorted by score. Top five, plus your own row if you are lower.
+static bool SafePlayerInfo(IEngineClient *eng, int i, player_info_t *info)
+{
+    __try { return eng->GetPlayerInfo(i, info); }
+    __except (EXCEPTION_EXECUTE_HANDLER) { return false; }
+}
+
+void VR::ReadScoreboard(WatchStats &s)
+{
+    if (!g_resourceClass || !m_Game || !m_Game->m_ClientEntityList || !m_Game->m_EngineClient)
+        return;
+    IClientEntityList *list = m_Game->m_ClientEntityList;
+    static int s_index = -1;
+    static ULONGLONG s_lastScan = 0;
+    void *net = s_index > 0 ? list->GetClientNetworkable(s_index) : nullptr;
+    if (!net || CallGetClientClass(net) != g_resourceClass)
+    {
+        s_index = -1;
+        const ULONGLONG now = GetTickCount64();
+        if (now - s_lastScan < 2000)
+            return;
+        s_lastScan = now;
+        int highest = list->GetHighestEntityIndex();
+        if (highest > 4096) highest = 4096;
+        for (int i = 1; i <= highest; ++i)
+        {
+            void *n = list->GetClientNetworkable(i);
+            if (n && ReadablePtr(n, sizeof(void *)) && CallGetClientClass(n) == g_resourceClass)
+            {
+                s_index = i;
+                Game::logMsg("Scoreboard: player resource at entity %d", i);
+                break;
+            }
+        }
+        if (s_index < 0)
+            return;
+    }
+    void *res = list->GetClientEntity(s_index);
+    if (!res)
+        return;
+
+    const int me = m_Game->m_EngineClient->GetLocalPlayer();
+    std::vector<WatchScoreRow> all;
+    for (int i = 1; i <= 64; ++i)
+    {
+        int conn = 1;
+        const unsigned char *cp = (const unsigned char *)res + g_resConnOff + i * g_resConnStride;
+        if (g_resConnOff >= 0 && ReadablePtr(cp, 1))
+            conn = *cp;
+        if (!conn)
+            continue;
+        player_info_t info{};
+        if (!SafePlayerInfo(m_Game->m_EngineClient, i, &info) || info.ishltv)
+            continue;
+        WatchScoreRow r;
+        info.name[sizeof(info.name) - 1] = 0;
+        wchar_t wname[64] = {};
+        MultiByteToWideChar(CP_UTF8, 0, info.name, -1, wname, 63);
+        r.name = wname;
+        ReadI32(res, g_resScoreOff + i * g_resScoreStride, r.kills);
+        if (g_resDeathsOff >= 0)
+            ReadI32(res, g_resDeathsOff + i * g_resDeathsStride, r.deaths);
+        r.you = (i == me);
+        all.push_back(r);
+    }
+    std::stable_sort(all.begin(), all.end(), [](const WatchScoreRow &a, const WatchScoreRow &b) {
+        return a.kills != b.kills ? a.kills > b.kills : a.deaths < b.deaths;
+    });
+    for (size_t k = 0; k < all.size(); ++k)
+        all[k].rank = (int)k + 1;
+    for (size_t k = 0; k < all.size() && k < 5; ++k)
+        s.rows.push_back(all[k]);
+    for (size_t k = 5; k < all.size(); ++k)
+        if (all[k].you)
+            s.rows.push_back(all[k]);
+}
+
 void VR::ReadWatchStats(WatchStats &s)
 {
     s = WatchStats{};
     if (!m_Game)
         return;
+    s.scores = m_WatchScores;
+    if (m_WatchScores)
+        ReadScoreboard(s);
     RefreshActiveWeapon();
     s.weaponModel = m_Game->m_ActiveWeaponModel;
 
@@ -6435,6 +6591,7 @@ void VR::ParseConfigFile()
     m_ScopeZoom = CfgBool(userConfig, "ScopeZoom", m_ScopeZoom);
     m_ScopeSmoothing = CfgFloat(userConfig, "ScopeSmoothing", m_ScopeSmoothing);
     m_WatchRadar = false;   // retired, see VR::Update
+    m_WatchScores = CfgBool(userConfig, "WatchScores", m_WatchScores);   // start on the scoreboard page
     m_ReloadGesture = CfgBool(userConfig, "ReloadGesture", m_ReloadGesture);
     m_SniperScope = CfgBool(userConfig, "SniperScope", m_SniperScope);
     m_ScopeTest = CfgBool(userConfig, "ScopeTest", m_ScopeTest);

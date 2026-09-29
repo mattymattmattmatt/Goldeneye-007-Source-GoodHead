@@ -56,6 +56,9 @@
             },
             {
                "inputs": {
+                  "click": {
+                     "output": "/actions/main/in/ShowHUD"
+                  },
                   "position": {
                      "output": "/actions/main/in/Turn"
                   }

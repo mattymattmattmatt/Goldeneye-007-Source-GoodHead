@@ -264,6 +264,35 @@ static void DrawWatch(Canvas &c, const Fonts &f, const WatchStats &s, int maxHea
     }
 
     const COLORREF lcd = RGB(132, 255, 176), lcdDim = RGB(52, 132, 86);
+    if (s.scores)
+    {
+        // Scoreboard page: rank, name, kills and deaths; your row in yellow.
+        c.Text(f.name, lcd, L"SCORES", { scr.left + 12, 156, scr.right - 12, 180 },
+               DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        c.Text(f.label, lcdDim, L"K     D", { scr.left + 12, 180, scr.right - 22, 196 },
+               DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+        if (s.rows.empty())
+            c.Text(f.label, lcdDim, L"NO SCORES YET", { scr.left, 230, scr.right, 260 },
+                   DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        int y = 198;
+        for (const WatchScoreRow &r : s.rows)
+        {
+            const COLORREF col = r.you ? RGB(255, 226, 110) : lcd;
+            wchar_t num[32];
+            swprintf(num, 32, L"%d", r.rank);
+            c.Text(f.label, col, num, { scr.left + 14, y, scr.left + 34, y + 24 }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+            c.Text(f.label, col, r.name, { scr.left + 36, y, scr.right - 76, y + 24 },
+                   DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+            swprintf(num, 32, L"%d", r.kills);
+            c.Text(f.label, col, num, { scr.right - 76, y, scr.right - 46, y + 24 }, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            swprintf(num, 32, L"%d", r.deaths);
+            c.Text(f.label, col, num, { scr.right - 44, y, scr.right - 18, y + 24 }, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            y += 24;
+            if (y > 340)
+                break;
+        }
+        return;
+    }
     if (!s.noteHead.empty())
     {
         // A notice (kill feed, rounds) takes the screen for its few seconds:
@@ -408,6 +437,13 @@ void Hide()
     g_radarSpot = false;
     if (g_vr && g_vr->m_Overlay && g_face.Valid())
         g_face.Hide(g_vr->m_Overlay);
+}
+
+void PopFor(unsigned millis)
+{
+    const ULONGLONG until = GetTickCount64() + millis;
+    if (g_popUntil.load() < until)
+        g_popUntil.store(until);
 }
 
 bool RadarPlacement(vr::TrackedDeviceIndex_t &hand, vr::HmdMatrix34_t &rel)

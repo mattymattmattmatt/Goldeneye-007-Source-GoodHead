@@ -778,6 +778,10 @@ public:
 	void CreateWristOverlays();
 	void UpdateHurtHUD();
 	void UpdateWatchRadar();
+	void ReadScoreboard(WatchStats &s);
+	// The watch shows the scoreboard page instead of its face (right
+	// thumbstick click flips it; see ProcessInput).
+	bool m_WatchScores = false;
 	void SmoothGunWhileZoomed();
 	// 0 = no special zoom, 1 = AR33/KF7 (zoom = both hands + off-hand trigger),
 	// 2 = sniper (lens while held with both hands).

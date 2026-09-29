@@ -316,6 +316,10 @@ FaceAimGunSpread=1.0
 
 # Bring your hands together to reload. false = only the reload button.
 ReloadGesture=true
+
+# The right thumbstick click flips the watch to a scoreboard (everyone's kills
+# and deaths, you in yellow) and back. true = start on the scoreboard.
+WatchScores=false
 # Kills (yours called out: YOU KILLED / KILLED BY) and round start/end pop up
 # on the watch for a few seconds, and GE:S's own kill feed is kept off the view.
 # With the watch on, the round timer, ammo count and weapon list are also taken

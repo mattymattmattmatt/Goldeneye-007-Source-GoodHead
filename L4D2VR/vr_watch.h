@@ -1,14 +1,31 @@
 #pragma once
 #include <string>
 #include "openvr.h"
+#include <vector>
 
 class VR;
 
 // What the wrist watch shows. -1 means "not known" throughout: the numbers
 // come from reading the game's networked variables, and any of them can fail
 // to resolve on a given build of GE:S.
+struct WatchScoreRow
+{
+    std::wstring name;
+    int kills = 0;
+    int deaths = 0;
+    int rank = 0;              // 1 = top
+    bool you = false;
+    bool operator==(const WatchScoreRow &o) const
+    {
+        return name == o.name && kills == o.kills && deaths == o.deaths && rank == o.rank && you == o.you;
+    }
+};
+
 struct WatchStats
 {
+    // The scoreboard page (right thumbstick click): top rows plus your own.
+    bool scores = false;
+    std::vector<WatchScoreRow> rows;
     int health = -1;
     int armor = -1;
     int maxHealth = -1;        // only if the game networks it
@@ -26,7 +43,8 @@ struct WatchStats
         return health == o.health && armor == o.armor && maxHealth == o.maxHealth &&
                maxArmor == o.maxArmor && clip == o.clip && reserve == o.reserve &&
                timeLeft == o.timeLeft && weaponModel == o.weaponModel &&
-               noteHead == o.noteHead && noteDetail == o.noteDetail && noteKind == o.noteKind;
+               noteHead == o.noteHead && noteDetail == o.noteDetail && noteKind == o.noteKind &&
+               scores == o.scores && rows == o.rows;
     }
 };
 
@@ -42,6 +60,8 @@ namespace VRWatch
     void Init(VR *vr);
     void Update();     // in-map frame, render thread
     void Hide();
+    // Bring the watch up for millis ms even if you are not looking at it.
+    void PopFor(unsigned millis);
     // Where the face is this frame, when it would be showing: the radar
     // (VR::UpdateWatchRadar) takes its place, and the face stays hidden while
     // m_WatchRadar is on. False when the watch would be hidden.
