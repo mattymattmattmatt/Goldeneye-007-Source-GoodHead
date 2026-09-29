@@ -6228,7 +6228,18 @@ void VR::UpdateHurtHUD()
     // is looking at the watch so they can confirm the crop; otherwise only on hit.
     const bool show = (recentlyHurt || lowHealth) && !m_LookingAtWrist && m_GameHudMode == 1 && health != 0;
 
-    if (!show || !m_RenderedHud)
+    // Needs only a picture to crop. It used to need m_RenderedHud too -- set
+    // by the VGui_Paint hook this engine build does not have -- so the flash
+    // never showed at all (Matty, 2026-09-29: "doesnt show up in vr").
+    static bool s_wasShown = false;
+    const bool canShow = show && TextureReady(m_VKHUD);
+    if (canShow != s_wasShown)
+    {
+        Game::logMsg("Hurt flash %s (health %d, last %d, hurt %d, low %d, mode %d)", canShow ? "SHOWN" : "hidden",
+                     health, m_LastHealth, (int)recentlyHurt, (int)lowHealth, m_GameHudMode);
+        s_wasShown = canShow;
+    }
+    if (!canShow)
     {
         m_Overlay->HideOverlay(m_HurtHUDHandle);
         return;
