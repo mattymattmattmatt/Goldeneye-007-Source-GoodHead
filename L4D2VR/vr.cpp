@@ -1575,13 +1575,7 @@ void VR::Update()
     // the gate was true every frame; turning the HUD off silently stopped it,
     // and the menu went see-through/blurry again at the same time. Decoupled
     // so HUD settings cannot switch the alpha fix off as a side effect.
-    //
-    // It must also run whenever something crops it: the hurt flash and the
-    // radar on the watch. Gated on AlwaysCaptureOverlay alone (false by
-    // default, and in Matty's config), both were cropping a stale menu frame
-    // -- no flash when shot, a blank radar (2026-09-29).
-    const bool hudCropped = m_Game && m_Game->IsInMap() && (m_GameHudMode >= 1 || m_WatchRadar);
-    if (g_D3DVR9 && (m_AlwaysCaptureOverlay || hudCropped))
+    if (g_D3DVR9 && m_AlwaysCaptureOverlay)
         g_D3DVR9->CaptureForOverlay(&m_VKHUD, -1, -1);
 
     // Only runs in map.
@@ -1601,8 +1595,9 @@ void VR::Update()
             VRWatch::Hide();
         else
             VRWatch::Update();
-        UpdateWatchRadar();
-        UpdateHurtHUD();
+        // The radar and hurt flash cropped GE:S's HUD out of the window
+        // picture, but on the per-eye path the HUD never reaches that picture
+        // (headset 2026-09-29: the crops showed bare world). Retired.
     }
     else
     {
@@ -3784,11 +3779,6 @@ void VR::ProcessInput()
     // engine hook this build does not have (VGui_Paint), so it was always
     // empty -- and the scoreboard button only worked through it, which is
     // why it did nothing. The scoreboard now goes straight to the game.
-    if (PressedDigitalAction(m_ShowHUD, true))
-    {
-        m_WatchRadar = !m_WatchRadar;
-        Game::logMsg("Watch shows %s (thumbstick)", m_WatchRadar ? "the radar" : "its face");
-    }
     MoveCmd(PressedDigitalAction(m_Scoreboard) ? "+showscores" : "-showscores");
     vr::VROverlay()->HideOverlay(m_HUDHandle);
     m_RenderedHud = false;
@@ -6444,7 +6434,7 @@ void VR::ParseConfigFile()
     m_TwoHandedNeedsGrip = CfgBool(userConfig, "TwoHandedNeedsGrip", m_TwoHandedNeedsGrip);
     m_ScopeZoom = CfgBool(userConfig, "ScopeZoom", m_ScopeZoom);
     m_ScopeSmoothing = CfgFloat(userConfig, "ScopeSmoothing", m_ScopeSmoothing);
-    m_WatchRadar = CfgBool(userConfig, "WatchRadar", m_WatchRadar);
+    m_WatchRadar = false;   // retired, see VR::Update
     m_ReloadGesture = CfgBool(userConfig, "ReloadGesture", m_ReloadGesture);
     m_SniperScope = CfgBool(userConfig, "SniperScope", m_SniperScope);
     m_ScopeTest = CfgBool(userConfig, "ScopeTest", m_ScopeTest);

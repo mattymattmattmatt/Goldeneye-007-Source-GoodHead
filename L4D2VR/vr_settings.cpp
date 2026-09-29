@@ -376,11 +376,6 @@ static void BuildModel(VR *vr)
         [vr]() { return vr->m_WatchAlwaysVisible ? 1 : 0; },
         [vr](int i) { vr->m_WatchAlwaysVisible = (i != 0); },
         "WatchAlwaysVisible", { "false", "true" }));
-    display.items.push_back(Named(L"Watch face", L"Left thumbstick click switches it in a game too.",
-        { L"Time and stats", L"Radar" },
-        [vr]() { return vr->m_WatchRadar ? 1 : 0; },
-        [vr](int i) { vr->m_WatchRadar = (i != 0); },
-        "WatchRadar", { "false", "true" }));
     display.items.push_back(Toggle(L"Watch notices", L"Kills and rounds pop up on the watch instead of the HUD.",
         &vr->m_WatchKillFeed, "WatchKillFeed"));
     display.items.push_back(Toggle(L"Watch on model", L"Sit the watch where the one on the grenade hand sits.",
@@ -394,15 +389,9 @@ static void BuildModel(VR *vr)
     display.items.push_back(Numeric(L"Menu size", L"How big the game's menus look.",
         &vr->m_MenuWidthMeters, "MenuWidthMeters", Range(1.0f, 4.0f, 0.2f),
         [](float v) { return Fmt(L"%.0f%%", v * 50.0f); }, []() { GESVR_RequestMenuReplace(); }));
-    // "Always" is gone: the full floating HUD needs an engine hook this build
-    // does not have (VGui_Paint, logged "Optional signature not found" on every
-    // launch), so it only ever showed an empty panel. "When hurt" works -- it
-    // crops the health bars out of the window image.
-    display.items.push_back(Named(L"Hurt flash", L"Your health bars flash up in front of you when you are hit.",
-        { L"Off", L"On" },
-        [vr]() { return vr->m_GameHudMode >= 1 ? 1 : 0; },
-        [vr](int i) { vr->m_GameHudMode = i; },
-        "GameHUD", { "off", "hurt" }));
+    // The game-HUD options (the full floating HUD, then the hurt flash) are
+    // gone: on the per-eye path GE:S's HUD never reaches the window picture
+    // they cropped. The watch carries health, armour, ammo and time.
     g_tabs.push_back(display);
 
     // Split in two because the panel does not scroll: ten rows at the minimum
