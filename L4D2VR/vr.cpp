@@ -4249,7 +4249,10 @@ void VR::ApplyHeadAndIpd(CViewSetup &left, CViewSetup &right, const CViewSetup &
     float eyeFov = m_Fov;
     const bool scopeHeld = ScopeHeld();
     // Zoomed in: the reticle shows even with Reticle off.
-    dxvk::g_GESVR_ReticleForce = false;   // the reticle follows its setting, zoomed or not
+    // Zoomed in, the reticle shows even with Reticle off (Matty: "scoped
+    // weapons should always have a reticle on when zoomed"). The sniper lens
+    // turns this back off below -- it has its own crosshair.
+    dxvk::g_GESVR_ReticleForce = scopeHeld && m_ScopeBaseFov > 1.0f && setup.fov < m_ScopeBaseFov - 1.0f;
     if (!scopeHeld)
     {
         if (++m_ScopeReleasedFrames > 30 || m_ScopeBaseFov < 1.0f)
