@@ -1262,6 +1262,7 @@ void VR::InstallApplicationManifest(const char *fileName)
 
 static void LogVguiTree(void *surface, const char *when);
 static void HideStrayViewportBackground(void *surface, const char *when);
+static void HideHtmlPanels(void *surface);
 
 void VR::Update()
 {
@@ -1432,6 +1433,8 @@ void VR::Update()
             HideStrayViewportBackground(m_Game->m_VguiSurface, "after leaving the map");
         else if (m_Game->IsInMap() && !m_Game->IsGameUIVisible() && m_VguiCursor == 0)
             HideStrayViewportBackground(m_Game->m_VguiSurface, "in the map with no menu up");
+        if (m_Game->IsConnected())
+            HideHtmlPanels(m_Game->m_VguiSurface);
     }
 
     // EyeDiagDisconnect (vr.h): the main-menu half of the test. Here, at the
@@ -1765,6 +1768,40 @@ static void HideStrayViewportBackground(void *surface, const char *when)
             Game::logMsg("MENU: hid GE:S's viewport backdrop, left up %s", when);
         }
     }
+}
+
+// The black box on the join screen (the MOTD, CTextWindow "info"): its text
+// is a vgui::HTML panel, which in Source 2007 is an embedded browser in its own
+// child HWND. Nothing of it reaches the D3D frame, so in the headset it is a
+// black rectangle over the loading picture. Hidden; the rest of the panel
+// (title, buttons) stays.
+static void HideHtmlPanels(void *surface)
+{
+    VguiApi v;
+    if (!ResolveVgui(surface, v))
+        return;
+    struct Walk
+    {
+        static void Go(const VguiApi &v, unsigned vp, int depth)
+        {
+            if (!vp || depth > 6 || !v.isVisible(v.panel, vp))
+                return;
+            const char *cls = v.getClass(v.panel, vp);
+            if (cls && !strcmp(cls, "HTML"))
+            {
+                const char *name = v.getName(v.panel, vp);
+                v.setVisible(v.panel, vp, false);
+                Game::logMsg("MENU: hid web panel \"%s\" (draws black in VR)", name ? name : "?");
+                return;
+            }
+            const int n = v.childCount(v.panel, vp);
+            for (int i = 0; i < n && i < 128; ++i)
+                Go(v, v.getChild(v.panel, vp, i), depth + 1);
+        }
+    };
+    const int n = v.popupCount(v.surface);
+    for (int i = 0; i < n && i < 256; ++i)
+        Walk::Go(v, v.getPopup(v.surface, i), 0);
 }
 
 // Diagnostics: the whole VISIBLE VGUI tree -- name, class, size, popup --
