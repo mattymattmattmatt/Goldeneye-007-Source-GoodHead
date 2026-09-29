@@ -362,6 +362,8 @@ static void BuildModel(VR *vr)
         &vr->m_SwingMelee, "SwingMelee"));
     weapons.items.push_back(Toggle(L"Adjust position", L"Free aim, numpad: 8 2 4 6 9 3 move, 5 rotate, 0 save.",
         &vr->m_WeaponTuning, "WeaponTuning"));
+    weapons.items.push_back(Toggle(L"Reload gesture", L"Bring your hands together to reload. The button always works.",
+        &vr->m_ReloadGesture, "ReloadGesture"));
     weapons.items.push_back(Toggle(L"Off hand", L"Grenades and mines: put their left arm on your off hand.",
         &vr->m_LeftHandOnController, "LeftHandOnController"));
     g_tabs.push_back(weapons);
@@ -374,6 +376,11 @@ static void BuildModel(VR *vr)
         [vr]() { return vr->m_WatchAlwaysVisible ? 1 : 0; },
         [vr](int i) { vr->m_WatchAlwaysVisible = (i != 0); },
         "WatchAlwaysVisible", { "false", "true" }));
+    display.items.push_back(Named(L"Watch face", L"Right thumbstick click switches it in a game too.",
+        { L"Time and stats", L"Radar" },
+        [vr]() { return vr->m_WatchRadar ? 1 : 0; },
+        [vr](int i) { vr->m_WatchRadar = (i != 0); },
+        "WatchRadar", { "false", "true" }));
     display.items.push_back(Toggle(L"Watch notices", L"Kills and rounds pop up on the watch instead of the HUD.",
         &vr->m_WatchKillFeed, "WatchKillFeed"));
     display.items.push_back(Toggle(L"Watch on model", L"Sit the watch where the one on the grenade hand sits.",

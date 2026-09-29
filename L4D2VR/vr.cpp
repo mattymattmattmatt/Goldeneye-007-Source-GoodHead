@@ -1595,6 +1595,7 @@ void VR::Update()
             VRWatch::Hide();
         else
             VRWatch::Update();
+        UpdateWatchRadar();
         UpdateHurtHUD();
     }
     else
@@ -3700,7 +3701,7 @@ void VR::ProcessInput()
 
     // Manual reload: bring the magazines together (hands close) or press the bound button.
     const float reloadDist = VectorLength(m_RightControllerPosAbs - m_LeftControllerPosAbs);
-    const bool reloadGesture = reloadDist < 9.0f;
+    const bool reloadGesture = m_ReloadGesture && reloadDist < 9.0f;
     if (reloadGesture && !m_ReloadGestureLatched)
     {
         m_ReloadGestureLatched = true;
@@ -3772,26 +3773,18 @@ void VR::ProcessInput()
         m_Game->ClientCmd_Unrestricted("impulse 201");
     }
     
-    // Full floating HUD is opt-in (ShowHUD / scoreboard / always-on).
-    // Everyday HUD lives on the off-hand watch; health also flashes in front
-    // of the HMD when you take a hit (see UpdateHurtHUD).
-    const bool wantFullHud = PressedDigitalAction(m_ShowHUD) || PressedDigitalAction(m_Scoreboard) || m_GameHudMode == 2;
-    if (wantFullHud && m_RenderedHud)
+    // The old ShowHUD button (right thumbstick click) flips the watch between
+    // its face and the radar. The full floating HUD it used to open needs an
+    // engine hook this build does not have (VGui_Paint), so it was always
+    // empty -- and the scoreboard button only worked through it, which is
+    // why it did nothing. The scoreboard now goes straight to the game.
+    if (PressedDigitalAction(m_ShowHUD, true))
     {
-        RepositionOverlays();
-
-        if (PressedDigitalAction(m_Scoreboard))
-            MoveCmd("+showscores");
-        else
-            MoveCmd("-showscores");
-
-        vr::VROverlay()->ShowOverlay(m_HUDHandle);
+        m_WatchRadar = !m_WatchRadar;
+        Game::logMsg("Watch shows %s (thumbstick)", m_WatchRadar ? "the radar" : "its face");
     }
-    else
-    {
-        vr::VROverlay()->HideOverlay(m_HUDHandle);
-        MoveCmd("-showscores");
-    }
+    MoveCmd(PressedDigitalAction(m_Scoreboard) ? "+showscores" : "-showscores");
+    vr::VROverlay()->HideOverlay(m_HUDHandle);
     m_RenderedHud = false;
 
     if (PressedDigitalAction(m_Pause, true))
@@ -4599,6 +4592,37 @@ void VR::ResetPosition()
     Game::logMsg("ResetPosition: seat recapture on next pose (stand/sit recenter)");
 }
 
+// GE:S's radar on the watch. GE:S still draws its whole HUD into the window
+// every frame (the HUD pass), and m_VKHUD is that picture; the radar is a
+// fixed box in it, HudLayout.res "GERadar": 64x64 at xpos c-40, ypos 378 in
+// the 640x480 proportional space (scaled by window height / 480, centred on
+// the window's middle). Shown where the watch face would be, by the same
+// rules (on when you look at it, or always), while the face stays hidden.
+void VR::UpdateWatchRadar()
+{
+    if (!m_Overlay || !m_RadarHandle)
+        return;
+    vr::TrackedDeviceIndex_t hand;
+    vr::HmdMatrix34_t rel;
+    if (!m_WatchRadar || !m_ShowWristHUD || !TextureReady(m_VKHUD) || !VRWatch::RadarPlacement(hand, rel))
+    {
+        m_Overlay->HideOverlay(m_RadarHandle);
+        return;
+    }
+    int w = 1280, h = 720;
+    if (m_Game && m_Game->m_EngineClient)
+        m_Game->m_EngineClient->GetScreenSize(w, h);
+    const float s = (float)h / 480.0f;
+    const float x0 = 0.5f * (float)w - 40.0f * s, y0 = 378.0f * s, size = 64.0f * s;
+    const vr::VRTextureBounds_t b = { x0 / (float)w, y0 / (float)h, (x0 + size) / (float)w, (y0 + size) / (float)h };
+    m_Overlay->SetOverlayTextureBounds(m_RadarHandle, &b);
+    m_Overlay->SetOverlayWidthInMeters(m_RadarHandle, m_WatchWidth);
+    m_Overlay->SetOverlaySortOrder(m_RadarHandle, 50);
+    m_Overlay->SetOverlayTransformTrackedDeviceRelative(m_RadarHandle, hand, &rel);
+    SetOverlayTextureLocked(m_Overlay, m_RadarHandle, &m_VKHUD.m_VRTexture);
+    m_Overlay->ShowOverlay(m_RadarHandle);
+}
+
 void VR::CreateWristOverlays()
 {
     if (!m_Overlay)
@@ -4606,6 +4630,7 @@ void VR::CreateWristOverlays()
 
     struct { vr::VROverlayHandle_t *handle; const char *key; } overlays[] = {
         { &m_HurtHUDHandle,    "GESVRHurtHUD" },
+        { &m_RadarHandle,      "GESVRRadar" },
     };
 
     for (auto &entry : overlays)
@@ -6383,6 +6408,8 @@ void VR::ParseConfigFile()
     m_TwoHandedNeedsGrip = CfgBool(userConfig, "TwoHandedNeedsGrip", m_TwoHandedNeedsGrip);
     m_ScopeZoom = CfgBool(userConfig, "ScopeZoom", m_ScopeZoom);
     m_ScopeSmoothing = CfgFloat(userConfig, "ScopeSmoothing", m_ScopeSmoothing);
+    m_WatchRadar = CfgBool(userConfig, "WatchRadar", m_WatchRadar);
+    m_ReloadGesture = CfgBool(userConfig, "ReloadGesture", m_ReloadGesture);
     m_SniperScope = CfgBool(userConfig, "SniperScope", m_SniperScope);
     m_ScopeTest = CfgBool(userConfig, "ScopeTest", m_ScopeTest);
     m_ScopeLensBack = CfgFloat(userConfig, "ScopeLensBack", m_ScopeLensBack);

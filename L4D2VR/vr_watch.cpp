@@ -399,10 +399,24 @@ void Init(VR *vr)
     Game::logMsg("VRWatch: ready");
 }
 
+static vr::TrackedDeviceIndex_t g_placedHand = vr::k_unTrackedDeviceIndexInvalid;
+static vr::HmdMatrix34_t g_placedRel{};
+static bool g_radarSpot = false;     // this frame's placement is valid for the radar
+
 void Hide()
 {
+    g_radarSpot = false;
     if (g_vr && g_vr->m_Overlay && g_face.Valid())
         g_face.Hide(g_vr->m_Overlay);
+}
+
+bool RadarPlacement(vr::TrackedDeviceIndex_t &hand, vr::HmdMatrix34_t &rel)
+{
+    if (!g_radarSpot)
+        return false;
+    hand = g_placedHand;
+    rel = g_placedRel;
+    return true;
 }
 
 // Pin the face to the off hand at the configured wrist offset, turned to face
@@ -446,6 +460,8 @@ static void Place(vr::TrackedDeviceIndex_t hand, bool rightHand)
             rel.m[i][j] = h.m[0][i] * axes[j][0] + h.m[1][i] * axes[j][1] + h.m[2][i] * axes[j][2];
     for (int i = 0; i < 3; ++i)
         rel.m[i][3] = o[i];
+    g_placedHand = hand;
+    g_placedRel = rel;
     // Both halves: the hidden one may be swapped in on any frame.
     v->m_Overlay->SetOverlayTransformTrackedDeviceRelative(g_face.Handle(0), hand, &rel);
     v->m_Overlay->SetOverlayTransformTrackedDeviceRelative(g_face.Handle(1), hand, &rel);
@@ -551,6 +567,14 @@ void Update()
         g_widthSet = v->m_WatchWidth;
     }
     Place(hand, rightHand);
+    if (v->m_WatchRadar)
+    {
+        // The radar shows here instead; see VR::UpdateWatchRadar.
+        g_face.Hide(ov);
+        g_radarSpot = true;
+        return;
+    }
+    g_radarSpot = false;
     g_face.Show(ov);
 }
 } // namespace VRWatch

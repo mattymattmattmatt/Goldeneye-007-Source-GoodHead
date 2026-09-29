@@ -178,7 +178,7 @@
          "/actions/main/in/MenuRight": "Menu Right",
          "/actions/main/in/Spray": "Spray",
          "/actions/main/in/Scoreboard": "Show Scoreboard",
-         "/actions/main/in/ShowHUD": "Show HUD",
+         "/actions/main/in/ShowHUD": "Watch: switch to radar and back",
          "/actions/main/in/Pause": "Pause",
          "/actions/main/in/TwoHand": "Two-handed grip (hold)",
          "/actions/main/in/Scope": "Scope / aim mode (hold)"

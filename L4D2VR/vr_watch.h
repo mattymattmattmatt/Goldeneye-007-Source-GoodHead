@@ -1,5 +1,6 @@
 #pragma once
 #include <string>
+#include "openvr.h"
 
 class VR;
 
@@ -41,6 +42,10 @@ namespace VRWatch
     void Init(VR *vr);
     void Update();     // in-map frame, render thread
     void Hide();
+    // Where the face is this frame, when it would be showing: the radar
+    // (VR::UpdateWatchRadar) takes its place, and the face stays hidden while
+    // m_WatchRadar is on. False when the watch would be hidden.
+    bool RadarPlacement(vr::TrackedDeviceIndex_t &hand, vr::HmdMatrix34_t &rel);
 
     // Shared with the offline preview: the display name for a viewmodel path.
     std::wstring WeaponName(const std::string &viewmodel);

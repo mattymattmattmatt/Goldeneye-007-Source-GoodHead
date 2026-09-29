@@ -729,6 +729,14 @@ public:
 	Vector m_ModelWatchOffset = { 0.0f, 0.0f, 0.0f };   // forward, left, up, metres
 	void NoteModelWatchPose(const Vector &worldPos);
 	bool m_WatchAlwaysVisible = false;
+	// The watch shows GE:S's radar instead of its face (right thumbstick click,
+	// or VR Settings > Display). Cropped from the HUD the game draws into the
+	// window every frame -- see UpdateWatchRadar.
+	bool m_WatchRadar = false;
+	vr::VROverlayHandle_t m_RadarHandle = 0;
+	// Bring the hands together to reload. Off for people who reload by
+	// accident holding a gun two-handed; the reload button always works.
+	bool m_ReloadGesture = true;
 	float m_WristLookMaxDistance = 0.6f;
 	float m_WristLookMinDot = 0.45f;
 	float m_WatchWidth = 0.10f;
@@ -769,6 +777,7 @@ public:
 	void RepositionOverlays();
 	void CreateWristOverlays();
 	void UpdateHurtHUD();
+	void UpdateWatchRadar();
 	void SmoothGunWhileZoomed();
 	// 0 = no special zoom, 1 = AR33/KF7 (zoom = both hands + off-hand trigger),
 	// 2 = sniper (lens while held with both hands).

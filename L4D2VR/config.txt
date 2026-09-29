@@ -316,6 +316,14 @@ FaceAimGunSpread=1.0
 # Hurt flash: your health bars flash up in front of you when you take damage
 # or are low. hurt = on, off = never. (The watch always has them.)
 GameHUD=hurt
+
+# The watch shows GE:S's radar instead of its face. The right thumbstick click
+# switches between them in a game (bind "Watch: switch to radar" in SteamVR if
+# your bindings are older than this).
+WatchRadar=false
+
+# Bring your hands together to reload. false = only the reload button.
+ReloadGesture=true
 # Kills (yours called out: YOU KILLED / KILLED BY) and round start/end pop up
 # on the watch for a few seconds, and GE:S's own kill feed is kept off the view.
 # With the watch on, the round timer, ammo count and weapon list are also taken
