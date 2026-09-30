@@ -6754,11 +6754,15 @@ void VR::ParseConfigFile()
         // row by row, controller space); empty = the face turns to the headset.
         m_WatchWristFixed = false;
         m_WatchFacingMinDot = CfgFloat(userConfig, "WatchFacingMinDot", m_WatchFacingMinDot);
+        // No line at all (a config from before this setting): the default,
+        // captured by Matty on 2026-09-30. An empty line means "faces you".
+        static const char *kDefaultWristPose =
+            "0.2710 -0.3288 -0.9047 -0.0000 -0.5166 -0.8427 0.1515 0.0400 -0.8122 0.4263 -0.3983 0.1300";
         auto it = userConfig.find("WatchWristPose");
-        if (it != userConfig.end())
+        const char *pose = it != userConfig.end() ? it->second.c_str() : kDefaultWristPose;
         {
             float f[12];
-            if (sscanf_s(it->second.c_str(), "%f %f %f %f %f %f %f %f %f %f %f %f", &f[0], &f[1], &f[2], &f[3],
+            if (sscanf_s(pose,"%f %f %f %f %f %f %f %f %f %f %f %f", &f[0], &f[1], &f[2], &f[3],
                          &f[4], &f[5], &f[6], &f[7], &f[8], &f[9], &f[10], &f[11]) == 12)
             {
                 for (int i = 0; i < 3; ++i)
