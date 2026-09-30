@@ -267,30 +267,33 @@ static void DrawWatch(Canvas &c, const Fonts &f, const WatchStats &s, int maxHea
     const COLORREF lcd = RGB(132, 255, 176), lcdDim = RGB(52, 132, 86);
     if (s.scores)
     {
-        // Scoreboard page: rank, name, kills and deaths; your row in yellow.
-        c.Text(f.name, lcd, L"SCORES", { scr.left + 12, 156, scr.right - 12, 180 },
+        // Scoreboard page: the top three by kills, big enough to read at a
+        // glance, and your own place as a fourth row if you are lower down
+        // (Matty: "1 bot1 15 kills ... 7 me 2 kills"). You are in yellow.
+        c.Text(f.name, lcd, L"SCORES", { scr.left + 12, 152, scr.right - 12, 176 },
                DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        c.Text(f.label, lcdDim, L"K     D", { scr.left + 12, 180, scr.right - 22, 196 },
+        c.Text(f.label, lcdDim, L"KILLS", { scr.left + 12, 176, scr.right - 20, 194 },
                DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
         if (s.rows.empty())
-            c.Text(f.label, lcdDim, L"NO SCORES YET", { scr.left, 230, scr.right, 260 },
+            c.Text(f.name, lcdDim, L"NO SCORES YET", { scr.left, 240, scr.right, 270 },
                    DT_CENTER | DT_VCENTER | DT_SINGLELINE);
-        int y = 198;
-        for (const WatchScoreRow &r : s.rows)
+        int y = 196;
+        const int pitch = 40;
+        for (size_t k = 0; k < s.rows.size() && k < 4; ++k)
         {
+            const WatchScoreRow &r = s.rows[k];
+            if (k == 3 && r.rank > 4)
+                c.Text(f.label, lcdDim, L"\x00B7 \x00B7 \x00B7", { scr.left, y - 12, scr.right, y + 2 },
+                       DT_CENTER | DT_VCENTER | DT_SINGLELINE);
             const COLORREF col = r.you ? RGB(255, 226, 110) : lcd;
             wchar_t num[32];
             swprintf(num, 32, L"%d", r.rank);
-            c.Text(f.label, col, num, { scr.left + 14, y, scr.left + 34, y + 24 }, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-            c.Text(f.label, col, r.name, { scr.left + 36, y, scr.right - 76, y + 24 },
+            c.Text(f.time, col, num, { scr.left + 10, y, scr.left + 40, y + pitch }, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            c.Text(f.time, col, r.name, { scr.left + 50, y, scr.right - 62, y + pitch },
                    DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
             swprintf(num, 32, L"%d", r.kills);
-            c.Text(f.label, col, num, { scr.right - 76, y, scr.right - 46, y + 24 }, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-            swprintf(num, 32, L"%d", r.deaths);
-            c.Text(f.label, col, num, { scr.right - 44, y, scr.right - 18, y + 24 }, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
-            y += 24;
-            if (y > 340)
-                break;
+            c.Text(f.time, col, num, { scr.right - 62, y, scr.right - 20, y + pitch }, DT_RIGHT | DT_VCENTER | DT_SINGLELINE);
+            y += pitch;
         }
         return;
     }

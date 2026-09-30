@@ -6085,13 +6085,23 @@ void VR::ReadScoreboard(WatchStats &s)
             conn = *cp;
         if (!conn)
             continue;
+        // player_info_t in sdk.h is L4D2's (a 16-byte header, 128-char name).
+        // The 2007 engine's is char name[32] at 0, userID, guid[33],
+        // friendsID at 72, friendsName[32], fakeplayer at 108, ishltv at 109;
+        // reading L4D2's name field gave garbage (Matty, 2026-09-30). The
+        // struct is only a big enough buffer here.
         player_info_t info{};
-        if (!SafePlayerInfo(m_Game->m_EngineClient, i, &info) || info.ishltv)
+        if (!SafePlayerInfo(m_Game->m_EngineClient, i, &info))
             continue;
+        const char *raw = reinterpret_cast<const char *>(&info);
+        if (raw[109])
+            continue;   // SourceTV
+        char name8[33];
+        memcpy(name8, raw, 32);
+        name8[32] = 0;
         WatchScoreRow r;
-        info.name[sizeof(info.name) - 1] = 0;
         wchar_t wname[64] = {};
-        MultiByteToWideChar(CP_UTF8, 0, info.name, -1, wname, 63);
+        MultiByteToWideChar(CP_UTF8, 0, name8, -1, wname, 63);
         r.name = wname;
         ReadI32(res, g_resScoreOff + i * g_resScoreStride, r.kills);
         if (g_resDeathsOff >= 0)
@@ -6104,9 +6114,10 @@ void VR::ReadScoreboard(WatchStats &s)
     });
     for (size_t k = 0; k < all.size(); ++k)
         all[k].rank = (int)k + 1;
-    for (size_t k = 0; k < all.size() && k < 5; ++k)
+    // The top three, then you if you are further down.
+    for (size_t k = 0; k < all.size() && k < 3; ++k)
         s.rows.push_back(all[k]);
-    for (size_t k = 5; k < all.size(); ++k)
+    for (size_t k = 3; k < all.size(); ++k)
         if (all[k].you)
             s.rows.push_back(all[k]);
 }
