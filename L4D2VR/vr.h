@@ -227,6 +227,8 @@ public:
 	vr::VRActionHandle_t m_ActionCrouch = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionFlashlight = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_ActionActivateVR = vr::k_ulInvalidActionHandle;
+	vr::VRActionHandle_t m_ActionBuzzLeft = vr::k_ulInvalidActionHandle;
+	vr::VRActionHandle_t m_ActionBuzzRight = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_MenuSelect = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_MenuBack = vr::k_ulInvalidActionHandle;
 	vr::VRActionHandle_t m_MenuUp = vr::k_ulInvalidActionHandle;
@@ -584,6 +586,9 @@ public:
 	float m_ScopeLensBack = 29.0f;    // the scope's front end (headset screenshots, 2026-09-29)
 	float m_ScopeLensUp = 3.2f;
 	float m_ScopeLensRadius = 1.4f;
+	// The lens only shows to an eye within this many degrees of the scope's
+	// line (ScopeLensViewAngle), stored as its cosine.
+	float m_ScopeLensViewCos = 0.94f;
 	float m_ScopeMagnification = 0.0f;
 	// This frame's lens, from UpdateGunAim, for the scope pass in RenderView.
 	bool m_ScopeLensActive = false;    // sniper + both hands on it
@@ -725,6 +730,16 @@ public:
 	// The watch overlay sits on the Seamaster modelled on that arm, instead of
 	// at WatchOffset, once one has been seen.
 	bool m_WatchFollowModel = true;
+	// The watch fixed to the wrist (VR Settings > Display > Watch angle): the
+	// face's transform in the off-hand controller's space, captured while the
+	// player holds their wrist up as if checking a real watch. Without it the
+	// face turns to the headset wherever the hand is.
+	bool m_WatchWristFixed = false;
+	vr::HmdMatrix34_t m_WatchWristPose{};
+	// When the capture fires (GetTickCount64), 0 = none pending.
+	unsigned long long m_WatchCaptureAt = 0;
+	// How squarely the fixed face must be turned to you to show (cosine; 0.5 = 60 degrees).
+	float m_WatchFacingMinDot = 0.5f;
 	bool m_HaveModelWatch = false;
 	Vector m_ModelWatchOffset = { 0.0f, 0.0f, 0.0f };   // forward, left, up, metres
 	void NoteModelWatchPose(const Vector &worldPos);

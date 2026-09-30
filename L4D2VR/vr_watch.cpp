@@ -4,6 +4,7 @@
 #include "game.h"
 #include "vr_canvas.h"
 #include "vr_flipoverlay.h"
+#include "vr_settings.h"
 #include <atomic>
 #include <mutex>
 #include <condition_variable>
@@ -487,7 +488,25 @@ static void Place(vr::TrackedDeviceIndex_t hand, bool rightHand)
     len = sqrtf(x[0] * x[0] + x[2] * x[2]);
     if (len < 1e-3f) { x[0] = e.m[0][0]; x[1] = e.m[1][0]; x[2] = e.m[2][0]; len = 1.0f; }
     for (float &k : x) k /= len;
-    const float y[3] = { z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0] };
+    float y[3] = { z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0] };
+
+    // Capturing the wrist angle: upright as the player sees it (the headset's
+    // right, squared to the face) rather than to the world, because that is
+    // how a real watch face reads when you raise your wrist to check it.
+    const ULONGLONG now = GetTickCount64();
+    const bool capture = v->m_WatchCaptureAt && now >= v->m_WatchCaptureAt;
+    if (capture)
+    {
+        float hr[3] = { e.m[0][0], e.m[1][0], e.m[2][0] };
+        const float d = hr[0] * z[0] + hr[1] * z[1] + hr[2] * z[2];
+        for (int i = 0; i < 3; ++i) hr[i] -= d * z[i];
+        len = sqrtf(hr[0] * hr[0] + hr[1] * hr[1] + hr[2] * hr[2]);
+        if (len > 1e-3f)
+        {
+            for (int i = 0; i < 3; ++i) x[i] = hr[i] / len;
+            y[0] = z[1] * x[2] - z[2] * x[1]; y[1] = z[2] * x[0] - z[0] * x[2]; y[2] = z[0] * x[1] - z[1] * x[0];
+        }
+    }
 
     vr::HmdMatrix34_t rel{};
     const float *axes[3] = { x, y, z };
@@ -496,6 +515,27 @@ static void Place(vr::TrackedDeviceIndex_t hand, bool rightHand)
             rel.m[i][j] = h.m[0][i] * axes[j][0] + h.m[1][i] * axes[j][1] + h.m[2][i] * axes[j][2];
     for (int i = 0; i < 3; ++i)
         rel.m[i][3] = o[i];
+
+    if (capture)
+    {
+        v->m_WatchCaptureAt = 0;
+        v->m_WatchWristPose = rel;
+        v->m_WatchWristFixed = true;
+        char buf[256];
+        snprintf(buf, sizeof(buf), "%.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f %.4f",
+                 rel.m[0][0], rel.m[0][1], rel.m[0][2], rel.m[0][3], rel.m[1][0], rel.m[1][1], rel.m[1][2], rel.m[1][3],
+                 rel.m[2][0], rel.m[2][1], rel.m[2][2], rel.m[2][3]);
+        VRSettings::SaveConfigValue("WatchWristPose", buf);
+        Game::logMsg("VRWatch: wrist angle captured: %s", buf);
+        if (v->m_Input)
+            v->m_Input->TriggerHapticVibrationAction(rightHand ? v->m_ActionBuzzRight : v->m_ActionBuzzLeft,
+                                                     0.0f, 0.25f, 160.0f, 0.8f, vr::k_ulInvalidInputValueHandle);
+    }
+    else if (v->m_WatchWristFixed && !v->m_WatchCaptureAt)
+    {
+        // Fixed to the wrist: it moves with the controller like a real watch.
+        rel = v->m_WatchWristPose;
+    }
     g_placedHand = hand;
     g_placedRel = rel;
     // Both halves: the hidden one may be swapped in on any frame.
@@ -590,7 +630,34 @@ void Update()
         Hide();
         return;
     }
-    if (!v->m_WatchAlwaysVisible && now >= g_popUntil.load() && !v->IsLookingAtOffhandWatch())
+    // A capture armed from the settings panel starts counting now, in the map.
+    if (v->m_WatchCaptureAt == 1)
+    {
+        v->m_WatchCaptureAt = now + 3000;
+        Game::logMsg("VRWatch: capturing the wrist angle in 3 seconds");
+    }
+    // Counting down to a wrist-angle capture: keep the watch up throughout.
+    if (v->m_WatchCaptureAt && g_popUntil.load() < v->m_WatchCaptureAt + 1500)
+        g_popUntil.store(v->m_WatchCaptureAt + 1500);
+    bool looking = v->IsLookingAtOffhandWatch();
+    if (looking && v->m_WatchWristFixed && !v->m_WatchCaptureAt)
+    {
+        // Fixed to the wrist, it also has to be turned towards you -- the
+        // back of your wrist in view is not checking the time.
+        const vr::HmdMatrix34_t &h = v->m_Poses[hand].mDeviceToAbsoluteTracking;
+        const vr::HmdMatrix34_t &e = v->m_Poses[vr::k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
+        const vr::HmdMatrix34_t &r = v->m_WatchWristPose;
+        float p[3], n[3];
+        for (int i = 0; i < 3; ++i)
+        {
+            p[i] = h.m[i][0] * r.m[0][3] + h.m[i][1] * r.m[1][3] + h.m[i][2] * r.m[2][3] + h.m[i][3];
+            n[i] = h.m[i][0] * r.m[0][2] + h.m[i][1] * r.m[1][2] + h.m[i][2] * r.m[2][2];
+        }
+        float t[3] = { e.m[0][3] - p[0], e.m[1][3] - p[1], e.m[2][3] - p[2] };
+        const float tl = sqrtf(t[0] * t[0] + t[1] * t[1] + t[2] * t[2]);
+        looking = tl > 1e-3f && (n[0] * t[0] + n[1] * t[1] + n[2] * t[2]) / tl > v->m_WatchFacingMinDot;
+    }
+    if (!v->m_WatchAlwaysVisible && now >= g_popUntil.load() && !looking)
     {
         Hide();
         return;

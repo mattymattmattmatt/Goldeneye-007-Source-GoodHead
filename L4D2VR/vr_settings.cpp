@@ -380,6 +380,31 @@ static void BuildModel(VR *vr)
         &vr->m_WatchKillFeed, "WatchKillFeed"));
     display.items.push_back(Toggle(L"Watch on model", L"Sit the watch where the one on the grenade hand sits.",
         &vr->m_WatchFollowModel, "WatchFollowModel"));
+    // "Set it now" gives three seconds to raise the wrist as if checking a
+    // real watch; VRWatch::Place captures the angle and buzzes the hand.
+    {
+        Item angle;
+        angle.label = L"Watch angle";
+        angle.hint = L"Set it now, close the menu, raise your wrist like checking a watch. Buzz = set.";
+        angle.kind = Kind::Choice;
+        angle.names = { L"Faces you", L"Set it now", L"On your wrist" };
+        angle.get = [vr]() { return vr->m_WatchCaptureAt ? 1 : vr->m_WatchWristFixed ? 2 : 0; };
+        angle.set = [vr](int i) {
+            if (i == 0)
+            {
+                vr->m_WatchCaptureAt = 0;
+                vr->m_WatchWristFixed = false;
+                QueueSave("WatchWristPose", "");
+            }
+            else if (i == 1 || !vr->m_WatchWristFixed)
+            {
+                // Armed: the menus hide the watch, so the three seconds start
+                // once you are back in the map (VRWatch::Update).
+                vr->m_WatchCaptureAt = 1;
+            }
+        };
+        display.items.push_back(angle);
+    }
     display.items.push_back(Numeric(L"Menu distance", L"How deep the game's menus sit. It does not resize them.",
         &vr->m_MenuDistanceMeters, "MenuDistanceMeters", Range(1.0f, 3.0f, 0.2f),
         [](float v) { return Fmt(L"%.1f m", v); }, []() { GESVR_RequestMenuReplace(); }));

@@ -304,6 +304,10 @@ SniperScope=true
 ScopeLensBack=29
 ScopeLensUp=3.2
 ScopeLensRadius=1.4
+# The lens picture only shows to an eye within this many degrees of the
+# scope's line, like looking down a real scope tube. Lower hides it sooner
+# from the side; raise it if the picture blinks out while aiming.
+ScopeLensViewAngle=20
 ScopeMagnification=0
 # GE:S draws the first-person gun at the desktop window's shape, which in the
 # headset stretched it tall and skewed it. true corrects that for the gun at
@@ -455,6 +459,13 @@ WatchAlwaysVisible=false
 # of view (dot product; 1 = dead centre).
 WristLookMaxDistance=0.6
 WristLookMinDot=0.45
+# The watch fixed to your wrist, set from VR Settings > Display > Watch angle
+# (hold your wrist up as if checking a real watch; it buzzes when captured).
+# Empty = the face turns towards you wherever your hand is.
+WatchWristPose=
+# With the watch fixed to your wrist, how squarely it must face you to show:
+# 0.5 = within 60 degrees, higher = stricter.
+WatchFacingMinDot=0.5
 # Watch face diameter in metres.
 WatchWidth=0.10
 # Where it sits relative to the off-hand controller, in metres, as

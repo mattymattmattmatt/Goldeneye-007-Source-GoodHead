@@ -1214,6 +1214,8 @@ int VR::SetActionManifest(const char *fileName)
                      merr == vr::VRInputError_None ? " OK" : "  <-- FAILED, no action will ever fire");
     }
 
+    m_Input->GetActionHandle("/actions/base/out/vibration_left", &m_ActionBuzzLeft);
+    m_Input->GetActionHandle("/actions/base/out/vibration_right", &m_ActionBuzzRight);
     m_Input->GetActionHandle("/actions/main/in/ActivateVR", &m_ActionActivateVR);
     m_Input->GetActionHandle("/actions/main/in/Jump", &m_ActionJump);
     m_Input->GetActionHandle("/actions/main/in/PrimaryAttack", &m_ActionPrimaryAttack);
@@ -5526,7 +5528,15 @@ void VR::UpdateGunAim(const CViewSetup &left, const CViewSetup &right)
                 dxvk::g_GESVR_ScopeB[e][0] = 0.5f * (ux - cx);
                 dxvk::g_GESVR_ScopeB[e][1] = -0.5f * (uy - cy);
                 dxvk::g_GESVR_ScopeR[e] = 0.5f * fabsf(uy - cy);   // for the log
-                dxvk::g_GESVR_ScopeValid[e] = fabsf(cx) < 1.0f && fabsf(cy) < 1.0f;
+                // The picture is pasted over the finished eye image, so nothing
+                // in the scene can hide it -- seen from the side it showed
+                // through the rifle (Matty, 2026-09-30). The tube is what hides
+                // a real scope's glass off-axis, so only draw it for an eye
+                // looking down the scope, within ScopeLensViewAngle of its line.
+                Vector eyeToLens = lens - eyes[e]->origin;
+                VectorNormalize(eyeToLens);
+                const bool downTube = DotProduct(eyeToLens, fwd) > m_ScopeLensViewCos;
+                dxvk::g_GESVR_ScopeValid[e] = downTube && fabsf(cx) < 1.0f && fabsf(cy) < 1.0f;
             }
         }
     }
@@ -6635,6 +6645,7 @@ void VR::ParseConfigFile()
     m_ScopeLensBack = CfgFloat(userConfig, "ScopeLensBack", m_ScopeLensBack);
     m_ScopeLensUp = CfgFloat(userConfig, "ScopeLensUp", m_ScopeLensUp);
     m_ScopeLensRadius = CfgFloat(userConfig, "ScopeLensRadius", m_ScopeLensRadius);
+    m_ScopeLensViewCos = cosf(std::clamp(CfgFloat(userConfig, "ScopeLensViewAngle", 20.0f), 1.0f, 89.0f) * 3.14159265f / 180.0f);
     m_ScopeMagnification = CfgFloat(userConfig, "ScopeMagnification", m_ScopeMagnification);
     m_TrackedWeapon = CfgBool(userConfig, "TrackedWeapon", m_TrackedWeapon);
     m_FixViewmodelAspect = CfgBool(userConfig, "FixViewmodelAspect", m_FixViewmodelAspect);
@@ -6737,6 +6748,26 @@ void VR::ParseConfigFile()
     m_LeftHandOffset = CfgVec(userConfig, "LeftHandOffset", m_LeftHandOffset);
     m_LeftHandAngle = CfgVec(userConfig, "LeftHandAngle", m_LeftHandAngle);
     m_WatchFollowModel = CfgBool(userConfig, "WatchFollowModel", m_WatchFollowModel);
+    {
+        // WatchWristPose: the watch fixed to the off-hand controller, captured
+        // from VR Settings > Display > Watch angle. 12 numbers (3x4 transform,
+        // row by row, controller space); empty = the face turns to the headset.
+        m_WatchWristFixed = false;
+        m_WatchFacingMinDot = CfgFloat(userConfig, "WatchFacingMinDot", m_WatchFacingMinDot);
+        auto it = userConfig.find("WatchWristPose");
+        if (it != userConfig.end())
+        {
+            float f[12];
+            if (sscanf_s(it->second.c_str(), "%f %f %f %f %f %f %f %f %f %f %f %f", &f[0], &f[1], &f[2], &f[3],
+                         &f[4], &f[5], &f[6], &f[7], &f[8], &f[9], &f[10], &f[11]) == 12)
+            {
+                for (int i = 0; i < 3; ++i)
+                    for (int j = 0; j < 4; ++j)
+                        m_WatchWristPose.m[i][j] = f[i * 4 + j];
+                m_WatchWristFixed = true;
+            }
+        }
+    }
     m_WristLookMaxDistance = CfgFloat(userConfig, "WristLookMaxDistance", m_WristLookMaxDistance);
     m_WristLookMinDot = CfgFloat(userConfig, "WristLookMinDot", m_WristLookMinDot);
     m_WatchAlwaysVisible = CfgBool(userConfig, "WatchAlwaysVisible", m_WatchAlwaysVisible);
