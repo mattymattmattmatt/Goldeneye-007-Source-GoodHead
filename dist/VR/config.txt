@@ -461,8 +461,9 @@ WristLookMaxDistance=0.6
 WristLookMinDot=0.45
 # The watch fixed to your wrist, set from VR Settings > Display > Watch angle
 # (hold your wrist up as if checking a real watch; it buzzes when captured).
-# Empty = the face turns towards you wherever your hand is.
-WatchWristPose=
+# Empty = the face turns towards you wherever your hand is. The default is
+# a wrist angle captured by Matty (2026-09-30); recapture it to suit yours.
+WatchWristPose=0.2710 -0.3288 -0.9047 -0.0000 -0.5166 -0.8427 0.1515 0.0400 -0.8122 0.4263 -0.3983 0.1300
 # With the watch fixed to your wrist, how squarely it must face you to show:
 # 0.5 = within 60 degrees, higher = stricter.
 WatchFacingMinDot=0.5
