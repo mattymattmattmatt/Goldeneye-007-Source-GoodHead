@@ -37,6 +37,21 @@ void Game::InitModPaths(HMODULE hModule)
     if (slash)
         *slash = '\0';
 
+    // The launcher installs d3d9.dll both next to hl2.exe and in bin\, and
+    // which copy Windows loads is not ours to choose: it was bin\ for weeks,
+    // then the root copy on 2026-10-03 (once the game used the Steam client's
+    // own DLLs). The root has its own stale VR\config.txt, so the player
+    // silently got old settings -- per-eye rendering off. bin\ is the one
+    // home: settings, weapons.txt, bindings and the log all live there.
+    const size_t n = strlen(path);
+    if (!(n >= 4 && _stricmp(path + n - 4, "\\bin") == 0))
+    {
+        char binCfg[MAX_PATH];
+        snprintf(binCfg, MAX_PATH, "%s\\bin\\VR\\config.txt", path);
+        if (GetFileAttributesA(binCfg) != INVALID_FILE_ATTRIBUTES)
+            strncat_s(path, "\\bin", _TRUNCATE);
+    }
+
     strncpy_s(g_ModDir, path, _TRUNCATE);
     snprintf(g_LogPath, MAX_PATH, "%s\\vrmod_log.txt", g_ModDir);
 }
