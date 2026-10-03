@@ -181,10 +181,28 @@ if (Test-Path $hl2) {
     }
 }
 
-# (The SDK's own 2007-era steamclient.dll next to hl2.exe is left alone. It was
-# suspected during the 2026-09-23 "SteamStartup() failed" hunt, but a fresh,
-# healthy install runs with it in place; the real cause was a modified hl2.exe,
-# guarded against above.)
+# The SDK ships old copies of Steam's own DLLs next to hl2.exe: steam.dll,
+# steamclient.dll (2.11, offers SteamClient012 at most), tier0_s.dll and
+# vstdlib_s.dll. When hl2.exe picks up THAT steam.dll instead of the Steam
+# client's, it loads that steamclient.dll, asks it for SteamClient013, gets
+# nothing, and dies on
+#     Error!  SteamStartup() failed: SteamAPI_Init_Internal failed
+# with no other output. Proved 2026-10-03, after a hard power-off left the game
+# in that state in three different libraries: a copy of hl2.exe under another
+# name loaded F:\...\Steam\steam.dll and ran; hl2.exe itself ran as soon as the
+# four files were moved out. (What decides which steam.dll hl2.exe gets was not
+# pinned down -- it worked for nine days with the files present -- so this may
+# also be what the "poisoned install location" of 2026-09-24 really was.)
+# Nothing needs them: with them gone the game uses the running Steam client's.
+$oldSteam = Join-Path $sdk "gesvr-old-steam-files"
+foreach ($f in @("steam.dll", "steamclient.dll", "tier0_s.dll", "vstdlib_s.dll")) {
+    $p = Join-Path $sdk $f
+    if (Test-Path $p) {
+        New-Item -ItemType Directory -Force -Path $oldSteam | Out-Null
+        Move-Item $p (Join-Path $oldSteam $f) -Force
+        Write-Host "Set aside the SDK's old $f (the game uses Steam's own)"
+    }
+}
 
 # Source loads bin\binkw32.dll by name from engine.dll *before* it asks for d3d9.
 # Proxy pre-loads our d3d9.dll by full path so SysWOW64 cannot win.

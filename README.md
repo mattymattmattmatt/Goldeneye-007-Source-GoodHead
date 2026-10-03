@@ -91,6 +91,8 @@ Press **Y** for the pause menu (or use the main menu) and click **VR Settings**.
 
 **The game closes or crashes while loading a map** — just try again. It usually loads on the second or third go, because each attempt makes the next one easier. If it keeps happening, set **Texture detail** to **Medium** (or **Low**) in VR Settings > Graphics. GoldenEye: Source is an old 32-bit game with limited memory, and big maps can fill it up.
 
+**"SteamStartup() failed: SteamAPI_Init_Internal failed"** — run `Launch-GESVR.bat` again. The launcher fixes the usual cause itself: it moves four outdated Steam files that ship with Source SDK Base 2007 out of the way (into a `gesvr-old-steam-files` folder), so the game uses your real Steam client. This can appear after a crash or power cut.
+
 **Never use a "4 GB patch" on `hl2.exe`.** It breaks the game, and Steam will refuse to start it again even after you undo it. If you've already done this: in Steam, go to Source SDK Base 2007 > Properties > Installed Files, click **Verify integrity**, and if that doesn't help, use **Move install folder** to move it to another Steam library.
 
 **The game shows on a flat screen in SteamVR instead of in VR** — go to SteamVR > Settings > Dashboard and turn **"Present non-VR applications on theater screen"** off.
